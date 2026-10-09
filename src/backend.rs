@@ -573,6 +573,46 @@ mod tests {
         assert!(receipt(b"{\"success\":true}").is_ok());
     }
     #[tokio::test]
+    async fn assignment_views_include_both_board_and_backlog_statuses() {
+        let b = Backend::new("demo", None).unwrap();
+        {
+            let mut tickets = b.demo.lock().await;
+            let mut board_unassigned = tickets["DEV-102"].clone();
+            board_unassigned.key = "DEV-104".into();
+            board_unassigned.fields["status"]["name"] = json!("To Do");
+            tickets.insert(board_unassigned.key.clone(), board_unassigned);
+            let mut backlog_mine = tickets["DEV-101"].clone();
+            backlog_mine.key = "DEV-105".into();
+            backlog_mine.fields["status"]["name"] = json!("Refinement");
+            tickets.insert(backlog_mine.key.clone(), backlog_mine);
+        }
+        let s = crate::config::Settings {
+            project: "DEV".into(),
+            ..Default::default()
+        };
+        let mine = b
+            .search(&s.query(crate::config::MINE, "", "", "").unwrap(), 500)
+            .await
+            .unwrap();
+        let available = b
+            .search(&s.query(crate::config::AVAILABLE, "", "", "").unwrap(), 500)
+            .await
+            .unwrap();
+        let backlog = b
+            .search(&s.query(crate::config::BACKLOG, "", "", "").unwrap(), 500)
+            .await
+            .unwrap();
+        assert_eq!(
+            mine.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(),
+            ["DEV-101", "DEV-105"]
+        );
+        assert_eq!(
+            available.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(),
+            ["DEV-102", "DEV-104"]
+        );
+        assert_eq!(backlog.len(), 5);
+    }
+    #[tokio::test]
     async fn demo_search_really_filters() {
         let b = Backend::new("demo", None).unwrap();
         let q = "project = \"DEV\" AND text ~ \"assignment\" ORDER BY Rank ASC";

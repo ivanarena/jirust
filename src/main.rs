@@ -78,17 +78,21 @@ async fn main() -> Result<()> {
     let mut settings = if backend.kind == Kind::Demo {
         Settings {
             project: "DEV".into(),
-            backlog_statuses: vec!["Refinement".into()],
-            board_entry_status: "To Do".into(),
-            backlog_entry_status: "Refinement".into(),
-            last_view: 2,
+            last_view: jiraui::config::MINE,
             ..Default::default()
         }
     } else {
         Settings::load()?
     };
+    let scope_override = opts.project.is_some() || opts.prefix.is_some() || opts.jql.is_some();
     if let Some(project) = opts.project {
-        settings.project = project.to_uppercase()
+        settings.project = project.to_uppercase();
+        if opts.prefix.is_none() {
+            settings.prefix.clear();
+        }
+        if opts.jql.is_none() {
+            settings.scope_jql.clear();
+        }
     };
     if let Some(prefix) = opts.prefix {
         settings.prefix = prefix.to_uppercase()
@@ -114,6 +118,9 @@ async fn main() -> Result<()> {
             if items.is_empty() { "skipped" } else { "ok" }
         );
         return Ok(());
+    }
+    if scope_override && backend.kind != Kind::Demo {
+        settings.save()?;
     }
     if !io::stdin().is_terminal() {
         bail!("Run jiraui in a terminal, or use --check")
@@ -197,13 +204,12 @@ fn dispatch(
     backend: &Arc<Backend>,
     picker: &Picker,
     tx: &mpsc::UnboundedSender<Message>,
-    project: &str,
+    _project: &str,
 ) {
     for job in jobs {
         let backend = backend.clone();
         let tx = tx.clone();
         let picker = picker.clone();
-        let project = project.to_string();
         tokio::spawn(async move {
             let message = match job {
                 Job::List {
@@ -224,7 +230,6 @@ fn dispatch(
                     key: key.clone(),
                     result: backend.comments(&key).await,
                 },
-                Job::Boards => Message::Boards(backend.boards(&project).await),
                 Job::Write(action) => Message::Written {
                     action: action.clone(),
                     result: backend.apply(&action).await,

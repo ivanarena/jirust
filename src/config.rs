@@ -17,17 +17,13 @@ pub struct Settings {
     pub prefix: String,
     pub scope_jql: String,
     pub scope_name: String,
-    pub backlog_statuses: Vec<String>,
-    pub board_entry_status: String,
-    pub backlog_entry_status: String,
-    pub views: Vec<SavedView>,
     pub last_view: usize,
+    pub view_layout: u8,
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct SavedView {
-    pub name: String,
-    pub jql: String,
-}
+pub const MINE: usize = 0;
+pub const AVAILABLE: usize = 1;
+pub const BACKLOG: usize = 2;
+pub const VIEW_NAMES: [&str; 3] = ["Mine", "Available", "Backlog"];
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -35,11 +31,8 @@ impl Default for Settings {
             prefix: String::new(),
             scope_jql: String::new(),
             scope_name: String::new(),
-            backlog_statuses: Vec::new(),
-            board_entry_status: String::new(),
-            backlog_entry_status: String::new(),
-            views: Vec::new(),
-            last_view: 2,
+            last_view: MINE,
+            view_layout: 3,
         }
     }
 }
@@ -57,21 +50,27 @@ impl Settings {
             return Ok(Self::default());
         }
         let value: Value = serde_json::from_slice(&fs::read(path)?)?;
+        Self::from_value(value)
+    }
+    fn from_value(value: Value) -> Result<Self> {
         let mut out: Self = serde_json::from_value(value.clone())?;
-        // Preserve a v0.1 user's project and saved queries without copying credentials.
+        // Migrate old numeric tabs without reinterpreting Board as Mine or
+        // old Backlog-only as Available. All three now share one backlog scope.
+        if value["view_layout"].as_u64() != Some(3) {
+            out.last_view = match value["last_view"].as_u64() {
+                Some(3) => MINE,
+                Some(_) => BACKLOG,
+                None => MINE,
+            };
+        }
+        out.view_layout = 3;
+        out.last_view = out.last_view.min(BACKLOG);
+        // Preserve the configured project/scope, never Jira credentials.
         if out.project.is_empty() {
             out.project = value["filters"]["project"]
                 .as_str()
                 .unwrap_or("")
                 .to_string()
-        }
-        if out.views.is_empty() {
-            for p in value["saved"].as_array().into_iter().flatten() {
-                out.views.push(SavedView {
-                    name: p["name"].as_str().unwrap_or("").into(),
-                    jql: p["jql"].as_str().unwrap_or("").into(),
-                })
-            }
         }
         Ok(out)
     }
@@ -88,50 +87,18 @@ impl Settings {
         Ok(format!("project = {}", quote(&self.project)))
     }
     pub fn query(&self, view: usize, search: &str, assignee: &str, status: &str) -> Result<String> {
-        let (mut parts, order) = if view >= 4 {
-            let preset = self.views.get(view - 4).context("Missing saved view")?;
-            let (base, order) = split_order(&preset.jql);
-            (vec![format!("({base})")], order)
-        } else {
-            (
-                vec![
-                    format!("({})", self.scope()?),
-                    "statusCategory != Done".into(),
-                ],
-                "ORDER BY Rank ASC",
-            )
-        };
-        if view <= 1 && self.backlog_statuses.is_empty() {
-            bail!(
-                "Choose backlog statuses in Scope (g) to define Board vs Backlog; use All meanwhile."
-            )
-        }
+        let scope = self.scope()?;
+        let (base, order) = split_order(&scope);
+        let mut parts = vec![format!("({base})"), "statusCategory != Done".into()];
         match view {
-            0 if !self.backlog_statuses.is_empty() => parts.push(format!(
-                "status NOT IN ({})",
-                self.backlog_statuses
-                    .iter()
-                    .map(|s| quote(s))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-            1 => {
-                if self.backlog_statuses.is_empty() {
-                    bail!("Choose backlog statuses in Scope (g); no sprint assumptions are made.")
-                };
-                parts.push(format!(
-                    "status IN ({})",
-                    self.backlog_statuses
-                        .iter()
-                        .map(|s| quote(s))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-            }
-            3 if assignee.trim().is_empty() => parts.push("assignee = currentUser()".into()),
-            _ => {}
+            MINE => parts.push("assignee = currentUser()".into()),
+            AVAILABLE => parts.push("assignee IS EMPTY".into()),
+            BACKLOG => {}
+            _ => bail!("Unknown view"),
         }
-        if !assignee.trim().is_empty() {
+        // Manual assignee filtering belongs to the combined Backlog view;
+        // it cannot silently turn Mine or Available into a different preset.
+        if view == BACKLOG && !assignee.trim().is_empty() {
             parts.push(match assignee.trim() {
                 "@me" => "assignee = currentUser()".into(),
                 "unassigned" => "assignee IS EMPTY".into(),
@@ -287,34 +254,67 @@ pub fn local_attachment(root: &Path, key: &str, filename: &str) -> Option<PathBu
 mod tests {
     use super::*;
     #[test]
-    fn scopes_and_backlog() {
+    fn three_assignment_views_share_the_combined_backlog_scope() {
         let s = Settings {
             project: "DEV".into(),
-            backlog_statuses: vec!["Refinement".into()],
             ..Default::default()
         };
-        let q = s.query(0, "", "", "").unwrap();
-        assert!(q.contains("status NOT IN (\"Refinement\")"));
-        assert!(!q.contains("sprint"));
-        assert!(s.query(1, "", "", "").unwrap().contains("status IN"));
+        let base = s.query(BACKLOG, "", "", "").unwrap();
+        assert!(!base.contains("assignee"));
+        for view in [MINE, AVAILABLE, BACKLOG] {
+            let q = s.query(view, "", "", "").unwrap();
+            assert!(q.starts_with("(project = \"DEV\") AND statusCategory != Done"));
+            assert!(!q.contains("sprint"));
+            assert!(!q.contains("status IN"));
+            assert!(!q.contains("status NOT IN"));
+        }
+        assert!(
+            s.query(MINE, "", "", "")
+                .unwrap()
+                .contains("assignee = currentUser()")
+        );
+        assert!(
+            s.query(AVAILABLE, "", "", "")
+                .unwrap()
+                .contains("assignee IS EMPTY")
+        );
+        assert!(!s.query(MINE, "", "sam", "").unwrap().contains("\"sam\""));
         assert_eq!(s.prefix(), "DEV");
-        assert!(Settings::default().query(0, "", "", "").is_err());
     }
     #[test]
-    fn saved_query_keeps_scope_and_applies_filters() {
+    fn base_scope_keeps_its_sort_and_additional_filters() {
         let s = Settings {
-            views: vec![SavedView {
-                name: "Other scope".into(),
-                jql: "project = OTHER AND text ~ \"ORDER BY value\" ORDER BY updated DESC".into(),
-            }],
+            scope_jql: "project = DEV AND text ~ \"ORDER BY value\" ORDER BY updated DESC".into(),
             ..Default::default()
         };
-        let q = s.query(4, "needle", "@me", "To Do").unwrap();
-        assert!(q.contains("project = OTHER"));
+        let q = s.query(BACKLOG, "needle", "@me", "To Do").unwrap();
+        assert!(q.contains("project = DEV"));
         assert!(q.contains("text ~ \"needle\""));
         assert!(q.contains("assignee = currentUser()"));
         assert!(q.ends_with("ORDER BY updated DESC"));
         assert!(q.contains("\"ORDER BY value\""));
+    }
+    #[test]
+    fn migrate_old_tabs_and_remove_obsolete_setup() {
+        for (old, new) in [
+            (0, BACKLOG),
+            (1, BACKLOG),
+            (2, BACKLOG),
+            (3, MINE),
+            (8, BACKLOG),
+        ] {
+            let s=Settings::from_value(serde_json::json!({"project":"DEV","last_view":old,"backlog_statuses":[],"board_entry_status":"","views":[{"name":"old","jql":"project = OTHER"}]})).unwrap();
+            assert_eq!(s.last_view, new);
+            assert_eq!(s.view_layout, 3);
+            let json = serde_json::to_value(&s).unwrap();
+            assert!(json.get("backlog_statuses").is_none());
+            assert!(json.get("views").is_none());
+        }
+        let s = Settings::from_value(
+            serde_json::json!({"project":"DEV","view_layout":3,"last_view":AVAILABLE}),
+        )
+        .unwrap();
+        assert_eq!(s.last_view, AVAILABLE);
     }
     #[test]
     fn query_escape() {

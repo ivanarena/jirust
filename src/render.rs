@@ -118,7 +118,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     app.search
                 )
             } else if app.remote_search.is_empty() {
-                " / Search · type digits to find a ticket".into()
+                format!(
+                    " / Search {} · digits find any ticket",
+                    app.view_names()[app.view]
+                )
             } else {
                 format!(" / {}", app.remote_search)
             }
@@ -129,15 +132,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         controls[0],
     );
     frame.render_widget(
-        Paragraph::new(format!(
-            " Assignee: {} ▾",
-            if app.assignee_filter.is_empty() {
-                "All"
-            } else {
-                &app.assignee_filter
-            }
-        ))
-        .style(Style::default().fg(Color::Blue)),
+        Paragraph::new(format!(" Assignee: {} ▾", app.assignee_label()))
+            .style(Style::default().fg(Color::Blue)),
         controls[1],
     );
     frame.render_widget(
@@ -285,10 +281,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ('t', "Status"),
         ('e', "Edit"),
         ('c', "Comment"),
-        ('m', "Move"),
         ('l', "Links"),
         ('O', "Jira"),
-        ('g', "Scope"),
         ('f', "Filters"),
         ('?', "Help"),
     ];
@@ -336,7 +330,6 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
     let rect = centered(area, width, height);
     app.popup_rect = rect;
     frame.render_widget(Clear, rect);
-    let known_statuses = app.known_statuses().join(", ");
     let Some(dialog) = &mut app.dialog else {
         return;
     };
@@ -384,7 +377,6 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
             labels,
             values,
             selected,
-            kind,
             ..
         } => {
             let b = block(format!(" {} ", data::line(title)), true);
@@ -418,15 +410,6 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
                         y + 1,
                     ));
                 }
-            }
-            if kind == "scope" {
-                let hint = format!("Known statuses: {}", known_statuses);
-                frame.render_widget(
-                    Paragraph::new(hint)
-                        .wrap(Wrap { trim: true })
-                        .style(Style::default().fg(Color::DarkGray)),
-                    Rect::new(inner.x, inner.bottom().saturating_sub(4), inner.width, 2),
-                );
             }
             frame.render_widget(
                 Paragraph::new(" Tab next · Ctrl+U clears · Ctrl+S saves · Esc cancels")
@@ -535,6 +518,68 @@ mod tests {
         config::{Cache, Settings},
     };
     use ratatui::{Terminal, backend::TestBackend};
+    #[tokio::test]
+    async fn mouse_views_are_assignment_filters_without_setup() {
+        use crate::{
+            app::{Job, Message},
+            config,
+        };
+        use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let backend = Backend::new("demo", None).unwrap();
+        let mut app = App::new(
+            backend.clone(),
+            Cache { directory: None },
+            Settings {
+                project: "DEV".into(),
+                ..Default::default()
+            },
+            true,
+            500,
+            std::path::PathBuf::new(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
+        let query = app.query().unwrap();
+        let items = backend.search(&query, 500).await.unwrap();
+        app.message(Message::List {
+            generation: app.generation,
+            query,
+            result: Ok(items),
+        });
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(app.items.len(), 1);
+        assert_eq!(app.assignee_label(), "Me");
+        assert_eq!(app.tabs.len(), 3);
+        for (view, count, label) in [
+            (config::AVAILABLE, 1, "Unassigned"),
+            (config::BACKLOG, 3, "All"),
+            (config::MINE, 1, "Me"),
+        ] {
+            let rect = app.tabs[view].0;
+            let jobs = app.event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: rect.x + 1,
+                row: rect.y,
+                modifiers: KeyModifiers::NONE,
+            }));
+            assert!(app.dialog.is_none());
+            let Job::List {
+                generation, query, ..
+            } = jobs.into_iter().next().unwrap()
+            else {
+                panic!()
+            };
+            let items = backend.search(&query, 500).await.unwrap();
+            app.message(Message::List {
+                generation,
+                query,
+                result: Ok(items),
+            });
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            assert_eq!(app.view, view);
+            assert_eq!(app.items.len(), count);
+            assert_eq!(app.assignee_label(), label);
+        }
+    }
     #[test]
     fn two_panes_and_top_views_fit() {
         for (w, h) in [(60, 16), (82, 26), (120, 24), (163, 28), (180, 56)] {
@@ -561,7 +606,7 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             assert!(app.tickets_rect.width > 0 && app.ticket_rect.width > 0);
-            assert_eq!(app.tabs.len(), 4);
+            assert_eq!(app.tabs.len(), 3);
             assert!(
                 app.document
                     .iter()

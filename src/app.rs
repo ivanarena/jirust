@@ -1,6 +1,6 @@
 use crate::{
     backend::{Action, Backend, Kind},
-    config::{self, Cache, SavedView, Settings},
+    config::{self, Cache, Settings},
     data::{self, Target, Ticket},
     markdown::{self, DocLine},
 };
@@ -28,7 +28,6 @@ pub enum Job {
         lookup: Option<u64>,
     },
     Comments(String),
-    Boards,
     Write(Action),
     Browser(String),
     Preview {
@@ -52,7 +51,6 @@ pub enum Message {
         key: String,
         result: Result<Vec<serde_json::Value>>,
     },
-    Boards(Result<Vec<data::Board>>),
     Written {
         action: Action,
         result: Result<()>,
@@ -89,7 +87,6 @@ pub enum Purpose {
     Edit,
     AssigneeFilter,
     StatusFilter,
-    Boards,
 }
 pub enum Dialog {
     Picker {
@@ -184,7 +181,7 @@ impl App {
         limit: usize,
         attachment_dir: PathBuf,
     ) -> Self {
-        let view = settings.last_view.min(3 + settings.views.len());
+        let view = settings.last_view.min(config::BACKLOG);
         Self {
             backend,
             cache,
@@ -248,14 +245,7 @@ impl App {
         }
     }
     pub fn view_names(&self) -> Vec<String> {
-        let mut names = vec![
-            "Board".into(),
-            "Backlog".into(),
-            "All".into(),
-            "Mine".into(),
-        ];
-        names.extend(self.settings.views.iter().map(|s| s.name.clone()));
-        names
+        config::VIEW_NAMES.iter().map(|s| s.to_string()).collect()
     }
     pub fn query(&self) -> Result<String> {
         self.settings.query(
@@ -277,7 +267,7 @@ impl App {
                 self.detail_key.clear();
                 self.doc_dirty = true;
                 self.notice(e.to_string(), true);
-                if self.settings.project.is_empty() || self.view <= 1 {
+                if self.settings.project.is_empty() && self.settings.scope_jql.is_empty() {
                     self.scope_dialog()
                 };
                 vec![]
@@ -417,9 +407,6 @@ impl App {
                 }
                 SearchMode::Text => {
                     self.remote_search = self.search.clone();
-                    if self.view < 4 {
-                        self.view = 2;
-                    }
                     return self.reload();
                 }
                 _ => {}
@@ -551,30 +538,6 @@ impl App {
                     Err(e) => self.notice(e.to_string(), true),
                 }
             }
-            Message::Boards(result) => {
-                self.loading = false;
-                match result {
-                    Ok(boards) => {
-                        let choices = boards
-                            .iter()
-                            .map(|b| Choice {
-                                label: format!("{} · {} ({})", b.id, b.name, b.kind),
-                                value: b.name.clone(),
-                                target: None,
-                            })
-                            .collect();
-                        self.dialog = Some(Dialog::Picker {
-                            title: "Choose scope label · CLI does not expose board filter/columns"
-                                .into(),
-                            choices,
-                            selected: 0,
-                            purpose: Purpose::Boards,
-                            key: String::new(),
-                        })
-                    }
-                    Err(e) => self.notice(e.to_string(), true),
-                }
-            }
             Message::Written { action, result } => {
                 self.writing = false;
                 self.details.remove(&action.key);
@@ -657,14 +620,17 @@ impl App {
             return vec![];
         };
         self.view = index;
+        self.assignee_filter.clear();
         self.settings.last_view = index;
         if self.backend.kind != Kind::Demo {
             let _ = self.settings.save();
         };
+        if self.search_mode == SearchMode::Text {
+            self.remote_search = self.search.clone();
+        }
         self.search_mode = SearchMode::None;
         self.lookup_active = false;
-        self.search.clear();
-        self.remote_search.clear();
+        self.search = self.remote_search.clone();
         self.local_search.clear();
         self.search_due = None;
         self.lookup_generation += 1;
@@ -760,17 +726,6 @@ impl App {
                     self.scope_dialog();
                     return vec![];
                 }
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-                    self.dialog = Some(Dialog::Form {
-                        title: "Save this query as a top view".into(),
-                        labels: vec!["View name".into()],
-                        values: vec![String::new()],
-                        selected: 0,
-                        kind: "save".into(),
-                        key: String::new(),
-                    });
-                    return vec![];
-                }
                 match key.code {
                     KeyCode::Char('q') => {
                         if self.writing {
@@ -857,10 +812,6 @@ impl App {
                         self.local_search.clear()
                     }
                     KeyCode::Char('g') => self.scope_dialog(),
-                    KeyCode::Char('b') => {
-                        self.loading = true;
-                        return vec![Job::Boards];
-                    }
                     KeyCode::Char('A') => self.assignee_picker(true),
                     KeyCode::Char('T') => self.status_picker(true),
                     KeyCode::Char('f') => self.filters_dialog(),
@@ -898,7 +849,7 @@ impl App {
                             return vec![Job::Comments(key)];
                         }
                     }
-                    KeyCode::Char('a' | 't' | 'e' | 'c' | 'L' | 'm') => {
+                    KeyCode::Char('a' | 't' | 'e' | 'c' | 'L') => {
                         if let KeyCode::Char(c) = key.code {
                             self.action_dialog(c)
                         }
@@ -1061,9 +1012,6 @@ impl App {
             KeyCode::Enter => {
                 if self.search_mode == SearchMode::Text {
                     self.remote_search = self.search.clone();
-                    if self.view < 4 {
-                        self.view = 2;
-                    }
                     self.search_mode = SearchMode::None;
                     self.search_due = None;
                     return self.reload();
@@ -1108,10 +1056,23 @@ impl App {
         }
         vec![]
     }
+    fn cached_backlog(&self) -> Vec<Ticket> {
+        self.settings
+            .query(config::BACKLOG, "", "", "")
+            .ok()
+            .and_then(|q| {
+                self.cache
+                    .get::<Vec<Ticket>>(&format!("list:{}:{q}", self.limit))
+            })
+            .map(|(items, _)| items)
+            .unwrap_or_default()
+    }
     pub fn known_statuses(&self) -> Vec<String> {
+        let backlog = self.cached_backlog();
         let mut a: Vec<_> = self
             .items
             .iter()
+            .chain(backlog.iter())
             .map(Ticket::status)
             .filter(|s| !s.is_empty())
             .collect();
@@ -1121,33 +1082,70 @@ impl App {
     }
     fn scope_dialog(&mut self) {
         self.dialog = Some(Dialog::Form {
-            title: "Scope · no sprint assumptions · configure Board vs Backlog".into(),
+            title: "Advanced · shared backlog scope (already configured)".into(),
             labels: vec![
                 "Project".into(),
                 "Ticket prefix (blank = project)".into(),
-                "Scope JQL / saved filter (optional)".into(),
-                "Backlog statuses (comma-separated)".into(),
-                "Pull onto Board → status".into(),
-                "Return to Backlog → status".into(),
+                "Backlog scope JQL / saved filter (optional)".into(),
             ],
             values: vec![
                 self.settings.project.clone(),
                 self.settings.prefix.clone(),
                 self.settings.scope_jql.clone(),
-                self.settings.backlog_statuses.join(", "),
-                self.settings.board_entry_status.clone(),
-                self.settings.backlog_entry_status.clone(),
             ],
             selected: 0,
             kind: "scope".into(),
             key: String::new(),
         })
     }
+    pub fn assignee_filter_value(&self) -> &str {
+        match self.view {
+            config::MINE => "@me",
+            config::AVAILABLE => "unassigned",
+            _ => &self.assignee_filter,
+        }
+    }
+    pub fn assignee_label(&self) -> &str {
+        match self.assignee_filter_value() {
+            "@me" => "Me",
+            "unassigned" => "Unassigned",
+            "" => "All",
+            v => v,
+        }
+    }
+    fn apply_assignee_filter(&mut self, value: String) {
+        if self.search_mode == SearchMode::Text {
+            self.remote_search = self.search.clone();
+        }
+        if self.lookup_active {
+            self.search.clear();
+            self.local_search.clear();
+            self.lookup_active = false;
+        }
+        self.search_mode = SearchMode::None;
+        self.search_due = None;
+        self.lookup_generation += 1;
+        self.view = match value.as_str() {
+            "@me" => config::MINE,
+            "unassigned" => config::AVAILABLE,
+            _ => config::BACKLOG,
+        };
+        self.assignee_filter = if self.view == config::BACKLOG {
+            value
+        } else {
+            String::new()
+        };
+        self.settings.last_view = self.view;
+        self.save_settings();
+    }
     fn filters_dialog(&mut self) {
         self.dialog = Some(Dialog::Form {
             title: "Filters · blank clears · @me / unassigned / email or ID".into(),
             labels: vec!["Assignee".into(), "Status".into()],
-            values: vec![self.assignee_filter.clone(), self.status_filter.clone()],
+            values: vec![
+                self.assignee_filter_value().into(),
+                self.status_filter.clone(),
+            ],
             selected: 0,
             kind: "filters".into(),
             key: String::new(),
@@ -1177,7 +1175,8 @@ impl App {
             )
         };
         let mut seen = HashSet::new();
-        for t in &self.items {
+        let backlog = self.cached_backlog();
+        for t in self.items.iter().chain(backlog.iter()) {
             let u = t.user("assignee");
             let id = u.identity(self.backend.kind == Kind::Jira);
             if !id.is_empty() && seen.insert(id.clone()) {
@@ -1197,6 +1196,14 @@ impl App {
             value: "__other".into(),
             target: None,
         });
+        let selected = if filter {
+            choices
+                .iter()
+                .position(|c| c.value == self.assignee_filter_value())
+                .unwrap_or(0)
+        } else {
+            0
+        };
         let key = self
             .active_ticket()
             .map(|t| t.key.clone())
@@ -1209,7 +1216,7 @@ impl App {
             }
             .into(),
             choices,
-            selected: 0,
+            selected,
             purpose: if filter {
                 Purpose::AssigneeFilter
             } else {
@@ -1340,22 +1347,6 @@ impl App {
                     kind: "link".into(),
                     key: ticket.key,
                 })
-            }
-            'm' => {
-                let target = if self.view == 1 {
-                    self.settings.board_entry_status.clone()
-                } else {
-                    self.settings.backlog_entry_status.clone()
-                };
-                if target.is_empty() {
-                    self.notice(
-                        "Configure Board / Backlog entry statuses in Scope (g) first",
-                        true,
-                    );
-                    self.scope_dialog()
-                } else {
-                    self.confirm(Action::new("status", &ticket.key, &target))
-                }
             }
             _ => {}
         }
@@ -1500,12 +1491,6 @@ impl App {
                         }
                         return vec![];
                     }
-                    if purpose == Purpose::Boards {
-                        self.settings.scope_name = choice.value;
-                        self.save_settings();
-                        self.notice("Scope label saved; project/JQL controls data, not hidden board configuration",false);
-                        return vec![];
-                    }
                     if choice.value == "__other" {
                         self.dialog = Some(Dialog::Form {
                             title: "Enter email/account ID or exact status".into(),
@@ -1537,7 +1522,7 @@ impl App {
                             return vec![];
                         }
                         Purpose::AssigneeFilter => {
-                            self.assignee_filter = choice.value;
+                            self.apply_assignee_filter(choice.value);
                             return self.reload();
                         }
                         Purpose::StatusFilter => {
@@ -1610,24 +1595,16 @@ impl App {
                             self.settings.project = values[0].trim().to_uppercase();
                             self.settings.prefix = values[1].trim().to_uppercase();
                             self.settings.scope_jql = values[2].trim().into();
-                            self.settings.backlog_statuses = values[3]
-                                .split(',')
-                                .map(str::trim)
-                                .filter(|s| !s.is_empty())
-                                .map(String::from)
-                                .collect();
-                            self.settings.board_entry_status = values[4].trim().into();
-                            self.settings.backlog_entry_status = values[5].trim().into();
                             self.save_settings();
                             return self.reload();
                         }
                         "filters" => {
-                            self.assignee_filter = values[0].trim().into();
+                            self.apply_assignee_filter(values[0].trim().into());
                             self.status_filter = values[1].trim().into();
                             return self.reload();
                         }
                         "assignee_filter" => {
-                            self.assignee_filter = values[0].trim().into();
+                            self.apply_assignee_filter(values[0].trim().into());
                             return self.reload();
                         }
                         "status_filter" => {
@@ -1638,18 +1615,6 @@ impl App {
                             self.settings.scope_jql = values[0].trim().into();
                             self.save_settings();
                             return self.reload();
-                        }
-                        "save" => {
-                            let name = values[0].trim();
-                            if !name.is_empty() {
-                                self.settings.views.push(SavedView {
-                                    name: name.into(),
-                                    jql: self.last_query.clone(),
-                                });
-                                self.save_settings();
-                                self.notice("Saved query added to top views", false)
-                            }
-                            return vec![];
                         }
                         "image" => return self.preview_job(PathBuf::from(values[0].trim())),
                         _ => {
@@ -1712,7 +1677,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nVIEWS\nCtrl+1…9 selects a top view, or click it. Alt+number / F1…F9 also work.\nTraditional terminals may not distinguish Ctrl+number from a digit.\n\nSEARCH\nType digits anywhere: project prefix is inferred, lookup is automatic.\n/ starts text search across the selected scope (not just loaded rows).\nSearch is debounced; Enter submits immediately; Esc restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm pull onto Board / return to Backlog using configured entry statuses\nl links/attachments · O opens Jira · C loads all comments\n\nSCOPE\ng / Ctrl+G configures project/JQL, backlog statuses and entry statuses.\nf filters · click assignee/status at top for quick pickers\nCtrl+S saves the query as a top view. No sprint workflow is assumed.\n\nATTACHMENTS\nFiles open the ticket in Jira. Images already downloaded to the private\nattachment directory preview inline; i previews another local image.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nEvery update names one ticket and needs y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the last full CLI error.\nr refreshes · q quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nTHREE PREDEFINED VIEWS\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Backlog: combined Board + Backlog ticket scope, all assignees.\nClick the tabs, or use Alt+1…3 / F1…F3 as terminal fallbacks.\nNo separate Board view, backlog-status mapping, or sprint settings.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ searches the current view on the server, not just loaded rows.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf filters · A / T or top dropdowns select assignee/status.\nChanging assignee selects Mine, Available, or filtered Backlog.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nr refreshes · q quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -1720,7 +1685,6 @@ mod tests {
     fn app() -> App {
         let mut settings = Settings {
             project: "DEV".into(),
-            backlog_statuses: vec!["Refinement".into()],
             last_view: 2,
             ..Default::default()
         };
@@ -1839,13 +1803,43 @@ mod tests {
         ));
     }
     #[test]
-    fn unconfigured_board_does_not_show_an_all_tickets_list() {
+    fn predefined_views_need_no_status_mapping() {
         let mut a = app();
-        a.settings.backlog_statuses.clear();
-        a.event(key('1', KeyModifiers::CONTROL));
-        assert!(a.items.is_empty());
-        assert!(a.visible.is_empty());
-        assert!(a.dialog.is_some());
+        assert_eq!(a.view_names(), vec!["Mine", "Available", "Backlog"]);
+        for (keycode, view) in [
+            ('1', config::MINE),
+            ('2', config::AVAILABLE),
+            ('3', config::BACKLOG),
+        ] {
+            let jobs = a.event(key(keycode, KeyModifiers::CONTROL));
+            assert_eq!(a.view, view);
+            assert!(a.dialog.is_none());
+            assert!(matches!(jobs.first(), Some(Job::List { .. })));
+        }
+    }
+    #[test]
+    fn text_search_stays_in_its_assignment_view() {
+        let mut a = app();
+        a.view = config::AVAILABLE;
+        a.event(key('/', KeyModifiers::NONE));
+        for c in "title".chars() {
+            a.event(key(c, KeyModifiers::NONE));
+        }
+        a.search_due = Some(Instant::now());
+        let jobs = a.advance();
+        assert_eq!(a.view, config::AVAILABLE);
+        assert!(
+            matches!(&jobs[0],Job::List{query,..} if query.contains("assignee IS EMPTY")&&query.contains("text ~ \"title\""))
+        );
+        a.apply_assignee_filter("@me".into());
+        assert_eq!(a.view, config::MINE);
+        a.apply_assignee_filter("sam".into());
+        assert_eq!(a.view, config::BACKLOG);
+        assert!(a.query().unwrap().contains("assignee = \"sam\""));
+        a.switch_view(config::MINE);
+        assert_eq!(a.remote_search, "title");
+        assert!(a.assignee_filter.is_empty());
+        assert!(a.query().unwrap().contains("currentUser()"));
     }
     #[test]
     fn paste_into_editor_is_not_a_command() {
