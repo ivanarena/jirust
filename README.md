@@ -23,7 +23,7 @@ These are **assignment filters over the same combined backlog-page ticket scope*
 
 There is no separate Board tab, no backlog-only status list, no sprint workflow, and no required status-mapping setup. Both Mine and Available include tickets from either part of the backlog page. Tabs change assignment filtering; text/status filters are retained. Old tab indices/settings are migrated.
 
-Click tabs if preferred. **Alt+1…3 / F1…F3** are fallbacks for terminals that cannot distinguish Ctrl+number from ordinary digits. Additional assignee choices select Mine, Available, or a filtered Backlog rather than silently contradicting the selected view. Custom saved top views are no longer exposed.
+**←/→** switch views when you are not editing text. Click tabs if preferred. **Alt+1…3 / F1…F3** are fallbacks for terminals that cannot distinguish Ctrl+number from ordinary digits. Additional assignee choices select Mine, Available, or a filtered Backlog rather than silently contradicting the selected view. Custom saved top views are no longer exposed.
 
 The existing personal project/JQL configuration is reused. All three views use that scope and exclude completed work. The installed CLIs do not expose a web board's saved filter/configuration automatically: without an explicit saved-filter scope, the fallback is unfinished project work, **not a guaranteed exact replica of an arbitrary web board**. Optional advanced project/prefix/JQL overrides are available through **g / Ctrl+G** or command-line flags; status mappings are unnecessary.
 
@@ -39,7 +39,7 @@ The existing personal project/JQL configuration is reused. All three views use t
 
 Forms use Tab, Ctrl+U to clear, and Ctrl+S to review/save. The Markdown editor supports arrows, Home/End, Delete, Backspace and bracketed paste. Ctrl+S opens a confirmation preview.
 
-Descriptions/comments render styled Markdown converted from Jira ADF. Supported Markdown edits convert back to ADF for acli. This is **not lossless for every Jira editor feature**: mentions, embedded media and unsupported extensions may change when rewriting descriptions. Review before confirming; use Jira web for those edits.
+Descriptions/comments render styled Markdown converted from Jira ADF. Tables use aligned borders, styled headers, per-cell wrapping, Unicode-aware widths, and clickable links. Narrow panes fall back to labeled cells; multiline ADF table cells retain their content. Supported Markdown edits convert back to ADF for acli. This is **not lossless for every Jira editor feature**: mentions, embedded media and unsupported extensions may change when rewriting descriptions. Review before confirming; use Jira web for those edits.
 
 ## Cache-first loading and background sync
 

@@ -442,7 +442,17 @@ pub fn adf_markdown(v: &Value) -> String {
         }
         "media" => "[image/attachment — see Attachments below]".into(),
         "mediaSingle" | "mediaGroup" => body + "\n\n",
-        "tableCell" | "tableHeader" => body.trim().replace('|', "\\|") + " | ",
+        // GFM cells must stay on one source line. ADF paragraphs/hard breaks
+        // otherwise split a table row into ordinary Markdown paragraphs.
+        "tableCell" | "tableHeader" => {
+            body.lines()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("<br>")
+                .replace('|', "\\|")
+                + " | "
+        }
         "tableRow" => format!("| {body}\n"),
         "table" => {
             let rows = v["content"].as_array().cloned().unwrap_or_default();

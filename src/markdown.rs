@@ -1,5 +1,5 @@
 use crate::data::{self, Target, Ticket};
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -139,25 +139,191 @@ fn newline(rows: &mut Vec<DocLine>) {
         rows.push(DocLine::default())
     }
 }
+#[derive(Default)]
+struct MarkdownTable {
+    alignments: Vec<Alignment>,
+    rows: Vec<Vec<Vec<DocLine>>>,
+    row: Vec<Vec<DocLine>>,
+    cell: Vec<DocLine>,
+}
+fn text_width(line: &DocLine) -> usize {
+    line.chunks
+        .iter()
+        .map(|c| unicode_width::UnicodeWidthStr::width(c.text.as_str()))
+        .sum()
+}
+fn table_lines(table: MarkdownTable, width: usize) -> Vec<DocLine> {
+    let count = table.alignments.len();
+    if count == 0 || table.rows.is_empty() {
+        return vec![];
+    }
+    let plain = |text: String| Chunk {
+        text,
+        style: Style::default().fg(Color::DarkGray),
+        target: None,
+    };
+    let budget = width.saturating_sub(3 * count + 1);
+    if budget < 2 * count {
+        // Too narrow for a readable grid: retain every cell with its header.
+        let mut lines = Vec::new();
+        if table.rows.len() == 1 {
+            return wrap(
+                table.rows[0].iter().flatten().cloned().collect(),
+                width.max(1),
+            );
+        }
+        for row in table.rows.iter().skip(1) {
+            for (column, cell) in row.iter().enumerate() {
+                let mut value = table.rows[0]
+                    .get(column)
+                    .and_then(|h| h.first())
+                    .cloned()
+                    .unwrap_or_default();
+                value.chunks.push(plain(": ".into()));
+                let mut cell = cell.clone();
+                if !cell.is_empty() {
+                    value.chunks.append(&mut cell[0].chunks);
+                }
+                lines.push(value);
+                lines.extend(cell.into_iter().skip(1));
+            }
+            lines.push(DocLine::default());
+        }
+        return wrap(lines, width.max(1));
+    }
+    let mut widths = vec![2; count];
+    for row in &table.rows {
+        for (column, cell) in row.iter().take(count).enumerate() {
+            widths[column] =
+                widths[column].max(cell.iter().map(text_width).max().unwrap_or(0).min(budget));
+        }
+    }
+    while widths.iter().sum::<usize>() > budget {
+        let column = widths.iter().enumerate().max_by_key(|(_, w)| *w).unwrap().0;
+        widths[column] -= 1;
+    }
+    let border = |left: char, middle: char, right: char| DocLine {
+        chunks: vec![plain(format!(
+            "{left}{}{right}",
+            widths
+                .iter()
+                .map(|w| "─".repeat(w + 2))
+                .collect::<Vec<_>>()
+                .join(&middle.to_string())
+        ))],
+    };
+    let mut lines = vec![border('┌', '┬', '┐')];
+    for (index, row) in table.rows.iter().enumerate() {
+        let cells: Vec<_> = widths
+            .iter()
+            .enumerate()
+            .map(|(column, w)| wrap(row.get(column).cloned().unwrap_or_default(), *w))
+            .collect();
+        let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
+        for y in 0..height {
+            let mut line = DocLine {
+                chunks: vec![plain("│ ".into())],
+            };
+            for (column, cell) in cells.iter().enumerate() {
+                let content = cell.get(y).cloned().unwrap_or_default();
+                let padding = widths[column].saturating_sub(text_width(&content));
+                let before = match table.alignments[column] {
+                    Alignment::Right => padding,
+                    Alignment::Center => padding / 2,
+                    _ => 0,
+                };
+                line.chunks.push(plain(" ".repeat(before)));
+                line.chunks.extend(content.chunks);
+                line.chunks.push(plain(format!(
+                    "{} │{}",
+                    " ".repeat(padding - before),
+                    if column + 1 < count { " " } else { "" }
+                )));
+            }
+            lines.push(line);
+        }
+        if index + 1 < table.rows.len() {
+            lines.push(border('├', '┼', '┤'));
+        }
+    }
+    lines.push(border('└', '┴', '┘'));
+    lines
+}
+fn html_break(html: &str) -> bool {
+    matches!(
+        html.trim().to_ascii_lowercase().as_str(),
+        "<br>" | "<br/>" | "<br />"
+    )
+}
 pub fn render(md: &str, width: u16, ticket: &Ticket) -> Vec<DocLine> {
     let md = data::safe(md);
     let mut rows = vec![DocLine::default()];
     let mut f = Format::default();
     let mut lists: Vec<Option<u64>> = Vec::new();
+    let mut table: Option<MarkdownTable> = None;
     for event in Parser::new_ext(&md, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES) {
+        match &event {
+            Event::Start(Tag::Table(alignments)) => {
+                newline(&mut rows);
+                table = Some(MarkdownTable {
+                    alignments: alignments.clone(),
+                    ..Default::default()
+                });
+                continue;
+            }
+            Event::End(TagEnd::Table) => {
+                if let Some(table) = table.take() {
+                    rows.extend(table_lines(table, width.max(1) as usize));
+                    rows.push(DocLine::default());
+                }
+                continue;
+            }
+            Event::Start(Tag::TableHead) => {
+                f.bold += 1;
+                continue;
+            }
+            Event::Start(Tag::TableRow) => continue,
+            Event::End(TagEnd::TableHead | TagEnd::TableRow) => {
+                if matches!(event, Event::End(TagEnd::TableHead)) {
+                    f.bold = f.bold.saturating_sub(1);
+                }
+                if let Some(t) = &mut table {
+                    t.rows.push(std::mem::take(&mut t.row));
+                }
+                continue;
+            }
+            Event::Start(Tag::TableCell) => {
+                if let Some(t) = &mut table {
+                    t.cell = vec![DocLine::default()];
+                }
+                continue;
+            }
+            Event::End(TagEnd::TableCell) => {
+                if let Some(t) = &mut table {
+                    t.row.push(std::mem::take(&mut t.cell));
+                }
+                continue;
+            }
+            _ => {}
+        }
+        let rows = if let Some(t) = &mut table {
+            &mut t.cell
+        } else {
+            &mut rows
+        };
         match event {
             Event::Start(Tag::Heading { .. }) => {
-                newline(&mut rows);
+                newline(rows);
                 f.heading = true
             }
             Event::End(TagEnd::Heading(_)) => {
                 f.heading = false;
-                newline(&mut rows);
+                newline(rows);
                 rows.push(DocLine::default())
             }
-            Event::Start(Tag::Paragraph) => newline(&mut rows),
+            Event::Start(Tag::Paragraph) => newline(rows),
             Event::End(TagEnd::Paragraph) => {
-                newline(&mut rows);
+                newline(rows);
                 rows.push(DocLine::default())
             }
             Event::Start(Tag::Strong) => f.bold += 1,
@@ -174,20 +340,20 @@ pub fn render(md: &str, width: u16, ticket: &Ticket) -> Vec<DocLine> {
                 f.link.pop();
             }
             Event::Start(Tag::CodeBlock(_)) => {
-                newline(&mut rows);
+                newline(rows);
                 f.code = true
             }
             Event::End(TagEnd::CodeBlock) => {
                 f.code = false;
-                newline(&mut rows)
+                newline(rows)
             }
             Event::Start(Tag::List(start)) => lists.push(start),
             Event::End(TagEnd::List(_)) => {
                 lists.pop();
-                newline(&mut rows)
+                newline(rows)
             }
             Event::Start(Tag::Item) => {
-                newline(&mut rows);
+                newline(rows);
                 let prefix = if let Some(Some(n)) = lists.last_mut() {
                     let s = format!("{n}. ");
                     *n += 1;
@@ -196,39 +362,35 @@ pub fn render(md: &str, width: u16, ticket: &Ticket) -> Vec<DocLine> {
                     "• ".into()
                 };
                 append(
-                    &mut rows,
+                    rows,
                     &format!("{}{prefix}", "  ".repeat(lists.len().saturating_sub(1))),
                     &f,
                     ticket,
                 )
             }
-            Event::End(TagEnd::Item) => newline(&mut rows),
+            Event::End(TagEnd::Item) => newline(rows),
             Event::Start(Tag::BlockQuote(_)) => {
-                newline(&mut rows);
-                append(&mut rows, "│ ", &f, ticket)
+                newline(rows);
+                append(rows, "│ ", &f, ticket)
             }
-            Event::End(TagEnd::BlockQuote(_)) => newline(&mut rows),
-            Event::Start(Tag::TableRow) => newline(&mut rows),
-            Event::End(TagEnd::TableRow) => newline(&mut rows),
-            Event::End(TagEnd::TableCell) => append(&mut rows, "  │  ", &f, ticket),
-            Event::Text(s) | Event::Html(s) | Event::InlineHtml(s) => {
-                append(&mut rows, &s, &f, ticket)
-            }
+            Event::End(TagEnd::BlockQuote(_)) => newline(rows),
+            Event::InlineHtml(ref s) if html_break(s) => rows.push(DocLine::default()),
+            Event::Text(s) | Event::Html(s) | Event::InlineHtml(s) => append(rows, &s, &f, ticket),
             Event::Code(s) => {
                 let old = f.code;
                 f.code = true;
-                append(&mut rows, &s, &f, ticket);
+                append(rows, &s, &f, ticket);
                 f.code = old
             }
-            Event::SoftBreak => append(&mut rows, " ", &f, ticket),
+            Event::SoftBreak => append(rows, " ", &f, ticket),
             Event::HardBreak => rows.push(DocLine::default()),
             Event::Rule => {
-                newline(&mut rows);
-                append(&mut rows, "────────────────────────", &f, ticket);
-                newline(&mut rows)
+                newline(rows);
+                append(rows, "────────────────────────", &f, ticket);
+                newline(rows)
             }
             Event::TaskListMarker(checked) => {
-                append(&mut rows, if checked { "☑ " } else { "☐ " }, &f, ticket)
+                append(rows, if checked { "☑ " } else { "☐ " }, &f, ticket)
             }
             _ => {}
         }
@@ -519,6 +681,9 @@ pub fn to_adf(md: &str) -> Value {
             ) => {
                 marks.pop();
             }
+            Event::InlineHtml(ref s) if html_break(s) => {
+                append(&mut stack, json!({"type":"hardBreak"}))
+            }
             Event::Text(s) | Event::Html(s) | Event::InlineHtml(s) => {
                 let mut node = json!({"type":"text","text":data::safe(&s)});
                 if !marks.is_empty() {
@@ -564,6 +729,116 @@ mod tests {
                 .as_ref()
                 .is_some_and(|t| t.key.as_deref() == Some("DEV-102"))
         }));
+    }
+    fn plain(lines: &[DocLine]) -> String {
+        lines
+            .iter()
+            .map(|l| l.line().to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    #[test]
+    fn tables_have_aligned_borders_styled_headers_and_clickable_cells() {
+        let t = data::demo_tickets().remove(0);
+        let lines = render(
+            "Before\n\n| Item | Value |\n| :--- | ---: |\n| **Bold** | DEV-102 |\n| 日本語 | [docs](https://example.com) |\n\nAfter",
+            40,
+            &t,
+        );
+        let text = plain(&lines);
+        assert!(text.contains('┌'));
+        assert!(text.contains('┼'));
+        assert!(text.contains('┘'));
+        assert!(text.contains("Before"));
+        assert!(text.contains("After"));
+        let grid: Vec<_> = lines
+            .iter()
+            .filter(|l| l.line().to_string().starts_with(['┌', '│', '├', '└']))
+            .collect();
+        assert!(!grid.is_empty());
+        let width = text_width(grid[0]);
+        assert!(grid.iter().all(|l| text_width(l) == width));
+        assert!(width <= 40);
+        assert!(
+            lines
+                .iter()
+                .flat_map(|l| &l.chunks)
+                .any(|c| c.text.contains("Item") && c.style.add_modifier.contains(Modifier::BOLD))
+        );
+        for (label, key, url) in [
+            ("DEV-102", Some("DEV-102"), None),
+            ("docs", None, Some("https://example.com")),
+        ] {
+            let row = lines
+                .iter()
+                .find(|l| l.chunks.iter().any(|c| c.text.contains(label)))
+                .unwrap();
+            let mut column = 0;
+            for c in &row.chunks {
+                if c.text.contains(label) {
+                    let target = row.target_at(column).unwrap();
+                    assert_eq!(target.key.as_deref(), key);
+                    assert_eq!(target.url.as_deref(), url);
+                    break;
+                }
+                column += unicode_width::UnicodeWidthStr::width(c.text.as_str()) as u16;
+            }
+        }
+    }
+    #[test]
+    fn narrow_tables_wrap_cells_or_use_labels_without_losing_contents() {
+        let t = data::demo_tickets().remove(0);
+        for width in [8, 14, 22, 60] {
+            let lines = render(
+                "| Name | Notes |\n| --- | --- |\n| Alice | First<br>Second |\n| Bob | 日本語日本語 |",
+                width,
+                &t,
+            );
+            assert!(lines.iter().all(|l| text_width(l) <= width as usize));
+            let text = plain(&lines);
+            let columns: Vec<String> = if text.contains('┌') {
+                (1..=2)
+                    .map(|column| {
+                        text.lines()
+                            .filter(|s| s.starts_with('│'))
+                            .filter_map(|s| s.split('│').nth(column))
+                            .collect::<String>()
+                    })
+                    .collect()
+            } else {
+                vec![text.clone()]
+            };
+            let joined: Vec<String> = columns
+                .iter()
+                .map(|s| s.chars().filter(|c| !c.is_whitespace()).collect())
+                .collect();
+            for word in ["Alice", "First", "Second"] {
+                assert!(
+                    joined.iter().any(|s| s.contains(word)),
+                    "missing {word} at width {width}: {text}"
+                );
+            }
+            assert!(!text.contains("<br>"));
+        }
+    }
+    #[test]
+    fn adf_tables_with_multiple_paragraphs_render_as_tables_and_roundtrip_breaks() {
+        let table = to_adf("| Name | Notes |\n| --- | --- |\n| Alice | First<br>Second \\| pipe |");
+        let mut adf = table.clone();
+        adf["content"][0]["content"][1]["content"][1]["content"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type":"paragraph","content":[{"type":"text","text":"Third paragraph"}]}));
+        let md = data::adf_markdown(&adf);
+        let t = data::demo_tickets().remove(0);
+        let rendered = plain(&render(&md, 60, &t));
+        assert!(rendered.contains('┌'));
+        assert!(rendered.contains("First"));
+        assert!(rendered.contains("Second | pipe"));
+        assert!(rendered.contains("Third paragraph"));
+        let roundtrip = to_adf(&md);
+        assert_eq!(roundtrip["content"][0]["type"], "table");
+        assert!(roundtrip.to_string().contains("hardBreak"));
     }
     #[test]
     fn adf_list_and_table_have_block_containers() {

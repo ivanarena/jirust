@@ -950,6 +950,16 @@ impl App {
                 if self.dialog.is_some() {
                     return self.dialog_key(key);
                 }
+                if key.modifiers.is_empty() && self.search_mode != SearchMode::Text {
+                    let next = match key.code {
+                        KeyCode::Left => Some(self.view.saturating_sub(1)),
+                        KeyCode::Right => Some((self.view + 1).min(config::BACKLOG)),
+                        _ => None,
+                    };
+                    if let Some(next) = next {
+                        return self.switch_view(next);
+                    }
+                }
                 if let KeyCode::Char(c @ '1'..='9') = key.code
                     && key
                         .modifiers
@@ -1929,7 +1939,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nTHREE PREDEFINED VIEWS\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Backlog: combined Board + Backlog ticket scope, all assignees.\nClick the tabs, or use Alt+1…3 / F1…F3 as terminal fallbacks.\nNo separate Board view, backlog-status mapping, or sprint settings.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf filters · A / T or top dropdowns select assignee/status.\nChanging assignee selects Mine, Available, or filtered Backlog.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nr refreshes · q quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nTHREE PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Backlog: combined Board + Backlog ticket scope, all assignees.\nClick the tabs, or use Alt+1…3 / F1…F3 as terminal fallbacks.\nNo separate Board view, backlog-status mapping, or sprint settings.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf filters · A / T or top dropdowns select assignee/status.\nChanging assignee selects Mine, Available, or filtered Backlog.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nr refreshes · q quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -2108,6 +2118,53 @@ mod tests {
         assert_eq!(a.remote_search, "Enter");
         assert!(a.assignee_filter.is_empty());
         assert!(a.query().unwrap().contains("currentUser()"));
+    }
+    #[test]
+    fn arrows_switch_views_without_queries_or_stealing_editor_keys() {
+        let mut a = app();
+        for (code, view) in [
+            (KeyCode::Left, config::AVAILABLE),
+            (KeyCode::Left, config::MINE),
+            (KeyCode::Left, config::MINE),
+            (KeyCode::Right, config::AVAILABLE),
+            (KeyCode::Right, config::BACKLOG),
+            (KeyCode::Right, config::BACKLOG),
+        ] {
+            assert!(
+                a.event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+                    .is_empty()
+            );
+            assert_eq!(a.view, view);
+        }
+        a.action_dialog('c');
+        a.event(Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)));
+        assert_eq!(a.view, config::BACKLOG);
+        assert!(matches!(a.dialog, Some(Dialog::Editor { .. })));
+        a.dialog = None;
+        a.event(key('/', KeyModifiers::NONE));
+        a.event(Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)));
+        assert_eq!(a.view, config::BACKLOG);
+        assert!(matches!(a.search_mode, SearchMode::Text));
+    }
+    #[test]
+    fn filters_keep_server_backlog_order_instead_of_sorting_by_key() {
+        let mut a = app();
+        let mut tickets = data::demo_tickets();
+        tickets.reverse();
+        a.workspace.as_mut().unwrap().items = tickets;
+        a.reload();
+        assert_eq!(
+            a.visible
+                .iter()
+                .map(|i| a.items[*i].key.as_str())
+                .collect::<Vec<_>>(),
+            ["DEV-103", "DEV-102", "DEV-101"]
+        );
+        a.apply_assignee_filter("sam".into());
+        a.reload();
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-103");
+        a.switch_view(config::BACKLOG);
+        assert_eq!(a.items[0].key, "DEV-103");
     }
     #[test]
     fn paste_into_editor_is_not_a_command() {
