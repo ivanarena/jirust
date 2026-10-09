@@ -1,10 +1,12 @@
 .PHONY: build test check install
 build:
-	go build -trimpath -ldflags='-s -w' -o bin/jiraui ./cmd/jiraui
+	cargo build --release --locked
+	install -Dm755 target/release/jiraui bin/jiraui
 test:
-	go test ./...
+	cargo test --locked
 check:
-	go vet ./...
-	go test -race ./...
+	cargo fmt --check
+	cargo clippy --locked --all-targets -- -D warnings
+	cargo test --locked
 install: build
 	install -Dm755 bin/jiraui "$(HOME)/.local/bin/jiraui"
