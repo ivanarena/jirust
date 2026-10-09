@@ -188,9 +188,9 @@ pub struct Cache {
     pub directory: Option<PathBuf>,
 }
 #[derive(Serialize, Deserialize)]
-struct Entry {
+struct Entry<T> {
     time: u64,
-    data: Value,
+    data: T,
 }
 impl Cache {
     pub fn new(scope: &str, disabled: bool) -> Result<Self> {
@@ -209,17 +209,14 @@ impl Cache {
     }
     pub fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<(T, u64)> {
         let bytes = fs::read(self.directory.as_ref()?.join(format!("{}.json", hash(key)))).ok()?;
-        let entry: Entry = serde_json::from_slice(&bytes).ok()?;
-        Some((serde_json::from_value(entry.data).ok()?, entry.time))
+        let entry: Entry<T> = serde_json::from_slice(&bytes).ok()?;
+        Some((entry.data, entry.time))
     }
     pub fn put(&self, key: &str, data: &impl Serialize) -> Result<()> {
         let Some(path) = &self.directory else {
             return Ok(());
         };
-        let e = Entry {
-            time: now(),
-            data: serde_json::to_value(data)?,
-        };
+        let e = Entry { time: now(), data };
         private_write(
             &path.join(format!("{}.json", hash(key))),
             &serde_json::to_vec(&e)?,

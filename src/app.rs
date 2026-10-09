@@ -139,6 +139,7 @@ pub struct App {
     pub view: usize,
     pub items: Vec<Ticket>,
     pub workspace: Option<Workspace>,
+    pub items_are_workspace: bool,
     pub syncing: bool,
     pub next_sync: Option<Instant>,
     pub dirty: bool,
@@ -216,6 +217,7 @@ impl App {
             view,
             items: vec![],
             workspace: None,
+            items_are_workspace: false,
             syncing: false,
             next_sync: None,
             dirty: false,
@@ -333,6 +335,7 @@ impl App {
         self.prefetch.clear();
         self.syncing = false;
         self.workspace = None;
+        self.items_are_workspace = false;
         self.dirty_details = self
             .cache
             .get::<HashSet<String>>(&self.dirty_key())
@@ -359,20 +362,33 @@ impl App {
                 mine,
                 complete: false,
                 synced_at: time,
+                ..Default::default()
             });
+        }
+        if let Some(workspace) = &mut self.workspace {
+            workspace.reindex();
         }
         self.apply_local();
         self.sync_workspace()
     }
     fn apply_local(&mut self) {
         if !self.lookup_active {
-            let items = self
-                .workspace
-                .as_ref()
-                .map(|w| w.items.clone())
-                .unwrap_or_default();
-            self.set_items(items)
+            if !self.items_are_workspace {
+                let items = self
+                    .workspace
+                    .as_ref()
+                    .map(|w| w.items.clone())
+                    .unwrap_or_default();
+                self.set_items(items);
+                self.items_are_workspace = true;
+            } else {
+                self.rebuild_visible();
+                self.select_current();
+            }
         }
+        self.local_notice();
+    }
+    fn local_notice(&mut self) {
         self.notice(
             format!(
                 "{} shown · {} locally ready{}",
@@ -447,29 +463,23 @@ impl App {
             self.remote_search.as_str()
         }
         .to_lowercase();
+        let words: Vec<_> = q.split_whitespace().collect();
+        let assignee = self.assignee_filter.to_lowercase();
+        let status = self.status_filter.to_lowercase();
+        let prefix = format!("{}-{q}", self.settings.prefix()).to_lowercase();
         self.visible = self
             .items
             .iter()
             .enumerate()
             .filter_map(|(n, t)| {
                 let matches = if self.search_mode == SearchMode::Number {
-                    t.key
-                        .to_lowercase()
-                        .starts_with(&format!("{}-{}", self.settings.prefix(), q).to_lowercase())
+                    t.key.to_lowercase().starts_with(&prefix)
                 } else {
                     self.lookup_active
                         || self
                             .workspace
                             .as_ref()
-                            .map(|w| {
-                                w.matches(
-                                    t,
-                                    self.view,
-                                    &self.assignee_filter,
-                                    &self.status_filter,
-                                    &q,
-                                )
-                            })
+                            .map(|w| w.matches_words(t, self.view, &assignee, &status, &words))
                             .unwrap_or_else(|| {
                                 q.is_empty() || t.summary().to_lowercase().contains(&q)
                             })
@@ -585,10 +595,7 @@ impl App {
                         jobs.extend(self.detail_job(key, Some(self.lookup_generation), outside));
                     }
                 }
-                SearchMode::Text => {
-                    self.remote_search = self.search.clone();
-                    self.apply_local();
-                }
+                SearchMode::Text => {} // local search never waits for a timer
                 _ => {}
             }
         }
@@ -630,6 +637,7 @@ impl App {
     fn show_lookup(&mut self, ticket: Ticket) {
         let key = ticket.key.clone();
         self.items = vec![ticket];
+        self.items_are_workspace = false;
         self.local_search.clear();
         self.visible = vec![0];
         self.selected = 0;
@@ -651,7 +659,10 @@ impl App {
                 self.syncing = false;
                 self.loading = false;
                 match result {
-                    Ok((workspace, changed)) => {
+                    Ok((mut workspace, changed)) => {
+                        if workspace.index.is_empty() {
+                            workspace.reindex();
+                        }
                         let keys = workspace.keys();
                         self.dirty_details.extend(changed);
                         if let Some(old) = &self.workspace {
@@ -698,6 +709,7 @@ impl App {
                             }
                         }
                         self.workspace = Some(workspace);
+                        self.items_are_workspace = false;
                         self.apply_local();
                         self.refresh_filter_lists();
                         self.doc_dirty = true;
@@ -910,8 +922,57 @@ impl App {
         self.lookup_generation += 1;
         self.local_search = self.search.clone();
         self.selected = 0;
-        self.rebuild_visible();
-        self.search_due = Some(Instant::now() + Duration::from_millis(300));
+        self.loading = false;
+        self.dirty = true;
+        self.search_due = None;
+        if self.search_mode == SearchMode::Text {
+            self.lookup_active = false;
+            self.apply_local();
+            return;
+        }
+        if self.search_mode == SearchMode::Number && self.search.is_empty() {
+            self.lookup_active = false;
+            self.search_mode = SearchMode::None;
+            self.remote_search.clear();
+            self.apply_local();
+            return;
+        }
+        if self.search_mode == SearchMode::Number
+            && let Some(key) = data::number_key(self.settings.prefix(), &self.search)
+        {
+            let cached = self
+                .workspace
+                .as_ref()
+                .and_then(|w| w.ticket(&key))
+                .cloned()
+                .or_else(|| self.details.get(&key).map(|(t, _)| t.clone()));
+            let cached = if cached.is_none()
+                && (self.cache.exists(&full_cache_key(&key))
+                    || self.cache.exists(&format!("detail:{key}")))
+            {
+                self.load_cached_detail(&key);
+                self.details.get(&key).map(|(t, _)| t.clone())
+            } else {
+                cached
+            };
+            if let Some(ticket) = cached {
+                self.show_lookup(ticket);
+                self.selection_due = Some(Instant::now() + Duration::from_millis(80));
+                return;
+            }
+            if !self.items_are_workspace {
+                self.items = self
+                    .workspace
+                    .as_ref()
+                    .map(|w| w.items.clone())
+                    .unwrap_or_default();
+                self.items_are_workspace = true;
+            }
+            self.rebuild_visible();
+            self.select_current();
+            // Only an unknown/out-of-scope number needs a debounced CLI lookup.
+            self.search_due = Some(Instant::now() + Duration::from_millis(300));
+        }
     }
     pub fn event(&mut self, event: Event) -> Vec<Job> {
         match event {
@@ -1085,7 +1146,7 @@ impl App {
                     KeyCode::Char('/') => {
                         self.search_mode = SearchMode::Text;
                         self.search.clear();
-                        self.local_search.clear()
+                        self.search_changed();
                     }
                     KeyCode::Char('g') => self.scope_dialog(),
                     KeyCode::Char('A') => self.assignee_picker(true),
@@ -1235,7 +1296,7 @@ impl App {
                         if contains(self.search_rect, mouse.column, mouse.row) {
                             self.search_mode = SearchMode::Text;
                             self.search.clear();
-                            self.local_search.clear();
+                            self.search_changed();
                             return vec![];
                         }
                         if contains(self.assignee_rect, mouse.column, mouse.row) {
@@ -2173,7 +2234,9 @@ mod tests {
             mine: HashSet::from(["DEV-101".into()]),
             complete: true,
             synced_at: config::now(),
+            ..Default::default()
         });
+        a.workspace.as_mut().unwrap().reindex();
         a.last_query = a.settings.query(config::BACKLOG, "", "", "").unwrap();
         a.apply_local();
         a.prefetch.clear();
@@ -2360,6 +2423,8 @@ mod tests {
         let mut tickets = data::demo_tickets();
         tickets.reverse();
         a.workspace.as_mut().unwrap().items = tickets;
+        a.workspace.as_mut().unwrap().reindex();
+        a.items_are_workspace = false;
         a.reload();
         assert_eq!(
             a.visible
@@ -2646,6 +2711,62 @@ mod tests {
         assert!(choices[0].iter().any(|c| c.value == "taylor"));
         assert!(choices[1].iter().any(|c| c.value == "Blocked"));
         assert!(a.assignee_filter.is_empty());
+    }
+    #[test]
+    fn cached_numbers_show_the_ticket_during_the_input_event_without_a_timer() {
+        let mut a = app();
+        for c in "102".chars() {
+            assert!(a.event(key(c, KeyModifiers::NONE)).is_empty());
+        }
+        assert_eq!(a.detail_key, "DEV-102");
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-102");
+        assert!(a.search_due.is_none());
+        assert!(!a.loading);
+        a.event(key('a', KeyModifiers::NONE));
+        assert!(matches!(
+            a.dialog,
+            Some(Dialog::Picker {
+                purpose: Purpose::Assign,
+                ..
+            })
+        ));
+    }
+    #[test]
+    fn text_search_changes_selection_immediately_and_does_not_clone_the_dataset() {
+        let mut a = app();
+        let address = a.items.as_ptr();
+        a.event(key('/', KeyModifiers::NONE));
+        for c in "confirmation".chars() {
+            assert!(a.event(key(c, KeyModifiers::NONE)).is_empty());
+            assert!(a.search_due.is_none());
+            assert_eq!(a.items.as_ptr(), address);
+        }
+        assert_eq!(a.visible.len(), 1);
+        assert_eq!(a.detail_key, "DEV-103");
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-103");
+        a.event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(a.items.as_ptr(), address);
+    }
+    #[test]
+    fn deleting_all_lookup_digits_restores_the_cached_backlog() {
+        let mut a = app();
+        for c in "102".chars() {
+            a.event(key(c, KeyModifiers::NONE));
+        }
+        for _ in 0..3 {
+            a.event(Event::Key(KeyEvent::new(
+                KeyCode::Backspace,
+                KeyModifiers::NONE,
+            )));
+        }
+        assert!(matches!(a.search_mode, SearchMode::None));
+        assert!(!a.lookup_active);
+        assert_eq!(a.items.len(), 3);
+        assert_eq!(a.visible.len(), 3);
+        assert!(a.search_due.is_none());
     }
     #[test]
     fn assignments_use_identity_not_display_name() {

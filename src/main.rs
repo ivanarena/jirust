@@ -171,7 +171,24 @@ async fn main() -> Result<()> {
     let mut dirty = true;
     let mut last_busy = Instant::now();
     while !app.quit {
-        while let Ok(message) = rx.try_recv() {
+        // Drain queued typing before background work, and paint input bursts
+        // once instead of rebuilding the ticket document for every byte.
+        for _ in 0..32 {
+            if app.quit || !event::poll(Duration::ZERO)? {
+                break;
+            }
+            let jobs = app.event(event::read()?);
+            dispatch(jobs, &backend, &picker, &tx, &app.settings.project);
+            dirty = true;
+        }
+        if app.quit {
+            break;
+        }
+        for _ in 0..8 {
+            if event::poll(Duration::ZERO)? {
+                break;
+            }
+            let Ok(message) = rx.try_recv() else { break };
             let jobs = app.message(message);
             dispatch(jobs, &backend, &picker, &tx, &app.settings.project);
             dirty = true;

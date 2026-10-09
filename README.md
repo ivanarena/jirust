@@ -29,8 +29,8 @@ The existing personal project/JQL configuration is reused. All three views use t
 
 ## Daily controls
 
-- **Digits** automatically look up `<project-prefix>-<number>`, independent of assignment. No Enter required; Enter focuses details. Esc restores the view.
-- **/** instantly filters the locally cached view, including descriptions. Words are matched locally; no server round trip is needed. Enter finishes editing the search; Esc clears. Searching does not switch tabs.
+- **Digits** immediately open a locally known `<project-prefix>-<number>`, independent of assignment. Only unknown/out-of-scope numbers debounce a CLI lookup. No Enter required; Enter focuses details. Esc restores the view.
+- **/** immediately filters a **prebuilt local text index**, including descriptions. No text-search debounce, description conversion, full-dataset cloning, or Jira round trip happens per keystroke. The selected result updates during the key event. Enter finishes editing; Esc clears. Searching does not switch tabs.
 - **Tab**, **↑↓ / j k**, Page Up/Down and the mouse navigate. Internal links open in the client; Esc goes back. External links open the browser.
 - **a** assigns: Me, Unassigned, known people, or another email/account ID. Display names are labels, not assignment identifiers. Cached combined-scope tickets also supply known people/statuses.
 - **t** changes status, **e** edits summary/description/labels, **c** comments, **L** links tickets. Every update names **one ticket** and requires **y** confirmation; **n / Esc** cancels.
@@ -46,6 +46,7 @@ Descriptions/comments render styled Markdown converted from Jira ADF. Tables use
 - Startup immediately restores **one shared workspace snapshot** from the private account-scoped cache. Mine/Available/Backlog and text/status filters run locally; switching tabs never searches Jira.
 - In parallel, acli paginates through **all scoped unfinished tickets**, including descriptions. A separate lightweight current-user key query establishes Mine membership without guessing from display names or parsing authentication tokens.
 - Descriptions are usable as soon as the bulk fetch completes; cached full details are displayed immediately. Full details (comments, attachments, custom fields) warm in the background, prioritizing nearby rows, with at most **two background detail requests**. First-time full details can still require a CLI request, but no longer block the description.
+- Input bursts are handled before background messages and painted together, so background warming cannot continuously preempt typing. Cache JSON is decoded/encoded directly, avoiding intermediate copies. `cargo run --release --example search_bench` benchmarks 1,000 synthetic tickets with 32 ADF paragraphs each (no account data or Jira operations).
 - Every **60 seconds**, a background sync refreshes the shared index/membership and queries recently updated keys with an overlapping time window. Changed full details are revalidated; failed syncs keep the last local dataset. Dirty-detail markers survive restarts.
 - Refreshes preserve the selected ticket/scroll where possible. Older responses cannot overwrite a newer workspace or a completed write. **r** requests an immediate refresh.
 - All full details may persist on disk, but only **64** full tickets stay in memory. The shared summaries/descriptions remain available for instant filtering. No authenticated attachment downloading is introduced.

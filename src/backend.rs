@@ -272,15 +272,15 @@ impl Backend {
         }
         let complete = self.kind != Kind::Jira
             || (items.len() < 100 && mine.len() < 100 && changes.len() < 100);
-        Ok((
-            crate::workspace::Workspace {
-                items,
-                mine: mine.into_iter().map(|t| t.key).collect(),
-                complete,
-                synced_at: crate::config::now(),
-            },
-            changes.into_iter().map(|t| t.key).collect(),
-        ))
+        let mut workspace = crate::workspace::Workspace {
+            items,
+            mine: mine.into_iter().map(|t| t.key).collect(),
+            complete,
+            synced_at: crate::config::now(),
+            ..Default::default()
+        };
+        workspace.reindex();
+        Ok((workspace, changes.into_iter().map(|t| t.key).collect()))
     }
     pub async fn get(&self, key: &str) -> Result<Ticket> {
         data::require_key(key)?;
