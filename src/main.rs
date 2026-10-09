@@ -107,7 +107,9 @@ async fn main() -> Result<()> {
     };
     if opts.check {
         let q = settings.query(2, "", "", "")?;
-        let items = backend.search(&q, limit).await?;
+        let mine = settings.query(jiraui::config::MINE, "", "", "")?;
+        let (workspace, _) = backend.workspace(&q, &mine, None).await?;
+        let items = workspace.items;
         if let Some(t) = items.first() {
             backend.get(&t.key).await?;
         };
@@ -179,7 +181,11 @@ async fn main() -> Result<()> {
             dispatch(jobs, &backend, &picker, &tx, &app.settings.project);
             dirty = true
         }
-        if (app.loading || app.writing || app.awaiting_image)
+        if app.dirty {
+            dirty = true;
+            app.dirty = false;
+        }
+        if (app.loading || app.syncing || app.writing || app.awaiting_image)
             && last_busy.elapsed() > Duration::from_millis(500)
         {
             dirty = true;
@@ -212,18 +218,26 @@ fn dispatch(
         let picker = picker.clone();
         tokio::spawn(async move {
             let message = match job {
-                Job::List {
+                Job::Sync {
                     generation,
-                    query,
-                    limit,
-                } => Message::List {
+                    base,
+                    mine,
+                    changed,
+                } => Message::Synced {
                     generation,
-                    query: query.clone(),
-                    result: backend.search(&query, limit).await,
+                    result: backend.workspace(&base, &mine, changed.as_deref()).await,
                 },
-                Job::Detail { key, lookup } => Message::Detail {
+
+                Job::Detail {
+                    key,
+                    lookup,
+                    revision,
+                    background,
+                } => Message::Detail {
                     key: key.clone(),
                     lookup,
+                    revision,
+                    background,
                     result: backend.get(&key).await,
                 },
                 Job::Comments(key) => Message::Comments {

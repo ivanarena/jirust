@@ -214,6 +214,74 @@ impl Backend {
         };
         collection(&self.run(&args).await?, &["issues", "values"])
     }
+    async fn dataset(&self, query: &str, keys_only: bool) -> Result<Vec<Ticket>> {
+        if self.kind != Kind::Acli {
+            return self
+                .search(
+                    query,
+                    if self.kind == Kind::Demo {
+                        usize::MAX
+                    } else {
+                        100
+                    },
+                )
+                .await;
+        }
+        // acli 1.3.x emits null records for a key-only projection. Summary
+        // keeps its work-item mapper populated; membership still uses keys.
+        let fields = if keys_only {
+            "key,summary"
+        } else {
+            "key,summary,status,assignee,reporter,priority,issuetype,labels,description"
+        };
+        collection(
+            &self
+                .run(&strings(&[
+                    "jira",
+                    "workitem",
+                    "search",
+                    "--jql",
+                    query,
+                    "--fields",
+                    fields,
+                    "--paginate",
+                    "--json",
+                ]))
+                .await?,
+            &["issues", "values"],
+        )
+    }
+    pub async fn workspace(
+        &self,
+        base: &str,
+        mine: &str,
+        changed: Option<&str>,
+    ) -> Result<(crate::workspace::Workspace, Vec<String>)> {
+        let (items, mine, changes) =
+            tokio::try_join!(self.dataset(base, false), self.dataset(mine, true), async {
+                match changed {
+                    Some(q) => self.dataset(q, true).await,
+                    None => Ok(Vec::new()),
+                }
+            })?;
+        if !crate::workspace::valid_items(&items)
+            || !crate::workspace::valid_items(&mine)
+            || !crate::workspace::valid_items(&changes)
+        {
+            bail!("CLI returned invalid ticket keys")
+        }
+        let complete = self.kind != Kind::Jira
+            || (items.len() < 100 && mine.len() < 100 && changes.len() < 100);
+        Ok((
+            crate::workspace::Workspace {
+                items,
+                mine: mine.into_iter().map(|t| t.key).collect(),
+                complete,
+                synced_at: crate::config::now(),
+            },
+            changes.into_iter().map(|t| t.key).collect(),
+        ))
+    }
     pub async fn get(&self, key: &str) -> Result<Ticket> {
         data::require_key(key)?;
         if self.kind == Kind::Demo {
@@ -611,6 +679,18 @@ mod tests {
             ["DEV-102", "DEV-104"]
         );
         assert_eq!(backlog.len(), 5);
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn membership_projection_avoids_acli_key_only_null_records() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("fake-acli");
+        std::fs::write(&cli,"#!/bin/sh\nwhile [ $# -gt 0 ]; do\n if [ \"$1\" = --fields ] && [ \"$2\" = key ]; then printf '[null]'; exit 0; fi\n shift\ndone\nprintf '[{\"key\":\"DEV-1\",\"fields\":{\"summary\":\"Synthetic\"}}]'\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let b = Backend::new("acli", Some(cli)).unwrap();
+        let items = b.dataset("project = DEV", true).await.unwrap();
+        assert_eq!(items[0].key, "DEV-1");
     }
     #[tokio::test]
     async fn demo_search_really_filters() {

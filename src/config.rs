@@ -114,7 +114,7 @@ impl Settings {
         Ok(format!("{} {order}", parts.join(" AND ")))
     }
 }
-fn split_order(query: &str) -> (&str, &str) {
+pub(crate) fn split_order(query: &str) -> (&str, &str) {
     let mut quote = None;
     let mut escaped = false;
     for (n, c) in query.char_indices() {
@@ -224,6 +224,11 @@ impl Cache {
             &path.join(format!("{}.json", hash(key))),
             &serde_json::to_vec(&e)?,
         )
+    }
+    pub fn exists(&self, key: &str) -> bool {
+        self.directory
+            .as_ref()
+            .is_some_and(|dir| dir.join(format!("{}.json", hash(key))).is_file())
     }
     pub fn remove(&self, key: &str) {
         if let Some(dir) = &self.directory {

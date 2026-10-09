@@ -355,6 +355,11 @@ pub fn ticket_document(t: &Ticket, width: u16) -> Vec<DocLine> {
             ))
         }
     }
+    // Bulk search supplies descriptions before full detail requests finish.
+    // Missing comments means "not loaded", not zero comments.
+    if t.fields.get("comment").is_none() {
+        return lines;
+    }
     let comments = t.fields["comment"]["comments"]
         .as_array()
         .cloned()

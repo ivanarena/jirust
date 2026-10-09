@@ -158,7 +158,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         format!(
             " Tickets · {}{} ",
             app.visible.len(),
-            if app.loading { " · loading" } else { "" }
+            if app.loading {
+                " · loading"
+            } else if app.syncing {
+                " · refreshing"
+            } else {
+                ""
+            }
         ),
         app.focus == Focus::Tickets,
     );
@@ -538,15 +544,19 @@ mod tests {
             std::path::PathBuf::new(),
         );
         let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
-        let query = app.query().unwrap();
-        let items = backend.search(&query, 500).await.unwrap();
-        app.message(Message::List {
-            generation: app.generation,
-            query,
-            result: Ok(items),
-        });
+        let Job::Sync {
+            generation,
+            base,
+            mine,
+            changed,
+        } = app.reload().into_iter().next().unwrap()
+        else {
+            panic!()
+        };
+        let result = backend.workspace(&base, &mine, changed.as_deref()).await;
+        app.message(Message::Synced { generation, result });
         terminal.draw(|f| draw(f, &mut app)).unwrap();
-        assert_eq!(app.items.len(), 1);
+        assert_eq!(app.visible.len(), 1);
         assert_eq!(app.assignee_label(), "Me");
         assert_eq!(app.tabs.len(), 3);
         for (view, count, label) in [
@@ -562,21 +572,10 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             }));
             assert!(app.dialog.is_none());
-            let Job::List {
-                generation, query, ..
-            } = jobs.into_iter().next().unwrap()
-            else {
-                panic!()
-            };
-            let items = backend.search(&query, 500).await.unwrap();
-            app.message(Message::List {
-                generation,
-                query,
-                result: Ok(items),
-            });
+            assert!(jobs.is_empty(), "Switching tabs must not contact Jira");
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             assert_eq!(app.view, view);
-            assert_eq!(app.items.len(), count);
+            assert_eq!(app.visible.len(), count);
             assert_eq!(app.assignee_label(), label);
         }
     }

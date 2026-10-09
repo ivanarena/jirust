@@ -3,6 +3,7 @@ use crate::{
     config::{self, Cache, Settings},
     data::{self, Target, Ticket},
     markdown::{self, DocLine},
+    workspace::{Workspace, full_cache_key},
 };
 use anyhow::Result;
 use crossterm::event::{
@@ -11,21 +12,25 @@ use crossterm::event::{
 use ratatui::{layout::Rect, widgets::TableState};
 use ratatui_image::protocol::Protocol;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashSet, VecDeque},
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 pub enum Job {
-    List {
+    Sync {
         generation: u64,
-        query: String,
-        limit: usize,
+        base: String,
+        mine: String,
+        changed: Option<String>,
     },
+
     Detail {
         key: String,
         lookup: Option<u64>,
+        revision: u64,
+        background: bool,
     },
     Comments(String),
     Write(Action),
@@ -37,14 +42,16 @@ pub enum Job {
     },
 }
 pub enum Message {
-    List {
+    Synced {
         generation: u64,
-        query: String,
-        result: Result<Vec<Ticket>>,
+        result: Result<(Workspace, Vec<String>)>,
     },
+
     Detail {
         key: String,
         lookup: Option<u64>,
+        revision: u64,
+        background: bool,
         result: Result<Ticket>,
     },
     Comments {
@@ -126,6 +133,15 @@ pub struct App {
     pub limit: usize,
     pub view: usize,
     pub items: Vec<Ticket>,
+    pub workspace: Option<Workspace>,
+    pub syncing: bool,
+    pub next_sync: Option<Instant>,
+    pub dirty: bool,
+    pub prefetch: VecDeque<String>,
+    pub background: HashSet<(String, u64)>,
+    pub dirty_details: HashSet<String>,
+    pub full_ready: HashSet<String>,
+    pub detail_revisions: BTreeMap<String, u64>,
     pub visible: Vec<usize>,
     pub selected: usize,
     pub table: TableState,
@@ -190,6 +206,15 @@ impl App {
             limit,
             view,
             items: vec![],
+            workspace: None,
+            syncing: false,
+            next_sync: None,
+            dirty: false,
+            prefetch: VecDeque::new(),
+            background: HashSet::new(),
+            dirty_details: HashSet::new(),
+            full_ready: HashSet::new(),
+            detail_revisions: BTreeMap::new(),
             visible: vec![],
             selected: 0,
             table: TableState::default(),
@@ -256,8 +281,14 @@ impl App {
         )
     }
     pub fn reload(&mut self) -> Vec<Job> {
-        match self.query() {
-            Ok(q) => self.load(q),
+        match self.settings.query(config::BACKLOG, "", "", "") {
+            Ok(q) => {
+                if self.last_query == q && self.workspace.is_some() {
+                    self.apply_local();
+                    return vec![];
+                }
+                self.load(q)
+            }
             Err(e) => {
                 self.generation += 1;
                 self.loading = false;
@@ -274,43 +305,109 @@ impl App {
             }
         }
     }
+    fn workspace_key(&self) -> String {
+        format!("workspace-v1:{}", self.last_query)
+    }
+    fn dirty_key(&self) -> String {
+        format!("workspace-dirty:{}", self.last_query)
+    }
+    fn save_dirty(&self) {
+        let _ = self.cache.put(&self.dirty_key(), &self.dirty_details);
+    }
     fn load(&mut self, query: String) -> Vec<Job> {
-        let same_query = query == self.last_query;
         self.generation += 1;
         self.last_query = query.clone();
-        self.loading = true;
-        self.notice("Loading…", false);
-        if let Some((items, _)) = self
+        self.prefetch.clear();
+        self.syncing = false;
+        self.workspace = None;
+        self.dirty_details = self
+            .cache
+            .get::<HashSet<String>>(&self.dirty_key())
+            .map(|(v, _)| v)
+            .unwrap_or_default();
+        if let Some((workspace, _)) = self.cache.get::<Workspace>(&self.workspace_key()) {
+            self.workspace = Some(workspace)
+        } else if let Some((items, time)) = self
             .cache
             .get::<Vec<Ticket>>(&format!("list:{}:{query}", self.limit))
         {
-            self.set_items(items);
-            self.notice("Cached tickets · refreshing", false)
-        } else if !same_query {
-            self.items.clear();
-            self.selected = 0;
-            self.rebuild_visible();
-            if self.history.is_empty() {
-                self.detail_key.clear();
-                self.doc_dirty = true
-            }
+            let mine = self
+                .settings
+                .query(config::MINE, "", "", "")
+                .ok()
+                .and_then(|q| {
+                    self.cache
+                        .get::<Vec<Ticket>>(&format!("list:{}:{q}", self.limit))
+                })
+                .map(|(items, _)| items.into_iter().map(|t| t.key).collect())
+                .unwrap_or_default();
+            self.workspace = Some(Workspace {
+                items,
+                mine,
+                complete: false,
+                synced_at: time,
+            });
         }
-        vec![Job::List {
+        self.apply_local();
+        self.sync_workspace()
+    }
+    fn apply_local(&mut self) {
+        if !self.lookup_active {
+            let items = self
+                .workspace
+                .as_ref()
+                .map(|w| w.items.clone())
+                .unwrap_or_default();
+            self.set_items(items)
+        }
+        self.notice(
+            format!(
+                "{} shown · {} locally ready{}",
+                self.visible.len(),
+                self.workspace.as_ref().map(|w| w.items.len()).unwrap_or(0),
+                if self.workspace.as_ref().is_some_and(|w| !w.complete) {
+                    " · partial scope"
+                } else {
+                    ""
+                }
+            ),
+            false,
+        );
+    }
+    pub fn sync_workspace(&mut self) -> Vec<Job> {
+        if self.syncing {
+            return vec![];
+        }
+        let Ok(mine) = self.settings.query(config::MINE, "", "", "") else {
+            return vec![];
+        };
+        let changed = self.workspace.as_ref().map(|w| {
+            Workspace::recent_query(
+                &self.last_query,
+                config::now().saturating_sub(w.synced_at) / 60 + 2,
+            )
+        });
+        self.syncing = true;
+        self.loading = self.workspace.is_none();
+        self.next_sync = Some(Instant::now() + Duration::from_secs(60));
+        vec![Job::Sync {
             generation: self.generation,
-            query,
-            limit: self.limit,
+            base: self.last_query.clone(),
+            mine,
+            changed,
         }]
     }
     fn set_items(&mut self, items: Vec<Ticket>) {
         let key = self.selected_ticket().map(|t| t.key.clone());
         self.items = items;
-        self.local_search.clear();
         self.rebuild_visible();
         if let Some(key) = key
             && let Some(n) = self.visible.iter().position(|n| self.items[*n].key == key)
         {
             self.selected = n
         }
+        self.table
+            .select((!self.visible.is_empty()).then_some(self.selected));
         if self.focus != Focus::Ticket || self.history.is_empty() {
             self.select_current();
         }
@@ -331,7 +428,12 @@ impl App {
         }
     }
     fn rebuild_visible(&mut self) {
-        let q = self.local_search.to_lowercase();
+        let q = if self.search_mode == SearchMode::Text || self.search_mode == SearchMode::Number {
+            self.local_search.as_str()
+        } else {
+            self.remote_search.as_str()
+        }
+        .to_lowercase();
         self.visible = self
             .items
             .iter()
@@ -342,17 +444,22 @@ impl App {
                         .to_lowercase()
                         .starts_with(&format!("{}-{}", self.settings.prefix(), q).to_lowercase())
                 } else {
-                    q.is_empty()
-                        || format!(
-                            "{} {} {} {} {}",
-                            t.key,
-                            t.summary(),
-                            t.status(),
-                            t.user("assignee").label(),
-                            t.user("reporter").label()
-                        )
-                        .to_lowercase()
-                        .contains(&q)
+                    self.lookup_active
+                        || self
+                            .workspace
+                            .as_ref()
+                            .map(|w| {
+                                w.matches(
+                                    t,
+                                    self.view,
+                                    &self.assignee_filter,
+                                    &self.status_filter,
+                                    &q,
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                q.is_empty() || t.summary().to_lowercase().contains(&q)
+                            })
                 };
                 matches.then_some(n)
             })
@@ -363,51 +470,111 @@ impl App {
     }
     fn select_current(&mut self) {
         if let Some(key) = self.selected_ticket().map(|t| t.key.clone()) {
+            if self.detail_key == key {
+                return;
+            }
+            self.load_cached_detail(&key);
             self.detail_key = key;
             self.history.clear();
             self.scroll = 0;
             self.doc_dirty = true;
-            self.selection_due = Some(Instant::now() + Duration::from_millis(160));
+            self.selection_due = Some(Instant::now() + Duration::from_millis(80));
+            for index in self.visible.iter().skip(self.selected + 1).take(8).rev() {
+                let key = self.items[*index].key.clone();
+                self.prefetch.push_front(key);
+            }
         } else {
             self.detail_key.clear();
             self.doc_dirty = true
         }
     }
-    fn detail_job(&mut self, key: String, lookup: Option<u64>, force: bool) -> Vec<Job> {
-        if self.pending.contains(&key) && lookup.is_none() {
-            return vec![];
-        };
-        if lookup.is_none() && !force {
-            if let Some((_, time)) = self.details.get(&key)
-                && config::now().saturating_sub(*time) < 120
-            {
-                return vec![];
-            }
-            if let Some((ticket, time)) = self.cache.get::<Ticket>(&format!("detail:{key}")) {
-                self.details.insert(key.clone(), (ticket, time));
-                self.doc_dirty = true;
-                if config::now().saturating_sub(time) < 120 {
-                    return vec![];
-                }
+    fn load_cached_detail(&mut self, key: &str) {
+        if !self.details.contains_key(key)
+            && let Some((t, time)) = self
+                .cache
+                .get::<Ticket>(&full_cache_key(key))
+                .or_else(|| self.cache.get(&format!("detail:{key}")))
+        {
+            self.details.insert(key.into(), (t, time));
+            self.trim_details(key);
+            self.doc_dirty = true;
+        }
+    }
+    fn trim_details(&mut self, keep: &str) {
+        while self.details.len() > 64 {
+            let old = self
+                .details
+                .iter()
+                .filter(|(k, _)| k.as_str() != keep && *k != &self.detail_key)
+                .min_by_key(|(_, (_, time))| *time)
+                .map(|(k, _)| k.clone());
+            if let Some(old) = old {
+                self.details.remove(&old);
+            } else {
+                break;
             }
         }
+    }
+    fn detail_job(&mut self, key: String, lookup: Option<u64>, force: bool) -> Vec<Job> {
+        let force = force
+            || self
+                .workspace
+                .as_ref()
+                .is_some_and(|w| !w.items.iter().any(|t| t.key == key));
+        if self.pending.contains(&key) {
+            return vec![];
+        };
+        self.load_cached_detail(&key);
+        if !force
+            && !self.dirty_details.contains(&key)
+            && (self.cache.exists(&full_cache_key(&key))
+                || self.full_ready.contains(&key) && self.details.contains_key(&key))
+        {
+            return vec![];
+        }
+        if !force && self.backend.kind == Kind::Demo && self.details.contains_key(&key) {
+            return vec![];
+        }
         self.pending.insert(key.clone());
-        vec![Job::Detail { key, lookup }]
+        let revision = *self.detail_revisions.get(&key).unwrap_or(&0);
+        vec![Job::Detail {
+            key,
+            lookup,
+            revision,
+            background: false,
+        }]
     }
     pub fn advance(&mut self) -> Vec<Job> {
         let now = Instant::now();
+        let mut jobs = Vec::new();
         if self.search_due.is_some_and(|d| now >= d) {
             self.search_due = None;
+            self.dirty = true;
             match self.search_mode {
                 SearchMode::Number => {
                     if let Some(key) = data::number_key(self.settings.prefix(), &self.search) {
-                        self.loading = true;
-                        return self.detail_job(key, Some(self.lookup_generation), true);
+                        self.load_cached_detail(&key);
+                        let cached = self.details.get(&key).map(|(t, _)| t.clone()).or_else(|| {
+                            self.workspace
+                                .as_ref()
+                                .and_then(|w| w.items.iter().find(|t| t.key == key).cloned())
+                        });
+                        if let Some(ticket) = cached {
+                            self.show_lookup(ticket);
+                            self.loading = false;
+                        } else {
+                            self.loading = true;
+                        }
+                        let outside = self
+                            .workspace
+                            .as_ref()
+                            .is_none_or(|w| !w.items.iter().any(|t| t.key == key));
+                        jobs.extend(self.detail_job(key, Some(self.lookup_generation), outside));
                     }
                 }
                 SearchMode::Text => {
                     self.remote_search = self.search.clone();
-                    return self.reload();
+                    self.apply_local();
                 }
                 _ => {}
             }
@@ -415,49 +582,133 @@ impl App {
         if self.selection_due.is_some_and(|d| now >= d) {
             self.selection_due = None;
             if !self.detail_key.is_empty() {
-                return self.detail_job(self.detail_key.clone(), None, false);
+                jobs.extend(self.detail_job(self.detail_key.clone(), None, false));
             }
         }
-        vec![]
+        if self.next_sync.is_some_and(|d| now >= d) && !self.syncing && !self.writing {
+            jobs.extend(self.sync_workspace());
+        }
+        if !self.syncing && !self.writing {
+            while self.background.len() < 2 {
+                let Some(key) = self.prefetch.pop_front() else {
+                    break;
+                };
+                if self.pending.contains(&key) {
+                    continue;
+                }
+                if !self.dirty_details.contains(&key)
+                    && (self.cache.exists(&full_cache_key(&key)) || self.full_ready.contains(&key))
+                {
+                    continue;
+                }
+                self.pending.insert(key.clone());
+                self.background
+                    .insert((key.clone(), *self.detail_revisions.get(&key).unwrap_or(&0)));
+                jobs.push(Job::Detail {
+                    revision: *self.detail_revisions.get(&key).unwrap_or(&0),
+                    key,
+                    lookup: None,
+                    background: true,
+                });
+            }
+        }
+        jobs
+    }
+    fn show_lookup(&mut self, ticket: Ticket) {
+        let key = ticket.key.clone();
+        self.items = vec![ticket];
+        self.local_search.clear();
+        self.visible = vec![0];
+        self.selected = 0;
+        self.table.select(Some(0));
+        self.detail_key = key.clone();
+        self.scroll = 0;
+        self.doc_dirty = true;
+        self.notice(
+            format!("Found {key} locally · a assigns · Esc restores list"),
+            false,
+        );
     }
     pub fn message(&mut self, message: Message) -> Vec<Job> {
         match message {
-            Message::List {
-                generation,
-                query,
-                result,
-            } => {
+            Message::Synced { generation, result } => {
                 if generation != self.generation {
                     return vec![];
-                };
+                }
+                self.syncing = false;
                 self.loading = false;
                 match result {
-                    Ok(items) => {
-                        let count = items.len();
-                        let _ = self
-                            .cache
-                            .put(&format!("list:{}:{query}", self.limit), &items);
-                        self.set_items(items);
-                        self.notice(
-                            format!(
-                                "{count} tickets{}",
-                                if count == self.limit {
-                                    " · limit reached; narrow the query"
-                                } else {
-                                    ""
+                    Ok((workspace, changed)) => {
+                        let keys = workspace.keys();
+                        self.dirty_details.extend(changed);
+                        if let Some(old) = &self.workspace {
+                            for ticket in &workspace.items {
+                                if old
+                                    .items
+                                    .iter()
+                                    .find(|t| t.key == ticket.key)
+                                    .is_none_or(|t| t.fields != ticket.fields)
+                                {
+                                    self.dirty_details.insert(ticket.key.clone());
                                 }
-                            ),
-                            false,
-                        )
+                            }
+                        }
+                        self.dirty_details.retain(|k| keys.contains(k));
+                        for key in &self.dirty_details {
+                            if self.pending.contains(key) {
+                                *self.detail_revisions.entry(key.clone()).or_default() += 1;
+                                self.pending.remove(key);
+                            }
+                        }
+                        if self.dirty_details.contains(&self.detail_key) {
+                            self.selection_due = Some(Instant::now());
+                        }
+                        self.save_dirty();
+                        let _ = self.cache.put(&self.workspace_key(), &workspace);
+                        self.prefetch = workspace.items.iter().map(|t| t.key.clone()).collect();
+                        for ticket in &workspace.items {
+                            if let Some((cached, _)) = self.details.get_mut(&ticket.key) {
+                                for field in [
+                                    "summary",
+                                    "status",
+                                    "assignee",
+                                    "reporter",
+                                    "priority",
+                                    "issuetype",
+                                    "labels",
+                                    "description",
+                                ] {
+                                    if let Some(value) = ticket.fields.get(field) {
+                                        cached.fields[field] = value.clone();
+                                    }
+                                }
+                            }
+                        }
+                        self.workspace = Some(workspace);
+                        self.apply_local();
+                        self.doc_dirty = true;
                     }
-                    Err(e) => self.notice(e.to_string(), true),
+                    Err(e) => {
+                        self.prefetch.clear();
+                        self.notice(
+                            format!("Background sync failed; cached tickets retained: {e}"),
+                            true,
+                        );
+                        self.next_sync = Some(Instant::now() + Duration::from_secs(120));
+                    }
                 }
             }
             Message::Detail {
                 key,
                 lookup,
+                revision,
+                background,
                 result,
             } => {
+                self.background.remove(&(key.clone(), revision));
+                if revision != *self.detail_revisions.get(&key).unwrap_or(&0) {
+                    return vec![];
+                }
                 self.pending.remove(&key);
                 if lookup.is_some() && lookup != Some(self.lookup_generation) {
                     return vec![];
@@ -467,7 +718,13 @@ impl App {
                 };
                 match result {
                     Ok(ticket) => {
-                        let _ = self.cache.put(&format!("detail:{key}"), &ticket);
+                        let _ = self.cache.put(&full_cache_key(&key), &ticket);
+                        self.dirty_details.remove(&key);
+                        self.full_ready.insert(key.clone());
+                        self.save_dirty();
+                        if let Some(workspace) = &mut self.workspace {
+                            workspace.update(&ticket)
+                        }
                         self.details
                             .insert(key.clone(), (ticket.clone(), config::now()));
                         for item in &mut self.items {
@@ -480,43 +737,28 @@ impl App {
                                     "priority",
                                     "issuetype",
                                     "labels",
+                                    "description",
                                 ] {
                                     item.fields[field] = ticket.fields[field].clone();
                                 }
                             }
                         }
-                        while self.details.len() > 64 {
-                            let old = self
-                                .details
-                                .iter()
-                                .filter(|(k, _)| *k != &key && *k != &self.detail_key)
-                                .min_by_key(|(_, (_, time))| *time)
-                                .map(|(k, _)| k.clone());
-                            if let Some(old) = old {
-                                self.details.remove(&old);
-                            } else {
-                                break;
-                            }
-                        }
+                        self.trim_details(&key);
                         if lookup.is_some() {
-                            self.items = vec![ticket];
-                            self.local_search.clear();
-                            self.visible = vec![0];
-                            self.selected = 0;
-                            self.table.select(Some(0));
-                            self.detail_key = key.clone();
-                            self.scroll = 0;
-                            self.notice(
-                                format!("Found {key} · a assigns · Esc restores the list"),
-                                false,
-                            )
+                            self.show_lookup(ticket);
+                        }
+                        if !self.lookup_active {
+                            self.rebuild_visible();
                         }
                         if self.detail_key == key {
                             self.doc_dirty = true
                         }
                     }
                     Err(e) => {
-                        if lookup.is_some() || self.detail_key == key {
+                        if background {
+                            self.prefetch.clear();
+                        }
+                        if !background && (lookup.is_some() || self.detail_key == key) {
                             self.notice(format!("{key}: {e}"), true)
                         }
                     }
@@ -530,7 +772,7 @@ impl App {
                             ticket.fields["comment"] =
                                 serde_json::json!({"total":comments.len(),"comments":comments});
                             *time = config::now();
-                            let _ = self.cache.put(&format!("detail:{key}"), ticket);
+                            let _ = self.cache.put(&full_cache_key(&key), ticket);
                             self.doc_dirty = true
                         }
                         self.notice("All comments loaded", false)
@@ -543,16 +785,20 @@ impl App {
                 self.details.remove(&action.key);
                 self.doc_dirty = true;
                 self.cache.remove(&format!("detail:{}", action.key));
+                self.cache.remove(&full_cache_key(&action.key));
+                *self.detail_revisions.entry(action.key.clone()).or_default() += 1;
+                self.pending.remove(&action.key);
+                self.full_ready.remove(&action.key);
+                self.dirty_details.insert(action.key.clone());
+                self.save_dirty();
+                self.generation += 1;
+                self.syncing = false;
                 self.cache
                     .remove(&format!("list:{}:{}", self.limit, self.last_query));
                 match result {
                     Ok(()) => {
                         self.notice(format!("Updated {}", action.key), false);
-                        let mut jobs = if self.lookup_active {
-                            vec![]
-                        } else {
-                            self.reload()
-                        };
+                        let mut jobs = self.sync_workspace();
                         jobs.extend(self.detail_job(
                             action.key,
                             if self.lookup_active && self.history.is_empty() {
@@ -607,6 +853,14 @@ impl App {
         if self.doc_dirty || self.doc_width != width {
             self.document = if let Some((ticket, _)) = self.details.get(&self.detail_key) {
                 markdown::ticket_document(ticket, width)
+            } else if let Some(ticket) = self.items.iter().find(|t| t.key == self.detail_key) {
+                let mut lines = markdown::render(
+                    "*Description ready locally · full details syncing in background*",
+                    width,
+                    ticket,
+                );
+                lines.extend(markdown::ticket_document(ticket, width));
+                lines
             } else {
                 vec![]
             };
@@ -639,9 +893,7 @@ impl App {
         self.reload()
     }
     fn search_changed(&mut self) {
-        self.generation += 1;
         self.lookup_generation += 1;
-        self.loading = false;
         self.local_search = self.search.clone();
         self.selected = 0;
         self.rebuild_visible();
@@ -827,11 +1079,7 @@ impl App {
                     }
                     KeyCode::Char('r') => {
                         let key = self.detail_key.clone();
-                        let mut jobs = if self.lookup_active {
-                            vec![]
-                        } else {
-                            self.reload()
-                        };
+                        let mut jobs = self.sync_workspace();
                         if !key.is_empty() {
                             jobs.extend(self.detail_job(key, None, true))
                         };
@@ -1057,6 +1305,9 @@ impl App {
         vec![]
     }
     fn cached_backlog(&self) -> Vec<Ticket> {
+        if let Some(workspace) = &self.workspace {
+            return workspace.items.clone();
+        }
         self.settings
             .query(config::BACKLOG, "", "", "")
             .ok()
@@ -1550,6 +1801,7 @@ impl App {
                                 .unwrap_or_default();
                             if choice.value == "description"
                                 && !self.details.contains_key(&ticket_key)
+                                && !t.is_some_and(|t| t.fields.get("description").is_some())
                             {
                                 self.notice(
                                     "Load full details before editing the description",
@@ -1677,7 +1929,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nTHREE PREDEFINED VIEWS\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Backlog: combined Board + Backlog ticket scope, all assignees.\nClick the tabs, or use Alt+1…3 / F1…F3 as terminal fallbacks.\nNo separate Board view, backlog-status mapping, or sprint settings.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ searches the current view on the server, not just loaded rows.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf filters · A / T or top dropdowns select assignee/status.\nChanging assignee selects Mine, Available, or filtered Backlog.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nr refreshes · q quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nTHREE PREDEFINED VIEWS\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Backlog: combined Board + Backlog ticket scope, all assignees.\nClick the tabs, or use Alt+1…3 / F1…F3 as terminal fallbacks.\nNo separate Board view, backlog-status mapping, or sprint settings.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf filters · A / T or top dropdowns select assignee/status.\nChanging assignee selects Mine, Available, or filtered Backlog.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nr refreshes · q quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -1698,7 +1950,15 @@ mod tests {
             500,
             PathBuf::new(),
         );
-        a.set_items(data::demo_tickets());
+        a.workspace = Some(Workspace {
+            items: data::demo_tickets(),
+            mine: HashSet::from(["DEV-101".into()]),
+            complete: true,
+            synced_at: config::now(),
+        });
+        a.last_query = a.settings.query(config::BACKLOG, "", "", "").unwrap();
+        a.apply_local();
+        a.prefetch.clear();
         for t in data::demo_tickets() {
             a.details.insert(t.key.clone(), (t, config::now()));
         }
@@ -1719,7 +1979,8 @@ mod tests {
         assert_eq!(a.search, "101");
         a.search_due = Some(Instant::now());
         let jobs = a.advance();
-        assert!(matches!(&jobs[0],Job::Detail{key,..} if key=="DEV-101"));
+        assert!(jobs.is_empty());
+        assert_eq!(a.detail_key, "DEV-101");
         a.event(key('2', KeyModifiers::CONTROL));
         assert_eq!(a.view, 1);
         assert_eq!(a.search_mode as u8, SearchMode::None as u8);
@@ -1754,6 +2015,8 @@ mod tests {
         a.message(Message::Detail {
             key: "DEV-101".into(),
             lookup: Some(6),
+            revision: 0,
+            background: false,
             result: Ok(data::demo_tickets().remove(0)),
         });
         assert_eq!(a.items.len(), 3);
@@ -1776,10 +2039,13 @@ mod tests {
             KeyCode::Enter,
             KeyModifiers::NONE,
         )));
-        assert!(matches!(&jobs[0],Job::Detail{key,..} if key=="DEV-101"));
+        assert!(jobs.is_empty());
+        assert_eq!(a.detail_key, "DEV-101");
         a.message(Message::Detail {
             key: "DEV-101".into(),
             lookup: Some(a.lookup_generation),
+            revision: 0,
+            background: false,
             result: Ok(data::demo_tickets().remove(0)),
         });
         assert!(a.focus == Focus::Ticket);
@@ -1791,6 +2057,8 @@ mod tests {
         a.message(Message::Detail {
             key: "DEV-101".into(),
             lookup: Some(a.lookup_generation),
+            revision: 0,
+            background: false,
             result: Ok(data::demo_tickets().remove(0)),
         });
         a.event(key('a', KeyModifiers::NONE));
@@ -1814,7 +2082,7 @@ mod tests {
             let jobs = a.event(key(keycode, KeyModifiers::CONTROL));
             assert_eq!(a.view, view);
             assert!(a.dialog.is_none());
-            assert!(matches!(jobs.first(), Some(Job::List { .. })));
+            assert!(jobs.is_empty());
         }
     }
     #[test]
@@ -1822,22 +2090,22 @@ mod tests {
         let mut a = app();
         a.view = config::AVAILABLE;
         a.event(key('/', KeyModifiers::NONE));
-        for c in "title".chars() {
+        for c in "Enter".chars() {
             a.event(key(c, KeyModifiers::NONE));
         }
         a.search_due = Some(Instant::now());
         let jobs = a.advance();
         assert_eq!(a.view, config::AVAILABLE);
-        assert!(
-            matches!(&jobs[0],Job::List{query,..} if query.contains("assignee IS EMPTY")&&query.contains("text ~ \"title\""))
-        );
+        assert!(jobs.is_empty());
+        assert_eq!(a.visible.len(), 1);
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-102");
         a.apply_assignee_filter("@me".into());
         assert_eq!(a.view, config::MINE);
         a.apply_assignee_filter("sam".into());
         assert_eq!(a.view, config::BACKLOG);
         assert!(a.query().unwrap().contains("assignee = \"sam\""));
         a.switch_view(config::MINE);
-        assert_eq!(a.remote_search, "title");
+        assert_eq!(a.remote_search, "Enter");
         assert!(a.assignee_filter.is_empty());
         assert!(a.query().unwrap().contains("currentUser()"));
     }
@@ -1851,6 +2119,134 @@ mod tests {
         };
         assert_eq!(value, "body\nyes; $(no-shell)");
         assert!(!a.writing);
+    }
+    #[test]
+    fn startup_reads_one_shared_snapshot_before_any_network_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        a.cache = Cache {
+            directory: Some(dir.path().into()),
+        };
+        a.cache
+            .put(&a.workspace_key(), a.workspace.as_ref().unwrap())
+            .unwrap();
+        let mut next = App::new(
+            a.backend.clone(),
+            a.cache.clone(),
+            a.settings.clone(),
+            true,
+            500,
+            PathBuf::new(),
+        );
+        let jobs = next.reload();
+        assert_eq!(next.items.len(), 3);
+        assert_eq!(next.visible.len(), 3);
+        assert!(matches!(jobs.first(), Some(Job::Sync { .. })));
+        next.switch_view(config::MINE);
+        assert_eq!(next.visible.len(), 1);
+        next.switch_view(config::AVAILABLE);
+        assert_eq!(next.visible.len(), 1);
+        assert!(next.reload().is_empty());
+        assert!(next.syncing);
+    }
+    #[test]
+    fn failed_background_sync_does_not_clear_the_local_dataset() {
+        let mut a = app();
+        a.syncing = true;
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Err(anyhow::anyhow!("offline")),
+        });
+        assert_eq!(a.items.len(), 3);
+        assert_eq!(a.visible.len(), 3);
+        assert!(!a.syncing);
+        a.switch_view(config::AVAILABLE);
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-102");
+    }
+    #[test]
+    fn refresh_preserves_selection_and_scroll_and_ignores_old_epochs() {
+        let mut a = app();
+        a.focus = Focus::Ticket;
+        a.scroll = 3;
+        let key = a.detail_key.clone();
+        let w = a.workspace.clone().unwrap();
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((w, vec![])),
+        });
+        assert_eq!(a.detail_key, key);
+        assert_eq!(a.scroll, 3);
+        a.generation += 1;
+        a.message(Message::Synced {
+            generation: a.generation - 1,
+            result: Ok((Workspace::default(), vec![])),
+        });
+        assert_eq!(a.items.len(), 3);
+    }
+    #[test]
+    fn background_prefetch_is_bounded_and_stale_details_cannot_undo_writes() {
+        let mut a = app();
+        a.selection_due = None;
+        a.prefetch = a.items.iter().map(|t| t.key.clone()).collect();
+        let jobs = a.advance();
+        assert_eq!(a.background.len(), 2);
+        assert_eq!(
+            jobs.iter()
+                .filter(|j| matches!(
+                    j,
+                    Job::Detail {
+                        background: true,
+                        ..
+                    }
+                ))
+                .count(),
+            2
+        );
+        assert!(a.advance().is_empty());
+        let mut old = data::demo_tickets().remove(0);
+        old.fields["summary"] = serde_json::json!("old reply");
+        a.detail_revisions.insert("DEV-101".into(), 1);
+        a.message(Message::Detail {
+            key: "DEV-101".into(),
+            lookup: None,
+            revision: 0,
+            background: true,
+            result: Ok(old),
+        });
+        assert_ne!(a.details["DEV-101"].0.summary(), "old reply");
+        assert_eq!(a.background.len(), 1);
+    }
+    #[test]
+    fn descriptions_are_usable_without_waiting_for_full_detail_cli_calls() {
+        let mut a = app();
+        a.details.clear();
+        a.document(80);
+        assert!(
+            a.document
+                .iter()
+                .flat_map(|l| &l.chunks)
+                .any(|c| c.text.contains("Bold"))
+        );
+        assert!(
+            a.document
+                .iter()
+                .flat_map(|l| &l.chunks)
+                .any(|c| c.text.contains("ready locally"))
+        );
+    }
+    #[test]
+    fn periodic_sync_uses_updated_overlap_and_is_not_duplicated_by_tabs() {
+        let mut a = app();
+        a.selection_due = None;
+        a.next_sync = Some(Instant::now());
+        let jobs = a.advance();
+        assert!(
+            matches!(jobs.first(),Some(Job::Sync{changed:Some(q),..}) if q.contains("updated >= -"))
+        );
+        for view in [config::MINE, config::AVAILABLE, config::BACKLOG] {
+            assert!(a.switch_view(view).is_empty())
+        }
+        assert!(a.sync_workspace().is_empty());
     }
     #[test]
     fn assignments_use_identity_not_display_name() {
