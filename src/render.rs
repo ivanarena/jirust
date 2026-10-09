@@ -332,7 +332,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
     let width = area.width.saturating_sub(8).min(100);
-    let height = area.height.saturating_sub(6).max(10);
+    let margin = if matches!(app.dialog, Some(Dialog::Filters { .. })) {
+        2
+    } else {
+        6
+    };
+    let height = area.height.saturating_sub(margin).max(10);
     let rect = centered(area, width, height);
     app.popup_rect = rect;
     frame.render_widget(Clear, rect);
@@ -340,6 +345,93 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
     match dialog {
+        Dialog::Filters {
+            choices,
+            selected,
+            active,
+        } => {
+            let b = block(" Filters · lists from the shared ticket cache ", true);
+            let inner = b.inner(rect);
+            frame.render_widget(b, rect);
+            let columns =
+                Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(
+                    Rect::new(
+                        inner.x,
+                        inner.y,
+                        inner.width,
+                        inner.height.saturating_sub(3),
+                    ),
+                );
+            for column in 0..2 {
+                let b = block(
+                    format!(
+                        " {} · {}/{} ",
+                        if column == 0 { "Assignees" } else { "Statuses" },
+                        selected[column] + 1,
+                        choices[column].len()
+                    ),
+                    *active == column,
+                );
+                let list = b.inner(columns[column]);
+                frame.render_widget(b, columns[column]);
+                app.filter_list_rects[column] = list;
+                let start =
+                    selected[column].saturating_sub((list.height as usize).saturating_sub(1));
+                app.filter_list_starts[column] = start;
+                for (y, (index, choice)) in choices[column]
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(list.height as usize)
+                    .enumerate()
+                {
+                    let chosen = index == selected[column];
+                    let style = if chosen && *active == column {
+                        selection()
+                    } else if chosen {
+                        Style::default()
+                            .fg(Color::Blue)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    frame.render_widget(
+                        Paragraph::new(format!(
+                            "{} {}",
+                            if chosen { "›" } else { " " },
+                            data::line(&choice.label)
+                        ))
+                        .style(style),
+                        Rect::new(list.x, list.y + y as u16, list.width, 1),
+                    );
+                }
+            }
+            let y = inner.bottom().saturating_sub(2);
+            app.filter_apply_rect = Rect::new(inner.x, y, 16.min(inner.width), 1);
+            app.filter_reset_rect = Rect::new(
+                inner.x + 16.min(inner.width),
+                y,
+                22.min(inner.width.saturating_sub(16)),
+                1,
+            );
+            frame.render_widget(
+                Paragraph::new(" Apply [Enter] ").style(
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                app.filter_apply_rect,
+            );
+            frame.render_widget(
+                Paragraph::new(" Reset both [Ctrl+R] ").style(Style::default().fg(Color::Blue)),
+                app.filter_reset_rect,
+            );
+            frame.render_widget(
+                Paragraph::new(" ↑↓ / click pick · Tab / ←→ column · Esc cancels")
+                    .style(Style::default().fg(Color::DarkGray)),
+                Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+            );
+        }
         Dialog::Picker {
             title,
             choices,
@@ -577,6 +669,77 @@ mod tests {
             assert_eq!(app.view, view);
             assert_eq!(app.visible.len(), count);
             assert_eq!(app.assignee_label(), label);
+        }
+    }
+    #[test]
+    fn filter_lists_are_visible_on_small_terminals_and_mouse_selection_is_staged() {
+        use crossterm::event::{
+            Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        };
+        for (width, height) in [(60, 16), (82, 26), (120, 28)] {
+            let mut app = App::new(
+                Backend::new("demo", None).unwrap(),
+                Cache { directory: None },
+                Settings {
+                    project: "DEV".into(),
+                    last_view: 2,
+                    ..Default::default()
+                },
+                true,
+                500,
+                std::path::PathBuf::new(),
+            );
+            app.items = data::demo_tickets();
+            app.visible = (0..3).collect();
+            app.event(Event::Key(KeyEvent::new(
+                KeyCode::Char('f'),
+                KeyModifiers::NONE,
+            )));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let screen = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            for label in [
+                "Assignees",
+                "Statuses",
+                "Alex",
+                "Sam",
+                "In Progress",
+                "Refinement",
+                "To Do",
+            ] {
+                assert!(
+                    screen.contains(label),
+                    "missing {label} at {width}x{height}"
+                );
+            }
+            for (column, index) in [(0, 4), (1, 3)] {
+                let rect = app.filter_list_rects[column];
+                app.event(Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: rect.x + 1,
+                    row: rect.y + index,
+                    modifiers: KeyModifiers::NONE,
+                }));
+            }
+            assert!(app.assignee_filter.is_empty());
+            assert!(app.status_filter.is_empty());
+            let apply = app.filter_apply_rect;
+            let jobs = app.event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: apply.x + 1,
+                row: apply.y,
+                modifiers: KeyModifiers::NONE,
+            }));
+            assert!(jobs.iter().all(|j| !matches!(j, crate::app::Job::Write(_))));
+            assert_eq!(app.assignee_filter, "sam");
+            assert_eq!(app.status_filter, "To Do");
+            assert!(app.dialog.is_none());
         }
     }
     #[test]

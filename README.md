@@ -34,7 +34,7 @@ The existing personal project/JQL configuration is reused. All three views use t
 - **Tab**, **↑↓ / j k**, Page Up/Down and the mouse navigate. Internal links open in the client; Esc goes back. External links open the browser.
 - **a** assigns: Me, Unassigned, known people, or another email/account ID. Display names are labels, not assignment identifiers. Cached combined-scope tickets also supply known people/statuses.
 - **t** changes status, **e** edits summary/description/labels, **c** comments, **L** links tickets. Every update names **one ticket** and requires **y** confirmation; **n / Esc** cancels.
-- **f**, **A / T**, or top dropdowns adjust assignee/status filters.
+- **f / Filters** shows **both assignee and status lists immediately**, populated from the whole shared cache and preselected to your current filters. ↑↓ / mouse choose; Tab or ←→ switches columns; Enter / Apply applies both; Esc cancels. Ctrl+R / Reset stages All assignees + Any status (Enter applies). Lists refresh as background data arrives, preserving your selections. **A / T** or top dropdowns select a single filter; Other allows manual values. These are known people/statuses from cached tickets, not a complete Jira directory/workflow listing.
 - **l** lists links/attachments, **O** opens Jira, **C** loads all comments, **r** refreshes, **!** shows the last full CLI error, **?** shows help, **q** quits.
 
 Forms use Tab, Ctrl+U to clear, and Ctrl+S to review/save. The Markdown editor supports arrows, Home/End, Delete, Backspace and bracketed paste. Ctrl+S opens a confirmation preview.

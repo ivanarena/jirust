@@ -96,6 +96,11 @@ pub enum Purpose {
     StatusFilter,
 }
 pub enum Dialog {
+    Filters {
+        choices: [Vec<Choice>; 2],
+        selected: [usize; 2],
+        active: usize,
+    },
     Picker {
         title: String,
         choices: Vec<Choice>,
@@ -185,6 +190,10 @@ pub struct App {
     pub ticket_rect: Rect,
     pub popup_rect: Rect,
     pub picker_start: usize,
+    pub filter_list_rects: [Rect; 2],
+    pub filter_list_starts: [usize; 2],
+    pub filter_apply_rect: Rect,
+    pub filter_reset_rect: Rect,
     pub row_height: u16,
     pub footer_buttons: Vec<(Rect, char)>,
 }
@@ -258,6 +267,10 @@ impl App {
             ticket_rect: Rect::default(),
             popup_rect: Rect::default(),
             picker_start: 0,
+            filter_list_rects: [Rect::default(); 2],
+            filter_list_starts: [0; 2],
+            filter_apply_rect: Rect::default(),
+            filter_reset_rect: Rect::default(),
             row_height: 1,
             footer_buttons: vec![],
         }
@@ -686,6 +699,7 @@ impl App {
                         }
                         self.workspace = Some(workspace);
                         self.apply_local();
+                        self.refresh_filter_lists();
                         self.doc_dirty = true;
                     }
                     Err(e) => {
@@ -1142,6 +1156,54 @@ impl App {
             Event::Mouse(_) if self.preview.is_some() || self.awaiting_image => {}
             Event::Mouse(mouse) => {
                 if self.dialog.is_some() {
+                    if let Some(Dialog::Filters {
+                        choices,
+                        selected,
+                        active,
+                    }) = &mut self.dialog
+                    {
+                        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                            if contains(self.filter_apply_rect, mouse.column, mouse.row) {
+                                return self
+                                    .dialog_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                            }
+                            if contains(self.filter_reset_rect, mouse.column, mouse.row) {
+                                return self.dialog_key(KeyEvent::new(
+                                    KeyCode::Char('r'),
+                                    KeyModifiers::CONTROL,
+                                ));
+                            }
+                        }
+                        for column in 0..2 {
+                            let rect = self.filter_list_rects[column];
+                            if contains(rect, mouse.column, mouse.row) {
+                                *active = column;
+                                match mouse.kind {
+                                    MouseEventKind::Down(MouseButton::Left) => {
+                                        let index = self.filter_list_starts[column]
+                                            + (mouse.row - rect.y) as usize;
+                                        if index < choices[column].len() {
+                                            selected[column] = index;
+                                        }
+                                    }
+                                    MouseEventKind::ScrollUp => {
+                                        return self.dialog_key(KeyEvent::new(
+                                            KeyCode::Up,
+                                            KeyModifiers::NONE,
+                                        ));
+                                    }
+                                    MouseEventKind::ScrollDown => {
+                                        return self.dialog_key(KeyEvent::new(
+                                            KeyCode::Down,
+                                            KeyModifiers::NONE,
+                                        ));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        return vec![];
+                    }
                     if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                         && let Some(Dialog::Picker {
                             choices, selected, ..
@@ -1366,12 +1428,25 @@ impl App {
             _ => &self.assignee_filter,
         }
     }
-    pub fn assignee_label(&self) -> &str {
+    pub fn assignee_label(&self) -> String {
         match self.assignee_filter_value() {
-            "@me" => "Me",
-            "unassigned" => "Unassigned",
-            "" => "All",
-            v => v,
+            "@me" => "Me".into(),
+            "unassigned" => "Unassigned".into(),
+            "" => "All".into(),
+            value => self
+                .workspace
+                .as_ref()
+                .map(|w| w.items.as_slice())
+                .unwrap_or(&self.items)
+                .iter()
+                .map(|t| t.user("assignee"))
+                .find(|u| {
+                    [&u.id, &u.email, &u.login]
+                        .iter()
+                        .any(|s| s.eq_ignore_ascii_case(value))
+                })
+                .map(|u| u.label())
+                .unwrap_or_else(|| value.into()),
         }
     }
     fn apply_assignee_filter(&mut self, value: String) {
@@ -1400,19 +1475,57 @@ impl App {
         self.save_settings();
     }
     fn filters_dialog(&mut self) {
-        self.dialog = Some(Dialog::Form {
-            title: "Filters · blank clears · @me / unassigned / email or ID".into(),
-            labels: vec!["Assignee".into(), "Status".into()],
-            values: vec![
-                self.assignee_filter_value().into(),
-                self.status_filter.clone(),
-            ],
-            selected: 0,
-            kind: "filters".into(),
-            key: String::new(),
-        })
+        let choices = [self.assignee_choices(true), self.status_choices(true).0];
+        let selected = [
+            choices[0]
+                .iter()
+                .position(|c| c.value == self.assignee_filter_value())
+                .unwrap_or(0),
+            choices[1]
+                .iter()
+                .position(|c| c.value == self.status_filter)
+                .unwrap_or(0),
+        ];
+        self.dialog = Some(Dialog::Filters {
+            choices,
+            selected,
+            active: 0,
+        });
     }
-    fn assignee_picker(&mut self, filter: bool) {
+    fn refresh_filter_lists(&mut self) {
+        let Some(Dialog::Filters {
+            choices,
+            selected,
+            active,
+        }) = &self.dialog
+        else {
+            return;
+        };
+        let staged = [
+            choices[0][selected[0]].clone(),
+            choices[1][selected[1]].clone(),
+        ];
+        let active = *active;
+        let mut choices = [self.assignee_choices(true), self.status_choices(true).0];
+        let mut selected = [0; 2];
+        for column in 0..2 {
+            selected[column] = if let Some(index) = choices[column]
+                .iter()
+                .position(|c| c.value == staged[column].value)
+            {
+                index
+            } else {
+                choices[column].push(staged[column].clone());
+                choices[column].len() - 1
+            };
+        }
+        self.dialog = Some(Dialog::Filters {
+            choices,
+            selected,
+            active,
+        });
+    }
+    fn assignee_choices(&self, filter: bool) -> Vec<Choice> {
         let mut choices = vec![
             Choice {
                 label: "Me".into(),
@@ -1452,11 +1565,28 @@ impl App {
                 })
             }
         }
+        let fixed = if filter { 3 } else { 2 };
+        if filter
+            && !choices
+                .iter()
+                .any(|c| c.value == self.assignee_filter_value())
+        {
+            choices.push(Choice {
+                label: format!("{} (current)", self.assignee_filter_value()),
+                value: self.assignee_filter_value().into(),
+                target: None,
+            });
+        }
+        choices[fixed..].sort_by_cached_key(|c| c.label.to_lowercase());
         choices.push(Choice {
             label: "Other email / account ID…".into(),
             value: "__other".into(),
             target: None,
         });
+        choices
+    }
+    fn assignee_picker(&mut self, filter: bool) {
+        let choices = self.assignee_choices(filter);
         let selected = if filter {
             choices
                 .iter()
@@ -1486,7 +1616,7 @@ impl App {
             key,
         })
     }
-    fn status_picker(&mut self, filter: bool) {
+    fn status_choices(&self, filter: bool) -> (Vec<Choice>, bool) {
         let mut statuses = if !filter {
             self.active_ticket()
                 .map(|t| {
@@ -1519,11 +1649,30 @@ impl App {
             value: s,
             target: None,
         }));
+        if filter && !choices.iter().any(|c| c.value == self.status_filter) {
+            choices.push(Choice {
+                label: format!("{} (current)", self.status_filter),
+                value: self.status_filter.clone(),
+                target: None,
+            });
+        }
         choices.push(Choice {
             label: "Other status…".into(),
             value: "__other".into(),
             target: None,
         });
+        (choices, suggestions)
+    }
+    fn status_picker(&mut self, filter: bool) {
+        let (choices, suggestions) = self.status_choices(filter);
+        let selected = if filter {
+            choices
+                .iter()
+                .position(|c| c.value == self.status_filter)
+                .unwrap_or(0)
+        } else {
+            0
+        };
         let key = self
             .active_ticket()
             .map(|t| t.key.clone())
@@ -1538,7 +1687,7 @@ impl App {
             }
             .into(),
             choices,
-            selected: 0,
+            selected,
             purpose: if filter {
                 Purpose::StatusFilter
             } else {
@@ -1715,6 +1864,65 @@ impl App {
             return vec![];
         }
         match &mut dialog {
+            Dialog::Filters {
+                choices,
+                selected,
+                active,
+            } => match key.code {
+                KeyCode::Tab | KeyCode::BackTab => *active = 1 - *active,
+                KeyCode::Left => *active = 0,
+                KeyCode::Right => *active = 1,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    selected[*active] = selected[*active].saturating_sub(1)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    selected[*active] =
+                        (selected[*active] + 1).min(choices[*active].len().saturating_sub(1))
+                }
+                KeyCode::PageUp => selected[*active] = selected[*active].saturating_sub(10),
+                KeyCode::PageDown => {
+                    selected[*active] =
+                        (selected[*active] + 10).min(choices[*active].len().saturating_sub(1))
+                }
+                KeyCode::Home => selected[*active] = 0,
+                KeyCode::End => selected[*active] = choices[*active].len().saturating_sub(1),
+                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    *selected = [0; 2]
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    selected[*active] = 0
+                }
+                KeyCode::Enter | KeyCode::Char('s')
+                    if key.code == KeyCode::Enter
+                        || key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    let values: Vec<String> = (0..2)
+                        .map(|i| choices[i][selected[i]].value.clone())
+                        .collect();
+                    if values.iter().any(|v| v == "__other") {
+                        let selected = if values[0] == "__other" { 0 } else { 1 };
+                        self.dialog = Some(Dialog::Form {
+                            title: "Custom filters · blank clears".into(),
+                            labels: vec![
+                                "Assignee · @me / unassigned / email or account ID".into(),
+                                "Status · exact name".into(),
+                            ],
+                            values: values
+                                .into_iter()
+                                .map(|v| if v == "__other" { String::new() } else { v })
+                                .collect(),
+                            selected,
+                            kind: "filters".into(),
+                            key: String::new(),
+                        });
+                        return vec![];
+                    }
+                    self.apply_assignee_filter(values[0].clone());
+                    self.status_filter = values[1].clone();
+                    return self.reload();
+                }
+                _ => {}
+            },
             Dialog::Confirm(action) => {
                 if key.code == KeyCode::Char('y') {
                     if self.read_only {
@@ -1939,7 +2147,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nTHREE PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Backlog: combined Board + Backlog ticket scope, all assignees.\nClick the tabs, or use Alt+1…3 / F1…F3 as terminal fallbacks.\nNo separate Board view, backlog-status mapping, or sprint settings.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf filters · A / T or top dropdowns select assignee/status.\nChanging assignee selects Mine, Available, or filtered Backlog.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nr refreshes · q quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nTHREE PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Backlog: combined Board + Backlog ticket scope, all assignees.\nClick the tabs, or use Alt+1…3 / F1…F3 as terminal fallbacks.\nNo separate Board view, backlog-status mapping, or sprint settings.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows assignee + status lists from the shared cache.\n↑↓ / click picks · Tab / ←→ switches columns · Enter applies both.\nCtrl+R resets both (Enter applies); Esc cancels.\nA / T or top dropdowns select a single assignee/status.\nChanging assignee selects Mine, Available, or filtered Backlog.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nr refreshes · q quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -2304,6 +2512,140 @@ mod tests {
             assert!(a.switch_view(view).is_empty())
         }
         assert!(a.sync_workspace().is_empty());
+    }
+    #[test]
+    fn filters_show_cached_lists_even_when_current_view_has_no_matches() {
+        let mut a = app();
+        a.switch_view(config::MINE);
+        a.status_filter = "Refinement".into();
+        a.reload();
+        assert!(a.visible.is_empty());
+        a.event(key('f', KeyModifiers::NONE));
+        let Some(Dialog::Filters {
+            choices, selected, ..
+        }) = &a.dialog
+        else {
+            panic!()
+        };
+        assert!(choices[0].iter().any(|c| c.value == "alex"));
+        assert!(choices[0].iter().any(|c| c.value == "sam"));
+        for status in ["In Progress", "Refinement", "To Do"] {
+            assert!(choices[1].iter().any(|c| c.value == status));
+        }
+        assert_eq!(choices[0][selected[0]].value, "@me");
+        assert_eq!(choices[1][selected[1]].value, "Refinement");
+    }
+    #[test]
+    fn list_filters_stage_both_columns_and_apply_without_jira_writes() {
+        let mut a = app();
+        a.read_only = true;
+        a.filters_dialog();
+        for _ in 0..4 {
+            a.event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        }
+        a.event(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        for _ in 0..3 {
+            a.event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        }
+        assert!(a.assignee_filter.is_empty());
+        assert!(a.status_filter.is_empty());
+        let jobs = a.event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(jobs.is_empty());
+        assert!(!a.writing);
+        assert_eq!(a.assignee_filter, "sam");
+        assert_eq!(a.status_filter, "To Do");
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-103");
+        assert!(a.dialog.is_none());
+    }
+    #[test]
+    fn filter_cancel_and_reset_do_not_apply_until_confirmed() {
+        let mut a = app();
+        a.switch_view(config::MINE);
+        a.status_filter = "In Progress".into();
+        a.reload();
+        a.filters_dialog();
+        a.event(key('r', KeyModifiers::CONTROL));
+        a.event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert_eq!(a.view, config::MINE);
+        assert_eq!(a.status_filter, "In Progress");
+        a.filters_dialog();
+        a.event(key('r', KeyModifiers::CONTROL));
+        a.event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(a.view, config::BACKLOG);
+        assert!(a.status_filter.is_empty());
+        assert_eq!(a.visible.len(), 3);
+    }
+    #[test]
+    fn filter_lists_preserve_custom_values_and_status_dropdown_preselects() {
+        let mut a = app();
+        a.assignee_filter = "other@example.com".into();
+        a.status_filter = "Blocked".into();
+        a.filters_dialog();
+        let Some(Dialog::Filters {
+            choices, selected, ..
+        }) = &a.dialog
+        else {
+            panic!()
+        };
+        assert_eq!(choices[0][selected[0]].value, "other@example.com");
+        assert_eq!(choices[1][selected[1]].value, "Blocked");
+        a.status_picker(true);
+        let Some(Dialog::Picker {
+            choices, selected, ..
+        }) = &a.dialog
+        else {
+            panic!()
+        };
+        assert_eq!(choices[*selected].value, "Blocked");
+        a.filters_dialog();
+        if let Some(Dialog::Filters {
+            choices, selected, ..
+        }) = &mut a.dialog
+        {
+            selected[0] = choices[0].len() - 1;
+        }
+        a.event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        let Some(Dialog::Form { values, kind, .. }) = &a.dialog else {
+            panic!()
+        };
+        assert_eq!(kind, "filters");
+        assert_eq!(values[0], "");
+        assert_eq!(values[1], "Blocked");
+    }
+    #[test]
+    fn open_filter_lists_update_after_sync_without_losing_staged_selections() {
+        let mut a = app();
+        a.filters_dialog();
+        a.event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        let mut workspace = a.workspace.clone().unwrap();
+        let mut new = data::demo_tickets().remove(2);
+        new.key = "DEV-104".into();
+        new.fields["assignee"] = serde_json::json!({"displayName":"Taylor","accountId":"taylor"});
+        new.fields["status"] = serde_json::json!({"name":"Blocked"});
+        workspace.items.push(new);
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((workspace, vec![])),
+        });
+        let Some(Dialog::Filters {
+            choices, selected, ..
+        }) = &a.dialog
+        else {
+            panic!()
+        };
+        assert_eq!(choices[0][selected[0]].value, "@me");
+        assert!(choices[0].iter().any(|c| c.value == "taylor"));
+        assert!(choices[1].iter().any(|c| c.value == "Blocked"));
+        assert!(a.assignee_filter.is_empty());
     }
     #[test]
     fn assignments_use_identity_not_display_name() {
