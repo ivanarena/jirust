@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, parser::ValueSource};
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -12,7 +12,10 @@ use jiraui::{
     app::{App, Job, Message},
     backend::{Backend, Kind},
     config::{Cache, Settings},
-    data, render,
+    data,
+    environment::Environment,
+    movement::{self, Destination},
+    render,
 };
 use ratatui::{Terminal, backend::CrosstermBackend, layout::Size};
 use ratatui_image::{
@@ -20,7 +23,7 @@ use ratatui_image::{
     picker::{Picker, ProtocolType},
 };
 use std::{
-    io::{self, IsTerminal},
+    io::{self, BufRead, IsTerminal, Read, Write},
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -33,16 +36,21 @@ use tokio::{process::Command, sync::mpsc};
     about = "A simple two-pane Jira TUI backed by your existing CLI"
 )]
 struct Options {
-    #[arg(long, default_value = "auto")]
+    #[arg(long, default_value = "auto", global = true)]
     backend: String,
-    #[arg(long)]
+    /// Private local dotenv file (default: ./.env, then user config directory).
+    #[arg(long, global = true)]
+    env_file: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+    #[arg(long, global = true)]
     demo: bool,
     #[arg(long)]
     cli_bin: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, global = true)]
     read_only: bool,
-    /// Opt in to Jira Software APIs using existing acli credentials.
-    #[arg(long,value_parser=clap::value_parser!(u64).range(1..))]
+    /// Opt in to Jira Software APIs with a local token or existing acli credentials.
+    #[arg(long, global = true,value_parser=clap::value_parser!(u64).range(1..))]
     board: Option<u64>,
     #[arg(long)]
     no_cache: bool,
@@ -61,6 +69,99 @@ struct Options {
     #[arg(long,default_value="auto",value_parser=["auto","kitty","halfblocks"])]
     image_protocol: String,
 }
+#[derive(Subcommand)]
+enum CliCommand {
+    /// Move exactly one ticket between verified Board and Backlog membership.
+    Move {
+        key: String,
+        #[arg(long, value_enum)]
+        to: Destination,
+        /// Explicitly confirm without an interactive prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Authenticate acli using the local URL, email and API token via stdin.
+    Auth,
+}
+impl Options {
+    fn apply_environment(&mut self, env: &Environment, matches: &clap::ArgMatches) -> Result<()> {
+        let supplied = |name: &str| matches.value_source(name) == Some(ValueSource::CommandLine);
+        if self.demo || self.backend == "demo" {
+            return Ok(());
+        }
+        if !supplied("backend")
+            && let Some(v) = env.value("JIRA_BACKEND")
+        {
+            self.backend = v;
+        }
+        if !["auto", "acli", "jira", "demo"].contains(&self.backend.as_str()) {
+            bail!("Invalid JIRA_BACKEND");
+        }
+        if self.backend == "demo" {
+            return Ok(());
+        }
+        // A new explicit project must not inherit another project's env board,
+        // prefix or JQL. Explicit flags remain the highest precedence.
+        let project_changed = supplied("project")
+            && !env.value("JIRA_PROJECT").is_some_and(|p| {
+                self.project
+                    .as_ref()
+                    .is_some_and(|v| v.eq_ignore_ascii_case(&p))
+            });
+        for (name, key, field) in [
+            ("project", "JIRA_PROJECT", &mut self.project),
+            ("prefix", "JIRA_PREFIX", &mut self.prefix),
+            ("jql", "JIRA_JQL", &mut self.jql),
+        ] {
+            if !supplied(name)
+                && !(project_changed && name != "project")
+                && let Some(v) = env.value(key)
+            {
+                *field = Some(v);
+            }
+        }
+        if !supplied("cli_bin")
+            && let Some(v) = env.value("JIRA_CLI_BIN")
+        {
+            self.cli_bin = Some(v.into());
+        }
+        if !supplied("board")
+            && !project_changed
+            && let Some(v) = env.number("JIRA_BOARD_ID", u64::MAX)?
+        {
+            self.board = Some(v);
+        }
+        if !supplied("limit")
+            && let Some(v) = env.number("JIRA_LIMIT", 2000)?
+        {
+            self.limit = v as u16;
+        }
+        if !supplied("read_only")
+            && let Some(v) = env.boolean("JIRA_READ_ONLY")?
+        {
+            self.read_only = v;
+        }
+        if !supplied("no_cache")
+            && let Some(v) = env.boolean("JIRA_NO_CACHE")?
+        {
+            self.no_cache = v;
+        }
+        if !supplied("attachment_dir")
+            && let Some(v) = env.value("JIRA_ATTACHMENT_DIR")
+        {
+            self.attachment_dir = Some(v.into());
+        }
+        if !supplied("image_protocol")
+            && let Some(v) = env.value("JIRA_IMAGE_PROTOCOL")
+        {
+            self.image_protocol = v;
+        }
+        if !["auto", "kitty", "halfblocks"].contains(&self.image_protocol.as_str()) {
+            bail!("Invalid JIRA_IMAGE_PROTOCOL");
+        }
+        Ok(())
+    }
+}
 struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
@@ -76,8 +177,32 @@ impl Drop for TerminalGuard {
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
-    let opts = Options::parse();
+    let matches = Options::command().get_matches();
+    let mut opts = Options::from_arg_matches(&matches)?;
+    let env = if opts.demo || opts.backend == "demo" {
+        Environment::default()
+    } else {
+        Environment::load(opts.env_file.as_deref())?
+    };
+    opts.apply_environment(&env, &matches)?;
+    if opts.check && opts.command.is_some() {
+        bail!("--check cannot be combined with a command; no operation performed");
+    }
     let backend = Backend::new(if opts.demo { "demo" } else { &opts.backend }, opts.cli_bin)?;
+    let credentials = if backend.kind == Kind::Demo {
+        None
+    } else {
+        env.credentials()?
+    };
+    if matches!(opts.command, Some(CliCommand::Auth)) {
+        let credentials = credentials.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Set JIRA_URL, JIRA_EMAIL and JIRA_API_TOKEN before authentication")
+        })?;
+        backend.authenticate(credentials).await?;
+        println!("acli authenticated from local environment; token not displayed");
+        return Ok(());
+    }
+    backend.configure_environment(credentials)?;
     let mut settings = if backend.kind == Kind::Demo {
         Settings {
             project: "DEV".into(),
@@ -120,6 +245,40 @@ async fn main() -> Result<()> {
     } else {
         usize::from(opts.limit)
     };
+    if let Some(CliCommand::Move { key, to, yes }) = opts.command {
+        let Some(action) = movement::prepare(&backend, &settings, &key, to, opts.read_only).await?
+        else {
+            println!("{key} is already in {}; nothing changed", to.name());
+            return Ok(());
+        };
+        println!(
+            "Move {key}: {} → {} (Board {}). No workflow transition requested; Jira sets destination Rank.",
+            to.source(),
+            to.name(),
+            action.value
+        );
+        let confirmed = if yes {
+            true
+        } else {
+            if !io::stdin().is_terminal() {
+                bail!(
+                    "Interactive confirmation required; use --yes only to explicitly confirm this single-ticket move"
+                );
+            }
+            print!("Type {key} to confirm (anything else cancels): ");
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().lock().take(128).read_line(&mut input)?;
+            input.trim() == key
+        };
+        if !confirmed {
+            println!("Cancelled; no ticket changed");
+            return Ok(());
+        }
+        movement::execute(&backend, &settings, &action, to, opts.read_only, confirmed).await?;
+        println!("{key} is now in {}; refresh the TUI with F5", to.name());
+        return Ok(());
+    }
     if opts.check {
         let q = settings.query(jiraui::config::BACKLOG, "", "", "")?;
         let mine = settings.query(jiraui::config::MINE, "", "", "")?;
@@ -364,5 +523,70 @@ fn dispatch(
             };
             let _ = tx.send(message);
         });
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn options(args: &[&str]) -> (Options, clap::ArgMatches) {
+        let matches = Options::command().try_get_matches_from(args).unwrap();
+        (Options::from_arg_matches(&matches).unwrap(), matches)
+    }
+    fn env(text: &str) -> Environment {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(text.as_bytes()).unwrap();
+        Environment::load(Some(f.path())).unwrap()
+    }
+    #[test]
+    fn move_parses_one_key_destination_and_global_read_only() {
+        let (o, _) = options(&[
+            "jiraui",
+            "move",
+            "DEV-102",
+            "--to",
+            "board",
+            "--yes",
+            "--read-only",
+            "--board",
+            "17",
+        ]);
+        assert!(o.read_only);
+        assert_eq!(o.board, Some(17));
+        assert!(
+            matches!(o.command,Some(CliCommand::Move{ref key,to:Destination::Board,yes:true}) if key=="DEV-102")
+        );
+        assert!(
+            Options::command()
+                .try_get_matches_from(["jiraui", "move", "DEV-102", "DEV-103", "--to", "board"])
+                .is_err()
+        );
+    }
+    #[test]
+    fn explicit_flags_override_env_and_new_project_does_not_inherit_old_scope() {
+        let e = env(
+            "JIRA_PROJECT=DEV\nJIRA_PREFIX=OLD\nJIRA_BOARD_ID=17\nJIRA_JQL='project = DEV'\nJIRA_READ_ONLY=false\n",
+        );
+        let (mut o, m) = options(&["jiraui", "--project", "NEW", "--read-only"]);
+        o.apply_environment(&e, &m).unwrap();
+        assert!(o.read_only);
+        assert_eq!(o.project.as_deref(), Some("NEW"));
+        assert!(o.prefix.is_none());
+        assert!(o.board.is_none());
+        assert!(o.jql.is_none());
+        let (mut o, m) = options(&["jiraui"]);
+        o.apply_environment(&e, &m).unwrap();
+        assert_eq!(o.project.as_deref(), Some("DEV"));
+        assert_eq!(o.board, Some(17));
+    }
+    #[test]
+    fn demo_does_not_apply_company_env_and_read_only_env_cannot_be_bypassed_by_yes() {
+        let e = env("JIRA_PROJECT=OTHER\nJIRA_BOARD_ID=17\nJIRA_READ_ONLY=true\n");
+        let (mut o, m) = options(&["jiraui", "--demo"]);
+        o.apply_environment(&e, &m).unwrap();
+        assert!(o.project.is_none());
+        assert!(o.board.is_none());
+        let (mut o, m) = options(&["jiraui", "move", "DEV-102", "--to", "board", "--yes"]);
+        o.apply_environment(&e, &m).unwrap();
+        assert!(o.read_only);
     }
 }

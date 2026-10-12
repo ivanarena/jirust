@@ -28,6 +28,15 @@ Both Mine and Available include tickets from both sections, Board first, preserv
 
 Enable the approved API bridge with **`--board <id>`** (remembered in settings). It reads Jira's actual manual Board issue-list and completed-item cutoff, then hydrates Board/Backlog tickets in bulk with `ORDER BY Rank ASC`, isolating caches by board/account/scope. The public `/board/issue` endpoint alone is not membership: it also returns historical project work. Read-only web-board metadata supplies membership for team-managed `ISSUE_LIST` boards; unfamiliar strategies, truncated responses, or schema changes fail closed. The configured cutoff is evaluated against Jira's server-side `updated` field, not the local clock. Existing project/JQL restrictions still apply. Epics/higher-level containers and Sub-Tasks stay excluded; numeric lookup can open them. API permissions or pagination failures keep the previous snapshot, never substitute status grouping. Without `--board`, the legacy unfinished CLI scope remains available in Backlog; Board membership/moves are unavailable. Web quick filters and completion-visibility policies are not assumed: verify live parity before calling any board an exact web-page replica.
 
+## Move a ticket from the command line
+
+```sh
+jiraui move DEV-123 --to board
+jiraui move DEV-123 --to backlog
+```
+
+The configured `JIRA_BOARD_ID` / remembered Board is used; override with `--board <id>`. Each command fetches verified live membership, checks that **one validated key** is in the current scope, names the source/destination and Board ID, and asks you to type the key to confirm. `--yes` is explicit single-ticket confirmation for noninteractive use. Membership/scope are revalidated after confirmation; already-at-destination is a no-op. No workflow transition is requested; Jira determines Rank. `--read-only` (including `JIRA_READ_ONLY=true`) blocks movement at entry and confirmation. Never retry uncertain writes automatically. In the TUI, **m** reviews the equivalent move.
+
 ## Daily controls
 
 - **Digits** immediately open a locally known `<project-prefix>-<number>`, independent of assignment. Only unknown/out-of-scope numbers debounce a CLI lookup. No Enter required; Enter focuses details. Esc restores the view.
@@ -83,10 +92,26 @@ The acli workspace fetch uses **pagination**, not the old 500-row limit, so all 
 
 Settings live at `$XDG_CONFIG_HOME/jiraui/config.json`; ticket caches at `$XDG_CACHE_HOME/jiraui/rust/<account-hash>/`. CLI-reported identity/site determines the cache namespace; unknown identity disables persistent ticket caching. Files are 0600, directories 0700. `--no-cache` disables ticket persistence; demo saves neither settings nor caches. Restart after switching CLI account/site.
 
-### Board API authentication
+### Local environment configuration
 
-Linux `secret-tool` must be installed. The bridge reads only the active acli Jira profile's keyring entry; credentials are kept in memory. Both site OAuth and global OAuth are supported; global OAuth uses its own keyring entry and requires matching active global/Jira identities. Some OAuth grants work for ordinary issues but lack Jira Software API scopes (HTTP 401 `scope does not match`). A successful browser/global OAuth login alone does not grant missing scopes. The app cannot grant these permissions. Use a supported acli API-token login **without scopes**, supplying the token privately through stdin: `acli jira auth login --site mysite.atlassian.net --email you@example.com --token`. Do not put tokens in command arguments, this repository, or chat. Restart afterward, then validate read-only with `jiraui --board 17 --read-only --check`. Live membership/parity must be verified for each board after authorization succeeds.
+Copy the synthetic `.env.example` to **`$XDG_CONFIG_HOME/jiraui/.env`** (normally `~/.config/jiraui/.env`) and set permissions to **0600**. Put the company HTTPS URL, email, API token without scopes, project/prefix, Board ID and optional settings there. The real file is plaintext: protect it and never commit/share it. The tracked template contains no credentials. Alternatively use a private `./.env`, or select an explicit file with `--env-file /path/to/.env`.
 
-CLI jobs use argument arrays, asynchronous execution, concurrency limits, and timeouts. Rendering is event-driven; network updates happen independently of local navigation. Untrusted terminal controls are stripped and browser links must be ordinary HTTP(S) URLs. Only the explicit `--board` API bridge uses direct HTTP and current acli keyring credentials. It pins HTTPS origins, disables redirects, bounds concurrency/response sizes, and never logs/persists tokens. Account/site/auth changes require restart. OAuth login and refresh remain delegated to acli.
+Precedence: explicit CLI flags → exported environment variables → selected dotenv file → saved/default settings. File discovery: explicit `--env-file`, otherwise `./.env`, otherwise the user config dotenv file. File values are not exported into the process or child environments. Demo ignores local/company configuration entirely. A new explicit project does not inherit another project's environment Board/prefix/JQL.
 
-`src/backend.rs` delegates ordinary operations to CLIs; `src/board_api.rs` implements the opt-in membership bridge; `src/workspace.rs` provides the shared cached dataset/local filtering; `src/config.rs` defines scope and the four views; `src/app.rs` handles state/actions; `src/render.rs` provides the two-pane layout; `src/markdown.rs`, `src/data.rs`, and `src/input.rs` handle rich text, sanitization, and editing. The previous Go prototype remains in Git history.
+```sh
+jiraui auth                            # token piped privately to acli stdin
+jiraui --read-only --no-cache --check  # validate without changing tickets
+jiraui                                # start the TUI
+```
+
+`JIRA_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN` must be supplied together. Only HTTPS Atlassian Cloud origins are accepted; credential-bearing URLs, redirects and arbitrary hosts are rejected. The Board bridge uses the local token directly; ordinary operations still use acli authentication. `auth` explicitly updates acli's own keyring/profile from that token; startup never silently switches CLI accounts. A mismatched site/email fails closed and asks you to authenticate explicitly. Restart after editing authentication variables.
+
+Other variables: `JIRA_PROJECT`, `JIRA_PREFIX`, `JIRA_BOARD_ID`, `JIRA_JQL`, `JIRA_BACKEND`, `JIRA_CLI_BIN`, `JIRA_READ_ONLY`, `JIRA_NO_CACHE`, `JIRA_LIMIT`, `JIRA_ATTACHMENT_DIR`, `JIRA_IMAGE_PROTOCOL`. Boolean values are `true` / `false` (also `1` / `0`). Tokens are never placed in command arguments, debug output, settings JSON or caches; dotenv/auth errors redact values. Do not combine `--check` with a subcommand.
+
+### Board API authentication without a local token
+
+Linux `secret-tool` must be installed when using the keyring fallback. The bridge reads only the active acli Jira profile's keyring entry; credentials are kept in memory. Both site OAuth and global OAuth are supported; global OAuth uses its own keyring entry and requires matching active global/Jira identities. Some OAuth grants work for ordinary issues but lack Jira Software API scopes (HTTP 401 `scope does not match`). A successful browser/global OAuth login alone does not grant missing scopes. The app cannot grant these permissions. Use a supported acli API-token login **without scopes**, supplying the token privately through stdin: `acli jira auth login --site mysite.atlassian.net --email you@example.com --token`. Do not put tokens in command arguments, this repository, or chat. Restart afterward, then validate read-only with `jiraui --board 17 --read-only --check`. Live membership/parity must be verified for each board after authorization succeeds.
+
+CLI jobs use argument arrays, asynchronous execution, concurrency limits, and timeouts. Rendering is event-driven; network updates happen independently of local navigation. Untrusted terminal controls are stripped and browser links must be ordinary HTTP(S) URLs. Only the explicit `--board` API bridge uses direct HTTP with a private environment token or current acli keyring credentials. It pins HTTPS origins, disables redirects, bounds concurrency/response sizes, and never logs tokens or writes them into app settings/caches. The only user-approved plaintext credential storage is the private local environment file. Account/site/auth changes require restart. OAuth login and refresh remain delegated to acli.
+
+`src/environment.rs` loads private local configuration; `src/movement.rs` validates confirmed CLI moves; `src/backend.rs` delegates ordinary operations to CLIs; `src/board_api.rs` implements the opt-in membership bridge; `src/workspace.rs` provides the shared cached dataset/local filtering; `src/config.rs` defines scope and the four views; `src/app.rs` handles state/actions; `src/render.rs` provides the two-pane layout; `src/markdown.rs`, `src/data.rs`, and `src/input.rs` handle rich text, sanitization, and editing. The previous Go prototype remains in Git history.

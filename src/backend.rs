@@ -52,6 +52,7 @@ pub struct Backend {
     slots: Semaphore,
     demo: Mutex<BTreeMap<String, Ticket>>,
     api: std::sync::RwLock<Option<Arc<crate::board_api::BoardApi>>>,
+    credentials: std::sync::RwLock<Option<Arc<crate::environment::Credentials>>>,
 }
 impl Backend {
     pub fn new(kind: &str, binary: Option<PathBuf>) -> Result<Arc<Self>> {
@@ -82,6 +83,7 @@ impl Backend {
             binary,
             slots: Semaphore::new(3),
             api: std::sync::RwLock::new(None),
+            credentials: std::sync::RwLock::new(None),
             demo: Mutex::new(
                 data::demo_tickets()
                     .into_iter()
@@ -89,6 +91,39 @@ impl Backend {
                     .collect(),
             ),
         }))
+    }
+    pub fn configure_environment(
+        &self,
+        credentials: Option<Arc<crate::environment::Credentials>>,
+    ) -> Result<()> {
+        if let Some(c) = &credentials {
+            if self.kind != Kind::Acli {
+                bail!("Local API-token configuration requires the acli backend");
+            }
+            crate::board_api::check_environment(c)?;
+        }
+        *self.credentials.write().unwrap() = credentials;
+        Ok(())
+    }
+    pub async fn authenticate(&self, credentials: &crate::environment::Credentials) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        if self.kind != Kind::Acli {
+            bail!("Environment authentication requires acli");
+        }
+        timeout(Duration::from_secs(45), async {
+            let _permit = self.slots.acquire().await?;
+            let mut child = Command::new(&self.binary)
+                .args(["jira","auth","login","--site",&credentials.site,"--email",&credentials.email,"--token"])
+                .env_remove("JIRA_API_TOKEN")
+                .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true).spawn()
+                .context("Cannot start acli authentication")?;
+            let mut stdin = child.stdin.take().context("Cannot open authentication input")?;
+            stdin.write_all(credentials.token.as_bytes()).await.context("Cannot send authentication input")?;
+            stdin.shutdown().await?; drop(stdin);
+            let status = child.wait().await?;
+            if !status.success() { bail!("acli authentication failed; check the local URL, email and token (values redacted)"); }
+            Ok(())
+        }).await.context("acli authentication timed out")?
     }
     pub fn configure_board(&self, id: Option<u64>) -> Result<()> {
         if self.kind == Kind::Demo {
@@ -99,7 +134,10 @@ impl Backend {
                 if self.kind != Kind::Acli {
                     bail!("Board API requires existing acli authentication")
                 };
-                Some(Arc::new(crate::board_api::BoardApi::new(id)?))
+                Some(Arc::new(crate::board_api::BoardApi::with_credentials(
+                    id,
+                    self.credentials.read().unwrap().clone(),
+                )?))
             }
             None => None,
         };
@@ -114,16 +152,22 @@ impl Backend {
             .map(|a| a.cache_identity())
     }
     async fn run(&self, args: &[String]) -> Result<Vec<u8>> {
+        if let Some(c) = self.credentials.read().unwrap().as_ref() {
+            crate::board_api::check_environment(c)?;
+        }
         let operation = async {
             let _permit = self.slots.acquire().await?;
-            let out = Command::new(&self.binary)
+            let mut command = Command::new(&self.binary);
+            command
                 .args(args)
                 .env("NO_COLOR", "1")
                 .env("CLICOLOR", "0")
                 .stdin(Stdio::null())
-                .kill_on_drop(true)
-                .output()
-                .await?;
+                .kill_on_drop(true);
+            if self.kind == Kind::Acli {
+                command.env_remove("JIRA_API_TOKEN");
+            }
+            let out = command.output().await?;
             if !out.status.success() {
                 bail!(
                     "{}: {}",
@@ -685,6 +729,34 @@ fn receipt(bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn authentication_uses_stdin_not_arguments_and_redacts_cli_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("fake-acli");
+        let c = crate::environment::Credentials {
+            site: "example.atlassian.net".into(),
+            email: "alex@example.com".into(),
+            token: "synthetic-secret".into(),
+        };
+        std::fs::write(&cli,"#!/bin/sh\n[ \"$#\" = 8 ] || exit 1\nfor arg in \"$@\"; do [ \"$arg\" != synthetic-secret ] || exit 1; done\ninput=$(cat)\n[ \"$input\" = synthetic-secret ] || exit 1\nexit 0\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let b = Backend::new("acli", Some(cli.clone())).unwrap();
+        b.authenticate(&c).await.unwrap();
+        std::fs::write(
+            &cli,
+            "#!/bin/sh\ninput=$(cat)\nprintf '%s' \"$input\" >&2\nexit 1\n",
+        )
+        .unwrap();
+        assert!(
+            !b.authenticate(&c)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("synthetic-secret")
+        );
+    }
     #[test]
     fn cli_action_arguments() {
         let b = Backend::new("acli", Some("/fake/acli".into())).unwrap();

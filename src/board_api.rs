@@ -73,14 +73,32 @@ fn profile() -> Result<Profile> {
     }
     Ok(p)
 }
+pub(crate) fn check_environment(credentials: &crate::environment::Credentials) -> Result<()> {
+    let current = profile()?;
+    ensure!(
+        current.site == credentials.site && current.email.eq_ignore_ascii_case(&credentials.email),
+        "Local environment and acli account/site differ; run jiraui auth with this environment, then restart"
+    );
+    Ok(())
+}
 pub struct BoardApi {
     pub id: u64,
     profile: Profile,
+    credentials: Option<std::sync::Arc<crate::environment::Credentials>>,
     client: Client,
     slots: Semaphore,
 }
 impl BoardApi {
     pub fn new(id: u64) -> Result<Self> {
+        Self::with_credentials(id, None)
+    }
+    pub fn with_credentials(
+        id: u64,
+        credentials: Option<std::sync::Arc<crate::environment::Credentials>>,
+    ) -> Result<Self> {
+        if let Some(c) = &credentials {
+            check_environment(c)?;
+        }
         ensure!(id > 0, "Board ID must be positive");
         let p = profile()?;
         ensure!(
@@ -109,6 +127,7 @@ impl BoardApi {
         Ok(Self {
             id,
             profile: p,
+            credentials,
             client,
             slots: Semaphore::new(2),
         })
@@ -126,8 +145,14 @@ impl BoardApi {
             self.profile.cloud_id, self.profile.account_id, self.id
         )
     }
+    fn uses_oauth(&self) -> bool {
+        self.credentials.is_none() && self.profile.is_oauth()
+    }
     async fn credential(&self) -> Result<String> {
         self.check_identity()?;
+        if let Some(c) = &self.credentials {
+            return Ok(c.token.clone());
+        }
         let username = self.profile.keyring_username();
         let out = timeout(
             Duration::from_secs(10),
@@ -147,7 +172,7 @@ impl BoardApi {
         decode_credential(&out.stdout, self.profile.is_oauth())
     }
     fn url(&self, endpoint: &str) -> Result<Url> {
-        let origin = if self.profile.is_oauth() {
+        let origin = if self.uses_oauth() {
             format!(
                 "https://api.atlassian.com/ex/jira/{}",
                 self.profile.cloud_id
@@ -179,7 +204,7 @@ impl BoardApi {
         if method == Method::GET {
             request = request.header("Cache-Control", "no-cache");
         }
-        request = if self.profile.is_oauth() {
+        request = if self.uses_oauth() {
             request.bearer_auth(token)
         } else {
             request.basic_auth(&self.profile.email, Some(token))
@@ -532,6 +557,32 @@ mod tests {
         );
         assert!(move_request(17, "DEV-1,DEV-2", true).is_err());
         assert!(move_request(0, "DEV-1", false).is_err());
+    }
+    #[test]
+    fn local_token_uses_site_origin_even_when_cli_profile_is_global_oauth() {
+        let p = Profile {
+            site: "example.atlassian.net".into(),
+            cloud_id: "test-cloud".into(),
+            account_id: "alex".into(),
+            email: "alex@example.com".into(),
+            auth_type: "oauth_global".into(),
+        };
+        let credentials = std::sync::Arc::new(crate::environment::Credentials {
+            site: p.site.clone(),
+            email: p.email.clone(),
+            token: "synthetic-token".into(),
+        });
+        let api = BoardApi {
+            id: 17,
+            profile: p,
+            credentials: Some(credentials),
+            client: Client::new(),
+            slots: Semaphore::new(2),
+        };
+        assert!(!api.uses_oauth());
+        let url = api.url("board/17/issue").unwrap();
+        assert_eq!(url.host_str(), Some("example.atlassian.net"));
+        assert_eq!(url.path(), "/rest/agile/1.0/board/17/issue");
     }
     #[test]
     fn global_oauth_uses_its_own_keyring_entry_and_bearer_transport() {
