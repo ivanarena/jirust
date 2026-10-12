@@ -73,7 +73,7 @@ Graphics are auto-detected with a Unicode half-block fallback. `--image-protocol
 
 ## Build and configuration
 
-Requires Rust **1.90+**, a terminal, and an authenticated CLI.
+Building requires Rust **1.90+** and `make`. Live use requires `acli` (preferred) or `jira-cli`, authentication, and a UTF-8 terminal of at least **60×16** cells. Herdr is optional; any suitable terminal works.
 
 ```sh
 make check
@@ -90,13 +90,20 @@ The acli workspace fetch uses **pagination**, not the old 500-row limit, so all 
 
 `--read-only` blocks both update entry and confirmation. Writes are never automatically retried after failure/timeout; the outcome may be unknown. Reload before retrying. Development mutation tests use only synthetic DEV fixtures.
 
-Settings live at `$XDG_CONFIG_HOME/jirust/config.json`; ticket caches at `$XDG_CACHE_HOME/jirust/rust/<account-hash>/`. CLI-reported identity/site determines the cache namespace; unknown identity disables persistent ticket caching. Files are 0600, directories 0700. `--no-cache` disables ticket persistence; demo saves neither settings nor caches. Restart after switching CLI account/site.
+Platform-native locations:
+
+| Platform | Settings / private env directory | Ticket cache directory |
+|---|---|---|
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/jirust` | `${XDG_CACHE_HOME:-~/.cache}/jirust/rust/<account-hash>` |
+| macOS | `~/Library/Application Support/jirust` | `~/Library/Caches/jirust/rust/<account-hash>` |
+
+Settings are `config.json`; the optional private env is `.env`. CLI-reported identity/site determines the cache namespace; unknown identity disables persistent ticket caching. Files are 0600, directories 0700. `--no-cache` disables ticket persistence; demo saves neither settings nor caches. Restart after switching CLI account/site.
 
 When upgrading from the old app name, **quit the old process first**, then start `jirust`. On first use, legacy config/cache directories are renamed to the new directories, preserving the private environment file, settings, account namespaces and attachments without rewriting their contents. An existing new directory is never overwritten. Demo does not migrate personal configuration.
 
 ### Local environment configuration
 
-Copy the synthetic `.env.example` to **`$XDG_CONFIG_HOME/jirust/.env`** (normally `~/.config/jirust/.env`) and set permissions to **0600**. Put the company HTTPS URL, email, API token without scopes, project/prefix, Board ID and optional settings there. The real file is plaintext: protect it and never commit/share it. The tracked template contains no credentials. Alternatively use a private `./.env`, or select an explicit file with `--env-file /path/to/.env`.
+Copy the synthetic `.env.example` to **`.env` in the project directory**, or to **`.env` in the platform-specific config directory above**, and set permissions to **0600**. Put the company HTTPS URL, email, API token without scopes, project/prefix, Board ID and optional settings there. The real file is plaintext: protect it and never commit/share it. The tracked template contains no credentials. Alternatively use a private `./.env`, or select an explicit file with `--env-file /path/to/.env`.
 
 Precedence: explicit CLI flags → exported environment variables → selected dotenv file → saved/default settings. File discovery: explicit `--env-file`, otherwise `./.env`, otherwise the user config dotenv file. File values are not exported into the process or child environments. Demo ignores local/company configuration entirely. A new explicit project does not inherit another project's environment Board/prefix/JQL.
 
@@ -109,6 +116,38 @@ jirust                                # start the TUI
 `JIRA_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN` must be supplied together. Only HTTPS Atlassian Cloud origins are accepted; credential-bearing URLs, redirects and arbitrary hosts are rejected. The Board bridge uses the local token directly; ordinary operations still use acli authentication. `auth` explicitly updates acli's own keyring/profile from that token; startup never silently switches CLI accounts. A mismatched site/email fails closed and asks you to authenticate explicitly. Restart after editing authentication variables.
 
 Other variables: `JIRA_PROJECT`, `JIRA_PREFIX`, `JIRA_BOARD_ID`, `JIRA_JQL`, `JIRA_BACKEND`, `JIRA_CLI_BIN`, `JIRA_READ_ONLY`, `JIRA_NO_CACHE`, `JIRA_LIMIT`, `JIRA_ATTACHMENT_DIR`, `JIRA_IMAGE_PROTOCOL`. Boolean values are `true` / `false` (also `1` / `0`). Tokens are never placed in command arguments, debug output, settings JSON or caches; dotenv/auth errors redact values. Do not combine `--check` with a subcommand.
+
+### macOS setup (Intel or Apple Silicon)
+
+Install Homebrew first if needed, then install Rust and Atlassian CLI using [Atlassian's macOS installation guide](https://developer.atlassian.com/cloud/acli/guides/install-macos/):
+
+```sh
+brew tap atlassian/homebrew-acli
+brew install acli rust
+# In the cloned Jirust repository:
+make check
+make install
+export PATH="$HOME/.local/bin:$PATH"
+cp .env.example .env
+chmod 600 .env
+${EDITOR:-vi} .env
+```
+
+In the private file, replace the synthetic URL/email/token/project/Board placeholders with your own values. Use an API token **without scopes**. Leave `JIRA_CLI_BIN` empty to find Homebrew's `acli` on PATH; never copy a Linux-specific `/usr/bin/acli` setting to a Mac. Then:
+
+```sh
+jirust --env-file "$PWD/.env" auth
+jirust --env-file "$PWD/.env" --read-only --no-cache --check
+jirust --env-file "$PWD/.env"
+# Later, one confirmed membership move:
+jirust --env-file "$PWD/.env" move DEV-123 --to board
+```
+
+Replace `DEV-123` with the actual one-ticket key. The explicit file path works from any directory when changed to an absolute path. Alternatively keep the file at `~/Library/Application Support/jirust/.env` for automatic discovery. Add `~/.local/bin` to your shell's PATH permanently if desired. Browser links use macOS `open`; image previews have a Unicode fallback. No GNU `install -D` or Linux desktop integration is required.
+
+**Mac Board access requires a local API token.** The keyring reuse fallback below is Linux-only; Jirust does not read macOS Keychain itself. `jirust auth` delegates secure CLI credential storage to acli. Metadata can be read from acli's standard `~/.config/acli` or native platform config directory; conflicting active profiles fail closed instead of guessing an account.
+
+CI runs build, lint, unit tests and a synthetic read-only demo on Linux and macOS. These tests require no credentials and make no real Jira writes. A successful build/demo does **not** establish live Jira or terminal-graphics parity on every Mac; verify your own account with the read-only check above.
 
 ### Board API authentication without a local token
 

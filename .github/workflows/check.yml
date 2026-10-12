@@ -6,7 +6,11 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -15,3 +19,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: make check
       - run: make build
+      - run: bin/jirust --demo --read-only --no-cache --check

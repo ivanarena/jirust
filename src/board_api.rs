@@ -44,19 +44,46 @@ impl Profile {
     }
 }
 fn cli_profile(file: &str) -> Result<Profile> {
-    let path = BaseDirs::new()
-        .context("No home directory")?
-        .config_dir()
-        .join("acli")
-        .join(file);
-    let bytes = std::fs::read(path).context("Cannot read existing acli profile metadata")?;
-    ensure!(bytes.len() < 1024 * 1024, "acli metadata is too large");
-    let c: CliConfig = serde_yaml::from_slice(&bytes)
-        .map_err(|_| anyhow::anyhow!("Invalid acli profile metadata"))?;
-    c.profiles
-        .into_iter()
-        .find(|p| format!("{}:{}", p.cloud_id, p.account_id) == c.current_profile)
-        .context("No current acli Jira profile")
+    let dirs = BaseDirs::new().context("No home directory")?;
+    let mut paths = vec![dirs.home_dir().join(".config/acli").join(file)];
+    let native = dirs.config_dir().join("acli").join(file);
+    if !paths.contains(&native) {
+        paths.push(native);
+    }
+    // acli versions can use ~/.config or the native platform config location.
+    // Do not silently select a stale account if both locations exist.
+    read_profiles(&paths)
+}
+fn read_profiles(paths: &[std::path::PathBuf]) -> Result<Profile> {
+    let mut selected: Option<Profile> = None;
+    for path in paths {
+        let mut file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => bail!("Cannot read existing acli profile metadata"),
+        };
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(1024 * 1024)
+            .read_to_end(&mut bytes)
+            .context("Cannot read existing acli profile metadata")?;
+        ensure!(bytes.len() < 1024 * 1024, "acli metadata is too large");
+        let c: CliConfig = serde_yaml::from_slice(&bytes)
+            .map_err(|_| anyhow::anyhow!("Invalid acli profile metadata"))?;
+        let active = c
+            .profiles
+            .into_iter()
+            .find(|p| format!("{}:{}", p.cloud_id, p.account_id) == c.current_profile)
+            .context("No current acli Jira profile")?;
+        if let Some(previous) = &selected {
+            ensure!(
+                previous == &active,
+                "Conflicting acli profiles in standard/native config directories; resolve stale metadata before using Jirust"
+            );
+        }
+        selected = Some(active);
+    }
+    selected.context("No acli profile metadata; authenticate first with jirust auth")
 }
 fn profile() -> Result<Profile> {
     let p = cli_profile("jira_config.yaml")?;
@@ -153,6 +180,10 @@ impl BoardApi {
         if let Some(c) = &self.credentials {
             return Ok(c.token.clone());
         }
+        ensure!(
+            cfg!(target_os = "linux"),
+            "Board keyring fallback is Linux-only; configure JIRA_URL, JIRA_EMAIL and JIRA_API_TOKEN in a private local env file on macOS"
+        );
         let username = self.profile.keyring_username();
         let out = timeout(
             Duration::from_secs(10),
@@ -493,6 +524,33 @@ fn merge_membership(board: Vec<Ticket>, backlog: Vec<Ticket>) -> Result<Workspac
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cli_metadata_supports_native_and_standard_paths_without_guessing_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let standard = dir.path().join("standard.yaml");
+        let native = dir.path().join("native.yaml");
+        let data = "current_profile: cloud:alex\nprofiles:\n  - site: example.atlassian.net\n    cloud_id: cloud\n    account_id: alex\n    email: alex@example.com\n    auth_type: api_token\n";
+        std::fs::write(&native, data).unwrap();
+        let paths = [standard.clone(), native.clone()];
+        assert_eq!(read_profiles(&paths).unwrap().site, "example.atlassian.net");
+        std::fs::write(&standard, data).unwrap();
+        assert!(read_profiles(&paths).is_ok());
+        std::fs::write(
+            &standard,
+            data.replace("example.atlassian.net", "other.atlassian.net"),
+        )
+        .unwrap();
+        assert!(read_profiles(&paths).is_err());
+    }
+    #[test]
+    fn metadata_reader_rejects_oversized_files_and_missing_active_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("profile.yaml");
+        std::fs::write(&p, vec![b'a'; 1024 * 1024 + 1]).unwrap();
+        assert!(read_profiles(std::slice::from_ref(&p)).is_err());
+        std::fs::write(&p, "current_profile: missing\nprofiles: []\n").unwrap();
+        assert!(read_profiles(&[p]).is_err());
+    }
     #[test]
     fn board_membership_uses_actual_issue_list_and_configured_cutoff_not_status_names() {
         let model = json!({"isSimpleBoard":true,"backlogStrategy":"ISSUE_LIST","boardIssueList":{"key":"synthetic-list"},"oldDoneIssuesCutoff":"-7d"});
