@@ -122,7 +122,7 @@ impl BoardApi {
     }
     pub fn cache_identity(&self) -> String {
         format!(
-            "board-api-v1:{}:{}:{}",
+            "board-api-v2:{}:{}:{}",
             self.profile.cloud_id, self.profile.account_id, self.id
         )
     }
@@ -155,7 +155,12 @@ impl BoardApi {
         } else {
             format!("https://{}", self.profile.site)
         };
-        Ok(Url::parse(&format!("{origin}/rest/agile/1.0/{endpoint}"))?)
+        let path = if endpoint.starts_with("greenhopper/1.0/") {
+            format!("/rest/{endpoint}")
+        } else {
+            format!("/rest/agile/1.0/{endpoint}")
+        };
+        Ok(Url::parse(&format!("{origin}{path}"))?)
     }
     async fn request(
         &self,
@@ -171,6 +176,9 @@ impl BoardApi {
             .request(method.clone(), self.url(endpoint)?)
             .query(query)
             .header("Accept", "application/json");
+        if method == Method::GET {
+            request = request.header("Cache-Control", "no-cache");
+        }
         request = if self.profile.is_oauth() {
             request.bearer_auth(token)
         } else {
@@ -258,14 +266,42 @@ impl BoardApi {
     pub async fn workspace(&self, scope: &str) -> Result<Workspace> {
         let (base, _) = crate::config::split_order(scope);
         let jql = format!("({base}) ORDER BY Rank ASC");
-        // Use explicit membership endpoints, NOT status names or a global re-sort.
+        // The public /board/issue resource is the whole saved-filter scope,
+        // NOT membership in a team-managed page's Board section. Read the
+        // actual manual issue-list and configured completed-item cutoff from
+        // Jira's read-only web-board metadata, then hydrate/order with Rank.
+        let query = [("rapidViewId", self.id.to_string())];
+        let (model, plan) = tokio::try_join!(
+            self.request(
+                Method::GET,
+                "greenhopper/1.0/rapidviewconfig/editmodel.json",
+                &query,
+                None
+            ),
+            self.request(
+                Method::GET,
+                "greenhopper/1.0/xboard/plan/backlog/data",
+                &query,
+                None
+            )
+        )?;
+        ensure!(
+            model["id"].as_u64() == Some(self.id),
+            "Board metadata identity mismatch"
+        );
+        let board_query = membership_query(&model, &plan, base)?;
         let board_endpoint = format!("board/{}/issue", self.id);
         let backlog_endpoint = format!("board/{}/backlog", self.id);
         let (board, backlog) = tokio::try_join!(
-            self.issues(&board_endpoint, &jql),
+            async {
+                match board_query {
+                    Some(q) => self.issues(&board_endpoint, &q).await,
+                    None => Ok(Vec::new()),
+                }
+            },
             self.issues(&backlog_endpoint, &jql)
         )?;
-        Ok(merge_membership(board, backlog))
+        merge_membership(board, backlog)
     }
     pub async fn move_ticket(&self, key: &str, to_board: bool) -> Result<()> {
         let (endpoint, payload) = move_request(self.id, key, to_board)?;
@@ -273,6 +309,94 @@ impl BoardApi {
             .await?;
         Ok(())
     }
+}
+/// Derive visibility from actual issue-list membership and Jira's configured
+/// cutoff. Evaluate `updated` in JQL on the SERVER, not against a local clock.
+/// This read-only web metadata is version-sensitive: fail closed on unknown
+/// shapes/strategies rather than substitute guessed statuses or all project work.
+fn membership_query(model: &Value, plan: &Value, base: &str) -> Result<Option<String>> {
+    ensure!(
+        model["isSimpleBoard"].as_bool() == Some(true)
+            && model["backlogStrategy"].as_str() == Some("ISSUE_LIST"),
+        "Unsupported Board strategy; exact issue-list membership is required"
+    );
+    ensure!(
+        plan["isTruncated"].as_bool() == Some(false)
+            && plan["isIssueLimitExceeded"].as_bool() == Some(false),
+        "Board membership response is truncated"
+    );
+    ensure!(
+        model["boardIssueList"]["key"].as_str().is_some()
+            && model["boardIssueList"]["key"] == plan["workViewIssueListKey"],
+        "Board issue-list identity mismatch"
+    );
+    fn id(v: &Value) -> Result<u64> {
+        let n = v
+            .as_u64()
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            .context("Invalid Board membership ID")?;
+        ensure!(n > 0, "Invalid Board membership ID");
+        Ok(n)
+    }
+    let ids: std::collections::HashSet<u64> = plan["boardIssueIds"]
+        .as_array()
+        .context("Missing Board membership IDs")?
+        .iter()
+        .map(id)
+        .collect::<Result<_>>()?;
+    let issues = plan["issues"]
+        .as_array()
+        .context("Missing Board issue-list records")?;
+    let mut active = Vec::new();
+    let mut done = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for issue in issues {
+        let n = id(&issue["id"])?;
+        if !ids.contains(&n) {
+            continue;
+        }
+        ensure!(seen.insert(n), "Duplicate Board membership record");
+        if issue["done"]
+            .as_bool()
+            .context("Missing Board completion marker")?
+        {
+            done.push(n.to_string());
+        } else {
+            active.push(n.to_string());
+        }
+    }
+    ensure!(
+        seen.len() == ids.len(),
+        "Incomplete Board membership records"
+    );
+    let mut clauses = Vec::new();
+    if !active.is_empty() {
+        clauses.push(format!("issue IN ({})", active.join(",")));
+    }
+    if !done.is_empty() {
+        let cutoff = model["oldDoneIssuesCutoff"]
+            .as_str()
+            .context("Missing completed-issue visibility policy")?;
+        ensure!(
+            cutoff
+                .strip_prefix('-')
+                .and_then(|s| s.strip_suffix('d'))
+                .and_then(|s| s.parse::<u32>().ok())
+                .is_some_and(|days| days > 0 && days <= 36500),
+            "Unsupported completed-issue visibility policy"
+        );
+        clauses.push(format!(
+            "(issue IN ({}) AND updated >= {cutoff})",
+            done.join(",")
+        ));
+    }
+    if clauses.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "({base}) AND ({}) ORDER BY Rank ASC",
+        clauses.join(" OR ")
+    )))
 }
 fn decode_credential(bytes: &[u8], oauth: bool) -> Result<String> {
     ensure!(bytes.len() < 1024 * 1024, "Credential envelope too large");
@@ -318,15 +442,16 @@ fn move_request(id: u64, key: &str, to_board: bool) -> Result<(String, Value)> {
     };
     Ok((endpoint, json!({"issues":[key]})))
 }
-fn merge_membership(board: Vec<Ticket>, backlog: Vec<Ticket>) -> Workspace {
+fn merge_membership(board: Vec<Ticket>, backlog: Vec<Ticket>) -> Result<Workspace> {
     let backlog_keys: std::collections::HashSet<_> =
         backlog.iter().map(|t| t.key.clone()).collect();
-    // Some boards' /issue endpoint also includes their backlog. Remove overlap
-    // stably and let /backlog be authoritative. Completed Board issues stay in.
-    let board: Vec<_> = board
-        .into_iter()
-        .filter(|t| !backlog_keys.contains(&t.key) && t.backlog_ticket())
-        .collect();
+    // With explicit manual membership, overlap means the resources changed
+    // during this read. Keep the previous snapshot, never guess a section.
+    ensure!(
+        !board.iter().any(|t| backlog_keys.contains(&t.key)),
+        "Board/Backlog membership changed during fetch; refresh again"
+    );
+    let board: Vec<_> = board.into_iter().filter(Ticket::backlog_ticket).collect();
     let membership = board.iter().map(|t| t.key.clone()).collect();
     let mut items = board;
     items.extend(backlog.into_iter().filter(Ticket::backlog_ticket));
@@ -338,11 +463,47 @@ fn merge_membership(board: Vec<Ticket>, backlog: Vec<Ticket>) -> Workspace {
         ..Default::default()
     };
     w.reindex();
-    w
+    Ok(w)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn board_membership_uses_actual_issue_list_and_configured_cutoff_not_status_names() {
+        let model = json!({"isSimpleBoard":true,"backlogStrategy":"ISSUE_LIST","boardIssueList":{"key":"synthetic-list"},"oldDoneIssuesCutoff":"-7d"});
+        let plan = json!({"isTruncated":false,"isIssueLimitExceeded":false,"workViewIssueListKey":"synthetic-list","boardIssueIds":["84",9],"issues":[{"id":"61","done":false},{"id":"84","done":false},{"id":"9","done":true}]});
+        let q = membership_query(&model, &plan, "project = DEV")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            q,
+            "(project = DEV) AND (issue IN (84) OR (issue IN (9) AND updated >= -7d)) ORDER BY Rank ASC"
+        );
+        assert!(!q.contains("61"));
+        assert!(!q.contains("status"));
+        let mut bad = plan.clone();
+        bad["isTruncated"] = json!(true);
+        assert!(membership_query(&model, &bad, "project = DEV").is_err());
+        let mut bad = model.clone();
+        bad["oldDoneIssuesCutoff"] = json!("-7d OR assignee IS EMPTY");
+        assert!(membership_query(&bad, &plan, "project = DEV").is_err());
+        let mut bad = plan.clone();
+        bad["workViewIssueListKey"] = json!("another-board");
+        assert!(membership_query(&model, &bad, "project = DEV").is_err());
+        let mut bad = plan.clone();
+        bad["boardIssueIds"] = json!([84, 9, 12]);
+        assert!(membership_query(&model, &bad, "project = DEV").is_err());
+    }
+    #[test]
+    fn empty_board_is_valid_and_does_not_query_all_project_issues() {
+        let model = json!({"isSimpleBoard":true,"backlogStrategy":"ISSUE_LIST","boardIssueList":{"key":"synthetic-list"}});
+        let plan = json!({"isTruncated":false,"isIssueLimitExceeded":false,"workViewIssueListKey":"synthetic-list","boardIssueIds":[],"issues":[]});
+        assert!(
+            membership_query(&model, &plan, "project = DEV")
+                .unwrap()
+                .is_none()
+        );
+    }
     #[test]
     fn membership_is_stable_and_keeps_completed_board_rows() {
         let mut t = data::demo_tickets();
@@ -350,10 +511,8 @@ mod tests {
         t[1].key = "DEV-9".into();
         t[1].fields["status"] = json!({"name":"Done","statusCategory":{"key":"done"}});
         t[2].key = "DEV-61".into();
-        let w = merge_membership(
-            vec![t[0].clone(), t[1].clone(), t[2].clone()],
-            vec![t[2].clone()],
-        );
+        assert!(merge_membership(vec![t[0].clone(), t[2].clone()], vec![t[2].clone()]).is_err());
+        let w = merge_membership(vec![t[0].clone(), t[1].clone()], vec![t[2].clone()]).unwrap();
         assert_eq!(
             w.items.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(),
             ["DEV-84", "DEV-9", "DEV-61"]

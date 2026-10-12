@@ -124,15 +124,32 @@ async fn main() -> Result<()> {
         let q = settings.query(jiraui::config::BACKLOG, "", "", "")?;
         let mine = settings.query(jiraui::config::MINE, "", "", "")?;
         let (workspace, _) = backend.workspace(&q, &mine, None).await?;
+        let counts = [
+            jiraui::config::MINE,
+            jiraui::config::AVAILABLE,
+            jiraui::config::BOARD,
+            jiraui::config::BACKLOG,
+        ]
+        .map(|view| {
+            workspace
+                .items
+                .iter()
+                .filter(|t| workspace.matches(t, view, "", "", ""))
+                .count()
+        });
         let items = workspace.items;
         if let Some(t) = items.first() {
             backend.get(&t.key).await?;
         };
         println!(
-            "backend={} search=ok tickets={} detail={} (read-only; no records changed)",
+            "backend={} search=ok tickets={} detail={} mine={} available={} board={} backlog={} (read-only; no records changed)",
             backend.kind.name(),
             items.len(),
-            if items.is_empty() { "skipped" } else { "ok" }
+            if items.is_empty() { "skipped" } else { "ok" },
+            counts[0],
+            counts[1],
+            counts[2],
+            counts[3]
         );
         return Ok(());
     }
