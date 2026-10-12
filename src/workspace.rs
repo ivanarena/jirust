@@ -1,4 +1,4 @@
-//! One account-scoped dataset, shared by all three views.
+//! One account-scoped dataset, shared by all four views.
 use crate::{
     config,
     data::{self, Ticket},
@@ -86,8 +86,8 @@ impl SearchRow {
         &self,
         mine: bool,
         view: usize,
-        assignee: &str,
-        status: &str,
+        assignee: &[String],
+        status: &[String],
         words: &[&str],
     ) -> bool {
         if !self.backlog_ticket
@@ -96,17 +96,16 @@ impl SearchRow {
         {
             return false;
         }
-        if matches!(view, config::BOARD | config::BACKLOG) && !assignee.is_empty() {
-            let matches = match assignee {
+        if !assignee.is_empty()
+            && !assignee.iter().any(|value| match value.as_str() {
                 "@me" => mine,
                 "unassigned" => self.unassigned,
                 value => self.assignees.iter().any(|s| s == value),
-            };
-            if !matches {
-                return false;
-            }
+            })
+        {
+            return false;
         }
-        (status.is_empty() || self.status == status)
+        (status.is_empty() || status.contains(&self.status))
             && words.iter().all(|word| self.text.contains(word))
     }
 }
@@ -129,8 +128,8 @@ impl Workspace {
         &self,
         t: &Ticket,
         view: usize,
-        assignee: &str,
-        status: &str,
+        assignee: &[String],
+        status: &[String],
         words: &[&str],
     ) -> bool {
         let is_board = self
@@ -159,8 +158,8 @@ impl Workspace {
         self.matches_words(
             t,
             view,
-            &assignee.to_lowercase(),
-            &status.to_lowercase(),
+            &crate::filters::Selection::from(assignee).normalized(),
+            &crate::filters::Selection::from(status).normalized(),
             &words,
         )
     }
@@ -209,6 +208,40 @@ pub fn valid_items(items: &[Ticket]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn multi_filters_intersect_preset_membership_and_preserve_rank_order() {
+        let mut items = data::demo_tickets();
+        items[0].key = "DEV-84".into();
+        items[1].key = "DEV-9".into();
+        items[2].key = "DEV-61".into();
+        let mut w = Workspace {
+            items,
+            mine: ["DEV-84".into()].into(),
+            board: Some(["DEV-84".into(), "DEV-61".into()].into()),
+            ..Default::default()
+        };
+        w.reindex();
+        let assignees = vec!["@me".into(), "sam".into()];
+        let statuses = vec!["in progress".into(), "to do".into()];
+        let keys = |view| {
+            w.items
+                .iter()
+                .filter(|t| w.matches_words(t, view, &assignees, &statuses, &[]))
+                .map(|t| t.key.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(keys(config::BOARD), ["DEV-84", "DEV-61"]);
+        assert!(keys(config::BACKLOG).is_empty());
+        assert_eq!(keys(config::MINE), ["DEV-84"]);
+        assert!(w.matches_words(
+            &w.items[1],
+            config::AVAILABLE,
+            &["unassigned".into(), "sam".into()],
+            &[],
+            &[]
+        ));
+        assert!(!w.matches_words(&w.items[0], config::AVAILABLE, &assignees, &statuses, &[]));
+    }
     #[test]
     fn local_filters_use_server_membership_and_entire_descriptions() {
         let mut w = Workspace {

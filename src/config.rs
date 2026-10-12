@@ -96,6 +96,15 @@ impl Settings {
         Ok(format!("project = {}", quote(&self.project)))
     }
     pub fn query(&self, view: usize, search: &str, assignee: &str, status: &str) -> Result<String> {
+        self.query_selected(view, search, &assignee.into(), &status.into())
+    }
+    pub fn query_selected(
+        &self,
+        view: usize,
+        search: &str,
+        assignee: &crate::filters::Selection,
+        status: &crate::filters::Selection,
+    ) -> Result<String> {
         let scope = self.scope()?;
         let (base, order) = split_order(&scope);
         let mut parts = vec![format!("({base})")];
@@ -108,17 +117,34 @@ impl Settings {
             BOARD | BACKLOG => {}
             _ => bail!("Unknown view"),
         }
-        // Manual assignee filtering belongs to the combined Backlog view;
-        // it cannot silently turn Mine or Available into a different preset.
-        if matches!(view, BOARD | BACKLOG) && !assignee.trim().is_empty() {
-            parts.push(match assignee.trim() {
-                "@me" => "assignee = currentUser()".into(),
-                "unassigned" => "assignee IS EMPTY".into(),
-                value => format!("assignee = {}", quote(value)),
-            })
+        if !assignee.is_empty() {
+            let clauses: Vec<_> = assignee
+                .values()
+                .iter()
+                .map(|value| match value.as_str() {
+                    "@me" => "assignee = currentUser()".into(),
+                    "unassigned" => "assignee IS EMPTY".into(),
+                    value => format!("assignee = {}", quote(value)),
+                })
+                .collect();
+            parts.push(if clauses.len() == 1 {
+                clauses[0].clone()
+            } else {
+                format!("({})", clauses.join(" OR "))
+            });
         }
-        if !status.trim().is_empty() {
-            parts.push(format!("status = {}", quote(status)))
+        if status.len() == 1 {
+            parts.push(format!("status = {}", quote(status.single())));
+        } else if !status.is_empty() {
+            parts.push(format!(
+                "status IN ({})",
+                status
+                    .values()
+                    .iter()
+                    .map(|s| quote(s))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         if !search.trim().is_empty() {
             parts.push(format!("text ~ {}", quote(search.trim())))
@@ -327,6 +353,26 @@ mod tests {
         );
     }
     #[test]
+    fn multi_filter_jql_uses_or_and_safe_quoted_values_inside_scope() {
+        let s = Settings {
+            project: "DEV".into(),
+            board_id: Some(17),
+            ..Default::default()
+        };
+        let assignees = vec![
+            "@me".into(),
+            "unassigned".into(),
+            "sam\" OR project = OTHER".into(),
+        ]
+        .into();
+        let statuses = vec!["To Do".into(), "Review, then test".into()].into();
+        let q = s.query_selected(BOARD, "", &assignees, &statuses).unwrap();
+        assert!(q.contains("(assignee = currentUser() OR assignee IS EMPTY OR assignee = \"sam\\\" OR project = OTHER\")"));
+        assert!(q.contains("status IN (\"To Do\", \"Review, then test\")"));
+        assert!(q.ends_with("ORDER BY Rank ASC"));
+        assert!(!q.contains("statusCategory != Done"));
+    }
+    #[test]
     fn three_assignment_views_share_the_combined_backlog_scope() {
         let s = Settings {
             project: "DEV".into(),
@@ -351,7 +397,7 @@ mod tests {
                 .unwrap()
                 .contains("assignee IS EMPTY")
         );
-        assert!(!s.query(MINE, "", "sam", "").unwrap().contains("\"sam\""));
+        assert!(s.query(MINE, "", "sam", "").unwrap().contains("\"sam\""));
         assert_eq!(s.prefix(), "DEV");
     }
     #[test]

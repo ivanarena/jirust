@@ -2,6 +2,7 @@ use crate::{
     backend::{Action, Backend, Kind},
     config::{self, Cache, Settings},
     data::{self, Target, Ticket},
+    filters::Selection,
     markdown::{self, DocLine},
     workspace::{Workspace, full_cache_key},
 };
@@ -95,11 +96,19 @@ pub enum Purpose {
     AssigneeFilter,
     StatusFilter,
 }
+#[derive(Clone)]
+pub struct FilterInput {
+    pub column: usize,
+    pub value: String,
+    pub cursor: usize,
+}
 pub enum Dialog {
     Filters {
         choices: [Vec<Choice>; 2],
         selected: [usize; 2],
+        checked: [Selection; 2],
         active: usize,
+        custom: Option<FilterInput>,
     },
     Picker {
         title: String,
@@ -165,8 +174,8 @@ pub struct App {
     pub search: String,
     pub remote_search: String,
     pub local_search: String,
-    pub assignee_filter: String,
-    pub status_filter: String,
+    pub assignee_filter: Selection,
+    pub status_filter: Selection,
     pub search_due: Option<Instant>,
     pub selection_due: Option<Instant>,
     pub generation: u64,
@@ -245,8 +254,8 @@ impl App {
             search: String::new(),
             remote_search: String::new(),
             local_search: String::new(),
-            assignee_filter: String::new(),
-            status_filter: String::new(),
+            assignee_filter: Selection::default(),
+            status_filter: Selection::default(),
             search_due: None,
             selection_due: None,
             generation: 0,
@@ -292,7 +301,7 @@ impl App {
         config::VIEW_NAMES.iter().map(|s| s.to_string()).collect()
     }
     pub fn query(&self) -> Result<String> {
-        self.settings.query(
+        self.settings.query_selected(
             self.view,
             &self.remote_search,
             &self.assignee_filter,
@@ -547,8 +556,8 @@ impl App {
         }
         .to_lowercase();
         let words: Vec<_> = q.split_whitespace().collect();
-        let assignee = self.assignee_filter.to_lowercase();
-        let status = self.status_filter.to_lowercase();
+        let assignee = self.assignee_filter.normalized();
+        let status = self.status_filter.normalized();
         let prefix = format!("{}-{q}", self.settings.prefix()).to_lowercase();
         self.visible = self
             .items
@@ -1082,6 +1091,10 @@ impl App {
             Event::Paste(text) => {
                 let text = data::safe(&text);
                 match &mut self.dialog {
+                    Some(Dialog::Filters {
+                        custom: Some(input),
+                        ..
+                    }) => crate::input::insert(&mut input.value, &mut input.cursor, &text),
                     Some(Dialog::Editor { value, cursor, .. }) => {
                         crate::input::insert(value, cursor, &text)
                     }
@@ -1323,12 +1336,16 @@ impl App {
                         choices,
                         selected,
                         active,
+                        checked,
+                        custom,
                     }) = &mut self.dialog
                     {
                         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
                             if contains(self.filter_apply_rect, mouse.column, mouse.row) {
-                                return self
-                                    .dialog_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                                return self.dialog_key(KeyEvent::new(
+                                    KeyCode::Char('s'),
+                                    KeyModifiers::CONTROL,
+                                ));
                             }
                             if contains(self.filter_reset_rect, mouse.column, mouse.row) {
                                 return self.dialog_key(KeyEvent::new(
@@ -1336,6 +1353,9 @@ impl App {
                                     KeyModifiers::CONTROL,
                                 ));
                             }
+                        }
+                        if custom.is_some() {
+                            return vec![];
                         }
                         for column in 0..2 {
                             let rect = self.filter_list_rects[column];
@@ -1345,8 +1365,18 @@ impl App {
                                     MouseEventKind::Down(MouseButton::Left) => {
                                         let index = self.filter_list_starts[column]
                                             + (mouse.row - rect.y) as usize;
-                                        if index < choices[column].len() {
+                                        if index < choices[column].len() && custom.is_none() {
                                             selected[column] = index;
+                                            if choices[column][index].value == "__other" {
+                                                *custom = Some(FilterInput {
+                                                    column,
+                                                    value: String::new(),
+                                                    cursor: 0,
+                                                });
+                                            } else {
+                                                checked[column]
+                                                    .toggle(&choices[column][index].value);
+                                            }
                                         }
                                     }
                                     MouseEventKind::ScrollUp => {
@@ -1588,13 +1618,19 @@ impl App {
         })
     }
     pub fn assignee_filter_value(&self) -> &str {
+        if !self.assignee_filter.is_empty() {
+            return self.assignee_filter.single();
+        }
         match self.view {
             config::MINE => "@me",
             config::AVAILABLE => "unassigned",
-            _ => &self.assignee_filter,
+            _ => self.assignee_filter.single(),
         }
     }
     pub fn assignee_label(&self) -> String {
+        if self.assignee_filter.len() > 1 {
+            return format!("{} selected", self.assignee_filter.len());
+        }
         match self.assignee_filter_value() {
             "@me" => "Me".into(),
             "unassigned" => "Unassigned".into(),
@@ -1627,70 +1663,100 @@ impl App {
         self.search_mode = SearchMode::None;
         self.search_due = None;
         self.lookup_generation += 1;
-        self.view = match value.as_str() {
-            "@me" => config::MINE,
-            "unassigned" => config::AVAILABLE,
-            _ if self.view == config::BOARD => config::BOARD,
-            _ => config::BACKLOG,
-        };
-        self.assignee_filter = if matches!(self.view, config::BOARD | config::BACKLOG) {
-            value
-        } else {
-            String::new()
-        };
-        self.settings.last_view = self.view;
-        self.save_settings();
+        self.assignee_filter = value.into();
     }
     fn filters_dialog(&mut self) {
         let choices = [self.assignee_choices(true), self.status_choices(true).0];
-        let selected = [
-            choices[0]
-                .iter()
-                .position(|c| c.value == self.assignee_filter_value())
-                .unwrap_or(0),
-            choices[1]
-                .iter()
-                .position(|c| c.value == self.status_filter)
-                .unwrap_or(0),
+        let checked = [
+            if self.assignee_filter.is_empty() {
+                self.assignee_filter_value().into()
+            } else {
+                self.assignee_filter.clone()
+            },
+            self.status_filter.clone(),
         ];
+        let selected = [0, 1].map(|column| {
+            choices[column]
+                .iter()
+                .position(|c| checked[column].contains(&c.value))
+                .unwrap_or(0)
+        });
         self.dialog = Some(Dialog::Filters {
             choices,
             selected,
+            checked,
             active: 0,
+            custom: None,
         });
     }
     fn refresh_filter_lists(&mut self) {
         let Some(Dialog::Filters {
             choices,
             selected,
+            checked,
             active,
+            custom,
         }) = &self.dialog
         else {
             return;
         };
-        let staged = [
+        let cursors = [
             choices[0][selected[0]].clone(),
             choices[1][selected[1]].clone(),
         ];
+        let checked = checked.clone();
         let active = *active;
-        let mut choices = [self.assignee_choices(true), self.status_choices(true).0];
+        let custom = custom.clone();
+        let mut next = [self.assignee_choices(true), self.status_choices(true).0];
         let mut selected = [0; 2];
         for column in 0..2 {
-            selected[column] = if let Some(index) = choices[column]
+            for value in checked[column].values() {
+                if !next[column].iter().any(|c| c.value == *value) {
+                    let index = next[column].len().saturating_sub(1);
+                    next[column].insert(
+                        index,
+                        Choice {
+                            label: format!("{value} (selected)"),
+                            value: value.clone(),
+                            target: None,
+                        },
+                    );
+                }
+            }
+            selected[column] = if let Some(index) = next[column]
                 .iter()
-                .position(|c| c.value == staged[column].value)
+                .position(|c| c.value == cursors[column].value)
             {
                 index
             } else {
-                choices[column].push(staged[column].clone());
-                choices[column].len() - 1
+                let index = next[column].len().saturating_sub(1);
+                next[column].insert(index, cursors[column].clone());
+                index
             };
         }
         self.dialog = Some(Dialog::Filters {
-            choices,
+            choices: next,
             selected,
+            checked,
             active,
+            custom,
         });
+    }
+    fn apply_filter_selections(&mut self, checked: [Selection; 2]) -> Vec<Job> {
+        if self.search_mode == SearchMode::Text {
+            self.remote_search = self.search.clone();
+        }
+        if self.lookup_active {
+            self.search.clear();
+            self.local_search.clear();
+            self.lookup_active = false;
+        }
+        self.search_mode = SearchMode::None;
+        self.search_due = None;
+        self.lookup_generation += 1;
+        [self.assignee_filter, self.status_filter] = checked;
+        // Filters intersect the selected preset/membership view, never switch it.
+        self.reload()
     }
     fn assignee_choices(&self, filter: bool) -> Vec<Choice> {
         let mut choices = vec![
@@ -1733,16 +1799,16 @@ impl App {
             }
         }
         let fixed = if filter { 3 } else { 2 };
-        if filter
-            && !choices
-                .iter()
-                .any(|c| c.value == self.assignee_filter_value())
-        {
-            choices.push(Choice {
-                label: format!("{} (current)", self.assignee_filter_value()),
-                value: self.assignee_filter_value().into(),
-                target: None,
-            });
+        if filter {
+            for value in self.assignee_filter.values() {
+                if !choices.iter().any(|c| c.value == *value) {
+                    choices.push(Choice {
+                        label: format!("{value} (current)"),
+                        value: value.clone(),
+                        target: None,
+                    });
+                }
+            }
         }
         choices[fixed..].sort_by_cached_key(|c| c.label.to_lowercase());
         choices.push(Choice {
@@ -1753,6 +1819,10 @@ impl App {
         choices
     }
     fn assignee_picker(&mut self, filter: bool) {
+        if filter {
+            self.filters_dialog();
+            return;
+        }
         let choices = self.assignee_choices(filter);
         let selected = if filter {
             choices
@@ -1816,12 +1886,16 @@ impl App {
             value: s,
             target: None,
         }));
-        if filter && !choices.iter().any(|c| c.value == self.status_filter) {
-            choices.push(Choice {
-                label: format!("{} (current)", self.status_filter),
-                value: self.status_filter.clone(),
-                target: None,
-            });
+        if filter {
+            for value in self.status_filter.values() {
+                if !choices.iter().any(|c| c.value == *value) {
+                    choices.push(Choice {
+                        label: format!("{value} (current)"),
+                        value: value.clone(),
+                        target: None,
+                    });
+                }
+            }
         }
         choices.push(Choice {
             label: "Other status…".into(),
@@ -1831,15 +1905,15 @@ impl App {
         (choices, suggestions)
     }
     fn status_picker(&mut self, filter: bool) {
+        if filter {
+            self.filters_dialog();
+            if let Some(Dialog::Filters { active, .. }) = &mut self.dialog {
+                *active = 1;
+            }
+            return;
+        }
         let (choices, suggestions) = self.status_choices(filter);
-        let selected = if filter {
-            choices
-                .iter()
-                .position(|c| c.value == self.status_filter)
-                .unwrap_or(0)
-        } else {
-            0
-        };
+        let selected = 0;
         let key = self
             .active_ticket()
             .map(|t| t.key.clone())
@@ -2055,9 +2129,76 @@ impl App {
         let Some(mut dialog) = self.dialog.take() else {
             return vec![];
         };
-        if key.code == KeyCode::Esc
-            || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
+        if key.code == KeyCode::Esc {
+            if let Dialog::Filters { custom, .. } = &mut dialog
+                && custom.is_some()
+            {
+                *custom = None;
+                self.dialog = Some(dialog);
+            }
+            return vec![];
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            return vec![];
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('r')
+            && let Dialog::Filters {
+                selected,
+                checked,
+                custom,
+                ..
+            } = &mut dialog
         {
+            *selected = [0; 2];
+            *checked = [Selection::default(), Selection::default()];
+            *custom = None;
+            self.dialog = Some(dialog);
+            return vec![];
+        }
+        if let Dialog::Filters {
+            choices,
+            selected,
+            checked,
+            custom: Some(input),
+            ..
+        } = &mut dialog
+        {
+            let apply =
+                key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s');
+            if key.code == KeyCode::Enter || apply {
+                let column = input.column;
+                let value = input.value.trim().to_owned();
+                if !value.is_empty() && value != "__other" {
+                    let index = if let Some(index) =
+                        choices[column].iter().position(|c| c.value == value)
+                    {
+                        index
+                    } else {
+                        let index = choices[column].len().saturating_sub(1);
+                        choices[column].insert(
+                            index,
+                            Choice {
+                                label: value.clone(),
+                                value: value.clone(),
+                                target: None,
+                            },
+                        );
+                        index
+                    };
+                    selected[column] = index;
+                    checked[column].insert(value);
+                }
+                if apply {
+                    return self.apply_filter_selections(checked.clone());
+                }
+                if let Dialog::Filters { custom, .. } = &mut dialog {
+                    *custom = None;
+                }
+            } else {
+                crate::input::key(&mut input.value, &mut input.cursor, key);
+            }
+            self.dialog = Some(dialog);
             return vec![];
         }
         match &mut dialog {
@@ -2065,6 +2206,8 @@ impl App {
                 choices,
                 selected,
                 active,
+                checked,
+                custom,
             } => match key.code {
                 KeyCode::Tab | KeyCode::BackTab => *active = 1 - *active,
                 KeyCode::Left => *active = 0,
@@ -2083,40 +2226,41 @@ impl App {
                 }
                 KeyCode::Home => selected[*active] = 0,
                 KeyCode::End => selected[*active] = choices[*active].len().saturating_sub(1),
+                KeyCode::Char(' ') => {
+                    let value = &choices[*active][selected[*active]].value;
+                    if value == "__other" {
+                        *custom = Some(FilterInput {
+                            column: *active,
+                            value: String::new(),
+                            cursor: 0,
+                        });
+                    } else {
+                        checked[*active].toggle(value);
+                    }
+                }
                 KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    *selected = [0; 2]
+                    *selected = [0; 2];
+                    *checked = [Selection::default(), Selection::default()];
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    selected[*active] = 0
+                    selected[*active] = 0;
+                    checked[*active].clear();
                 }
                 KeyCode::Enter | KeyCode::Char('s')
                     if key.code == KeyCode::Enter
                         || key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
-                    let values: Vec<String> = (0..2)
-                        .map(|i| choices[i][selected[i]].value.clone())
-                        .collect();
-                    if values.iter().any(|v| v == "__other") {
-                        let selected = if values[0] == "__other" { 0 } else { 1 };
-                        self.dialog = Some(Dialog::Form {
-                            title: "Custom filters · blank clears".into(),
-                            labels: vec![
-                                "Assignee · @me / unassigned / email or account ID".into(),
-                                "Status · exact name".into(),
-                            ],
-                            values: values
-                                .into_iter()
-                                .map(|v| if v == "__other" { String::new() } else { v })
-                                .collect(),
-                            selected,
-                            kind: "filters".into(),
-                            key: String::new(),
+                    if key.code == KeyCode::Enter
+                        && choices[*active][selected[*active]].value == "__other"
+                    {
+                        *custom = Some(FilterInput {
+                            column: *active,
+                            value: String::new(),
+                            cursor: 0,
                         });
-                        return vec![];
+                    } else {
+                        return self.apply_filter_selections(checked.clone());
                     }
-                    self.apply_assignee_filter(values[0].clone());
-                    self.status_filter = values[1].clone();
-                    return self.reload();
                 }
                 _ => {}
             },
@@ -2196,7 +2340,7 @@ impl App {
                             return self.reload();
                         }
                         Purpose::StatusFilter => {
-                            self.status_filter = choice.value;
+                            self.status_filter = choice.value.into();
                             return self.reload();
                         }
                         Purpose::Edit => {
@@ -2348,7 +2492,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows assignee + status lists from the shared cache.\n↑↓ / click picks · Tab / ←→ switches columns · Enter applies both.\nCtrl+R resets both (Enter applies); Esc cancels.\nA / T or top dropdowns select a single assignee/status.\nChanging assignee selects Mine, Available, or filtered Backlog.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nOR within each list, AND between lists and text; the current view stays fixed.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -2525,9 +2669,10 @@ mod tests {
         assert_eq!(a.visible.len(), 1);
         assert_eq!(a.selected_ticket().unwrap().key, "DEV-102");
         a.apply_assignee_filter("@me".into());
-        assert_eq!(a.view, config::MINE);
+        assert_eq!(a.view, config::AVAILABLE);
+        assert!(a.query().unwrap().contains("currentUser()"));
         a.apply_assignee_filter("sam".into());
-        assert_eq!(a.view, config::BACKLOG);
+        assert_eq!(a.view, config::AVAILABLE);
         assert!(a.query().unwrap().contains("assignee = \"sam\""));
         a.switch_view(config::MINE);
         assert_eq!(a.remote_search, "Enter");
@@ -2919,6 +3064,198 @@ mod tests {
         assert_eq!(choices[0][selected[0]].value, "@me");
         assert_eq!(choices[1][selected[1]].value, "Refinement");
     }
+    fn toggle_filter(a: &mut App, column: usize, value: &str) {
+        if let Some(Dialog::Filters {
+            choices,
+            selected,
+            active,
+            ..
+        }) = &mut a.dialog
+        {
+            *active = column;
+            selected[column] = choices[column]
+                .iter()
+                .position(|c| c.value == value)
+                .unwrap();
+        } else {
+            panic!("Expected filter dialog");
+        }
+        assert!(a.event(key(' ', KeyModifiers::NONE)).is_empty());
+    }
+    #[test]
+    fn multi_filters_or_within_columns_and_text_intersect_without_sorting_or_writes() {
+        let mut a = app();
+        a.read_only = true;
+        let mut workspace = a.workspace.clone().unwrap();
+        workspace.items.reverse();
+        for t in &mut workspace.items {
+            if t.key == "DEV-101" {
+                t.fields["description"] = serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"deepcachedtoken"}]}]});
+            }
+        }
+        workspace.reindex();
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((workspace, vec![])),
+        });
+        a.filters_dialog();
+        for v in ["@me", "sam"] {
+            toggle_filter(&mut a, 0, v);
+        }
+        for v in ["In Progress", "To Do"] {
+            toggle_filter(&mut a, 1, v);
+        }
+        assert!(a.assignee_filter.is_empty());
+        assert!(a.status_filter.is_empty());
+        assert!(a.event(key('s', KeyModifiers::CONTROL)).is_empty());
+        assert!(!a.writing);
+        assert_eq!(a.view, config::BACKLOG);
+        assert_eq!(
+            a.visible
+                .iter()
+                .map(|i| a.items[*i].key.as_str())
+                .collect::<Vec<_>>(),
+            ["DEV-103", "DEV-101"]
+        );
+        a.remote_search = "deepcachedtoken".into();
+        a.reload();
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-101");
+        a.filters_dialog();
+        let Some(Dialog::Filters { checked, .. }) = &a.dialog else {
+            panic!()
+        };
+        assert!(checked[0].contains("@me") && checked[0].contains("sam"));
+        assert!(checked[1].contains("To Do") && checked[1].contains("In Progress"));
+    }
+    #[test]
+    fn toggling_filters_does_not_apply_until_enter_and_cancel_preserves_all_values() {
+        let mut a = app();
+        a.assignee_filter = vec!["sam".into(), "@me".into()].into();
+        a.status_filter = vec!["To Do".into(), "In Progress".into()].into();
+        a.reload();
+        a.filters_dialog();
+        toggle_filter(&mut a, 1, "To Do");
+        toggle_filter(&mut a, 0, "sam");
+        a.event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert_eq!(a.assignee_filter.len(), 2);
+        assert_eq!(a.status_filter.len(), 2);
+        a.filters_dialog();
+        toggle_filter(&mut a, 1, "");
+        a.event(key('s', KeyModifiers::CONTROL));
+        assert!(a.status_filter.is_empty());
+        assert_eq!(a.assignee_filter.len(), 2);
+    }
+    #[test]
+    fn multiple_checks_and_custom_input_survive_workspace_sync() {
+        let mut a = app();
+        a.filters_dialog();
+        for v in ["@me", "sam"] {
+            toggle_filter(&mut a, 0, v);
+        }
+        for v in ["In Progress", "To Do"] {
+            toggle_filter(&mut a, 1, v);
+        }
+        toggle_filter(&mut a, 1, "__other");
+        a.event(Event::Paste("QA, follow-up".into()));
+        let mut workspace = a.workspace.clone().unwrap();
+        let mut new = data::demo_tickets().remove(2);
+        new.key = "DEV-104".into();
+        new.fields["status"] = serde_json::json!({"name":"New status"});
+        workspace.items.push(new);
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((workspace, vec![])),
+        });
+        let Some(Dialog::Filters {
+            checked,
+            custom: Some(input),
+            choices,
+            ..
+        }) = &a.dialog
+        else {
+            panic!()
+        };
+        assert_eq!(checked[0].len(), 2);
+        assert_eq!(checked[1].len(), 2);
+        assert_eq!(input.value, "QA, follow-up");
+        assert!(choices[1].iter().any(|c| c.value == "New status"));
+        a.event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        let Some(Dialog::Filters {
+            checked, custom, ..
+        }) = &a.dialog
+        else {
+            panic!()
+        };
+        assert!(custom.is_none());
+        assert_eq!(checked[1].len(), 3);
+        assert!(a.event(key('s', KeyModifiers::CONTROL)).is_empty());
+        assert!(a.status_filter.contains("QA, follow-up"));
+        assert_eq!(a.status_filter.len(), 3);
+        assert!(!a.writing);
+    }
+    #[test]
+    fn filters_keep_membership_view_even_when_selecting_me_or_unassigned() {
+        let mut a = app();
+        let mut workspace = a.workspace.clone().unwrap();
+        workspace.board = Some(["DEV-101".into(), "DEV-103".into()].into());
+        workspace.reindex();
+        a.workspace = Some(workspace);
+        a.switch_view(config::BOARD);
+        a.filters_dialog();
+        toggle_filter(&mut a, 0, "@me");
+        a.event(key('s', KeyModifiers::CONTROL));
+        assert_eq!(a.view, config::BOARD);
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-101");
+        a.switch_view(config::BACKLOG);
+        a.filters_dialog();
+        toggle_filter(&mut a, 0, "unassigned");
+        a.event(key('s', KeyModifiers::CONTROL));
+        assert_eq!(a.view, config::BACKLOG);
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-102");
+    }
+    #[test]
+    fn reset_while_typing_custom_filter_clears_all_staged_values_without_applying() {
+        let mut a = app();
+        a.status_filter = "To Do".into();
+        a.filters_dialog();
+        toggle_filter(&mut a, 1, "__other");
+        a.event(Event::Paste("Never applied".into()));
+        a.event(key('r', KeyModifiers::CONTROL));
+        let Some(Dialog::Filters {
+            checked,
+            custom,
+            selected,
+            ..
+        }) = &a.dialog
+        else {
+            panic!()
+        };
+        assert!(checked.iter().all(Selection::is_empty));
+        assert!(custom.is_none());
+        assert_eq!(*selected, [0, 0]);
+        assert_eq!(a.status_filter, "To Do");
+    }
+    #[test]
+    fn custom_filter_escape_returns_to_staged_lists_instead_of_applying() {
+        let mut a = app();
+        a.filters_dialog();
+        toggle_filter(&mut a, 1, "To Do");
+        toggle_filter(&mut a, 1, "__other");
+        a.event(Event::Paste("Never applied".into()));
+        a.event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        let Some(Dialog::Filters {
+            custom, checked, ..
+        }) = &a.dialog
+        else {
+            panic!()
+        };
+        assert!(custom.is_none());
+        assert!(checked[1].contains("To Do"));
+        assert!(a.status_filter.is_empty());
+    }
     #[test]
     fn list_filters_stage_both_columns_and_apply_without_jira_writes() {
         let mut a = app();
@@ -2927,10 +3264,12 @@ mod tests {
         for _ in 0..4 {
             a.event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         }
+        a.event(key(' ', KeyModifiers::NONE));
         a.event(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
         for _ in 0..3 {
             a.event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         }
+        a.event(key(' ', KeyModifiers::NONE));
         assert!(a.assignee_filter.is_empty());
         assert!(a.status_filter.is_empty());
         let jobs = a.event(Event::Key(KeyEvent::new(
@@ -2961,9 +3300,9 @@ mod tests {
             KeyCode::Enter,
             KeyModifiers::NONE,
         )));
-        assert_eq!(a.view, config::BACKLOG);
+        assert_eq!(a.view, config::MINE);
         assert!(a.status_filter.is_empty());
-        assert_eq!(a.visible.len(), 3);
+        assert_eq!(a.visible.len(), 1);
     }
     #[test]
     fn filter_lists_preserve_custom_values_and_status_dropdown_preselects() {
@@ -2980,13 +3319,19 @@ mod tests {
         assert_eq!(choices[0][selected[0]].value, "other@example.com");
         assert_eq!(choices[1][selected[1]].value, "Blocked");
         a.status_picker(true);
-        let Some(Dialog::Picker {
-            choices, selected, ..
+        let Some(Dialog::Filters {
+            choices,
+            selected,
+            checked,
+            active,
+            ..
         }) = &a.dialog
         else {
             panic!()
         };
-        assert_eq!(choices[*selected].value, "Blocked");
+        assert_eq!(*active, 1);
+        assert_eq!(choices[1][selected[1]].value, "Blocked");
+        assert!(checked[1].contains("Blocked"));
         a.filters_dialog();
         if let Some(Dialog::Filters {
             choices, selected, ..
@@ -2998,12 +3343,18 @@ mod tests {
             KeyCode::Enter,
             KeyModifiers::NONE,
         )));
-        let Some(Dialog::Form { values, kind, .. }) = &a.dialog else {
+        let Some(Dialog::Filters {
+            custom: Some(input),
+            checked,
+            ..
+        }) = &a.dialog
+        else {
             panic!()
         };
-        assert_eq!(kind, "filters");
-        assert_eq!(values[0], "");
-        assert_eq!(values[1], "Blocked");
+        assert_eq!(input.column, 0);
+        assert!(input.value.is_empty());
+        assert!(checked[0].contains("other@example.com"));
+        assert!(checked[1].contains("Blocked"));
     }
     #[test]
     fn open_filter_lists_update_after_sync_without_losing_staged_selections() {

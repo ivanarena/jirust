@@ -144,9 +144,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Paragraph::new(format!(
             " Status: {} ▾",
             if app.status_filter.is_empty() {
-                "Any"
+                "Any".into()
+            } else if app.status_filter.len() > 1 {
+                format!("{} selected", app.status_filter.len())
             } else {
-                &app.status_filter
+                app.status_filter.single().to_owned()
             }
         ))
         .style(Style::default().fg(Color::Blue)),
@@ -358,6 +360,8 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
             choices,
             selected,
             active,
+            checked,
+            custom,
         } => {
             let b = block(" Filters · lists from the shared ticket cache ", true);
             let inner = b.inner(rect);
@@ -374,8 +378,9 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
             for column in 0..2 {
                 let b = block(
                     format!(
-                        " {} · {}/{} ",
+                        " {} · {} selected · {}/{} ",
                         if column == 0 { "Assignees" } else { "Statuses" },
+                        checked[column].len(),
                         selected[column] + 1,
                         choices[column].len()
                     ),
@@ -406,14 +411,36 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
                     };
                     frame.render_widget(
                         Paragraph::new(format!(
-                            "{} {}",
+                            "{} [{}] {}",
                             if chosen { "›" } else { " " },
+                            if choice.value == "__other" {
+                                "+"
+                            } else if checked[column].contains(&choice.value) {
+                                "x"
+                            } else {
+                                " "
+                            },
                             data::line(&choice.label)
                         ))
                         .style(style),
                         Rect::new(list.x, list.y + y as u16, list.width, 1),
                     );
                 }
+            }
+            if let Some(input) = custom {
+                let label = if input.column == 0 {
+                    "Add assignee"
+                } else {
+                    "Add status"
+                };
+                frame.render_widget(
+                    Paragraph::new(format!(
+                        "{label}: {}_ · Enter adds / Esc back",
+                        data::line(&input.value)
+                    ))
+                    .style(Style::default().fg(Color::Blue)),
+                    Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 1),
+                );
             }
             let y = inner.bottom().saturating_sub(2);
             app.filter_apply_rect = Rect::new(inner.x, y, 16.min(inner.width), 1);
@@ -436,7 +463,7 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
                 app.filter_reset_rect,
             );
             frame.render_widget(
-                Paragraph::new(" ↑↓ / click pick · Tab / ←→ column · Esc cancels")
+                Paragraph::new(" Space/click toggle · Enter apply · Esc cancel")
                     .style(Style::default().fg(Color::DarkGray)),
                 Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
             );
@@ -704,6 +731,55 @@ mod tests {
         assert!(matches!(&jobs[..], [Job::Sync { changed: None, .. }]));
         assert_eq!(app.search, "keep search");
         assert!(matches!(app.search_mode, SearchMode::Text));
+    }
+    #[test]
+    fn multiple_checked_values_are_visible_and_toolbar_shows_selection_counts() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(
+            Backend::new("demo", None).unwrap(),
+            Cache { directory: None },
+            Settings {
+                project: "DEV".into(),
+                last_view: crate::config::BACKLOG,
+                ..Default::default()
+            },
+            true,
+            500,
+            std::path::PathBuf::new(),
+        );
+        app.items = data::demo_tickets();
+        app.visible = (0..3).collect();
+        app.assignee_filter = vec!["@me".into(), "sam".into()].into();
+        app.status_filter = vec!["In Progress".into(), "To Do".into()].into();
+        for (width, height) in [(60, 16), (120, 28)] {
+            app.event(Event::Key(KeyEvent::new(
+                KeyCode::Char('f'),
+                KeyModifiers::NONE,
+            )));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let screen = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(screen.contains("[x] Me"));
+            assert!(screen.contains("[x] In Progress"));
+            assert!(screen.contains("[x] To Do"));
+            assert!(screen.contains("Space/click toggle"));
+            app.event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let screen = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(screen.contains("2 selected"));
+        }
     }
     #[test]
     fn filter_lists_are_visible_on_small_terminals_and_mouse_selection_is_staged() {

@@ -4,6 +4,7 @@ pub mod board_api;
 pub mod config;
 pub mod data;
 pub mod environment;
+pub mod filters;
 pub mod input;
 pub mod markdown;
 pub mod movement;
