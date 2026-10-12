@@ -272,6 +272,9 @@ impl Backend {
         }
         let complete = self.kind != Kind::Jira
             || (items.len() < 100 && mine.len() < 100 && changes.len() < 100);
+        // Keep the CLI's Rank sequence; removing containers/children must
+        // be a stable filter, never a key/date/status sort.
+        let items = items.into_iter().filter(Ticket::backlog_ticket).collect();
         let mut workspace = crate::workspace::Workspace {
             items,
             mine: mine.into_iter().map(|t| t.key).collect(),

@@ -743,6 +743,59 @@ mod tests {
         }
     }
     #[test]
+    fn rendered_ticket_rows_keep_manual_sequence_not_numerical_order() {
+        use crate::app::Message;
+        let mut app = App::new(
+            Backend::new("demo", None).unwrap(),
+            Cache { directory: None },
+            Settings {
+                project: "DEV".into(),
+                last_view: 2,
+                ..Default::default()
+            },
+            true,
+            500,
+            std::path::PathBuf::new(),
+        );
+        let mut items = data::demo_tickets();
+        items[0].key = "DEV-84".into();
+        items[1].key = "DEV-97".into();
+        items[2].key = "DEV-61".into();
+        let mut epic = items[0].clone();
+        epic.key = "DEV-1".into();
+        epic.fields["issuetype"] = serde_json::json!({"name":"Epic"});
+        items.insert(0, epic);
+        let workspace = crate::workspace::Workspace {
+            items,
+            complete: true,
+            ..Default::default()
+        };
+        app.message(Message::Synced {
+            generation: app.generation,
+            result: Ok((workspace, vec![])),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(140, 26)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (app.tickets_rect.y..app.tickets_rect.bottom())
+            .map(|y| {
+                (app.tickets_rect.x..app.tickets_rect.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        let order: Vec<_> = rows
+            .iter()
+            .filter_map(|s| {
+                ["DEV-84", "DEV-97", "DEV-61"]
+                    .into_iter()
+                    .find(|key| s.contains(key))
+            })
+            .collect();
+        assert_eq!(order, ["DEV-84", "DEV-97", "DEV-61"]);
+        assert!(!rows.iter().any(|s| s.contains("DEV-1 ")));
+    }
+    #[test]
     fn two_panes_and_top_views_fit() {
         for (w, h) in [(60, 16), (82, 26), (120, 24), (163, 28), (180, 56)] {
             let settings = Settings {

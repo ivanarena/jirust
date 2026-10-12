@@ -25,7 +25,7 @@ There is no separate Board tab, no backlog-only status list, no sprint workflow,
 
 **←/→** switch views when you are not editing text. Click tabs if preferred. **Alt+1…3 / F1…F3** are fallbacks for terminals that cannot distinguish Ctrl+number from ordinary digits. Additional assignee choices select Mine, Available, or a filtered Backlog rather than silently contradicting the selected view. Custom saved top views are no longer exposed.
 
-The existing personal project/JQL configuration is reused. All three views use that scope and exclude completed work. The installed CLIs do not expose a web board's saved filter/configuration automatically: without an explicit saved-filter scope, the fallback is unfinished project work, **not a guaranteed exact replica of an arbitrary web board**. Optional advanced project/prefix/JQL overrides are available through **g / Ctrl+G** or command-line flags; status mappings are unnecessary.
+The existing personal project/JQL configuration is reused. All three views use that scope and exclude completed work. Epics/higher-level containers and Sub-Tasks are excluded from the ticket inventory, including older cached snapshots; direct numeric lookup can still open them. Rows preserve the server's manual Rank sequence, never sort by ticket number. Switching views resets selection/scroll to the first ranked row. The installed CLIs do not expose a web board's saved filter/configuration automatically: without an explicit saved-filter scope, the fallback is unfinished project work, **not a guaranteed exact replica of an arbitrary web board**. Optional advanced project/prefix/JQL overrides are available through **g / Ctrl+G** or command-line flags; status mappings are unnecessary.
 
 ## Daily controls
 

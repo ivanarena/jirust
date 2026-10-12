@@ -366,6 +366,8 @@ impl App {
             });
         }
         if let Some(workspace) = &mut self.workspace {
+            // Apply the same inventory to older cached snapshots immediately.
+            workspace.items.retain(Ticket::backlog_ticket);
             workspace.reindex();
         }
         self.apply_local();
@@ -660,7 +662,9 @@ impl App {
                 self.loading = false;
                 match result {
                     Ok((mut workspace, changed)) => {
-                        if workspace.index.is_empty() {
+                        let count = workspace.items.len();
+                        workspace.items.retain(Ticket::backlog_ticket);
+                        if workspace.index.is_empty() || count != workspace.items.len() {
                             workspace.reindex();
                         }
                         let keys = workspace.keys();
@@ -900,6 +904,10 @@ impl App {
             return vec![];
         };
         self.view = index;
+        self.selected = 0;
+        self.visible.clear();
+        self.table.select(None);
+        *self.table.offset_mut() = 0;
         self.assignee_filter.clear();
         self.settings.last_view = index;
         if self.backend.kind != Kind::Demo {
@@ -2767,6 +2775,52 @@ mod tests {
         assert_eq!(a.items.len(), 3);
         assert_eq!(a.visible.len(), 3);
         assert!(a.search_due.is_none());
+    }
+    #[test]
+    fn old_cached_inventory_removes_numerical_epic_blocks_but_keeps_rank_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        a.cache = Cache {
+            directory: Some(dir.path().into()),
+        };
+        let mut workspace = a.workspace.clone().unwrap();
+        workspace.items.reverse();
+        let mut epic = data::demo_tickets().remove(0);
+        epic.key = "DEV-1".into();
+        epic.fields["issuetype"] = serde_json::json!({"name":"Epic"});
+        let mut child = epic.clone();
+        child.key = "DEV-2".into();
+        child.fields["issuetype"] = serde_json::json!({"name":"Sub-Task","subtask":true});
+        workspace.items.splice(0..0, [epic, child]);
+        a.cache.put(&a.workspace_key(), &workspace).unwrap();
+        let mut next = App::new(
+            a.backend.clone(),
+            a.cache.clone(),
+            a.settings.clone(),
+            true,
+            500,
+            PathBuf::new(),
+        );
+        next.reload();
+        assert_eq!(
+            next.items
+                .iter()
+                .map(|t| t.key.as_str())
+                .collect::<Vec<_>>(),
+            ["DEV-103", "DEV-102", "DEV-101"]
+        );
+    }
+    #[test]
+    fn switching_views_returns_to_first_ranked_row_instead_of_old_scroll_position() {
+        let mut a = app();
+        a.selected = 2;
+        *a.table.offset_mut() = 2;
+        a.select_current();
+        a.switch_view(config::AVAILABLE);
+        a.switch_view(config::BACKLOG);
+        assert_eq!(a.selected, 0);
+        assert_eq!(a.table.offset(), 0);
+        assert_eq!(a.detail_key, "DEV-101");
     }
     #[test]
     fn assignments_use_identity_not_display_name() {

@@ -22,6 +22,7 @@ pub(crate) struct SearchRow {
     status: String,
     assignees: Vec<String>,
     unassigned: bool,
+    backlog_ticket: bool,
     text: String,
 }
 impl SearchRow {
@@ -74,6 +75,7 @@ impl SearchRow {
             status: ticket.status().to_lowercase(),
             assignees: assignees.into_iter().map(|s| s.to_lowercase()).collect(),
             unassigned: ticket.fields["assignee"].is_null(),
+            backlog_ticket: ticket.backlog_ticket(),
             text: text.to_lowercase(),
         }
     }
@@ -85,7 +87,10 @@ impl SearchRow {
         status: &str,
         words: &[&str],
     ) -> bool {
-        if view == config::MINE && !mine || view == config::AVAILABLE && !self.unassigned {
+        if !self.backlog_ticket
+            || view == config::MINE && !mine
+            || view == config::AVAILABLE && !self.unassigned
+        {
             return false;
         }
         if view == config::BACKLOG && !assignee.is_empty() {
