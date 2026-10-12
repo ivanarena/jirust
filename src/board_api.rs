@@ -26,11 +26,29 @@ struct CliConfig {
     current_profile: String,
     profiles: Vec<Profile>,
 }
-fn profile() -> Result<Profile> {
+impl Profile {
+    fn is_oauth(&self) -> bool {
+        matches!(self.auth_type.as_str(), "oauth" | "oauth_global")
+    }
+    fn keyring_username(&self) -> String {
+        format!(
+            "{}:{}:{}",
+            if self.auth_type == "oauth_global" {
+                "oauth"
+            } else {
+                "jira"
+            },
+            self.cloud_id,
+            self.account_id
+        )
+    }
+}
+fn cli_profile(file: &str) -> Result<Profile> {
     let path = BaseDirs::new()
         .context("No home directory")?
         .config_dir()
-        .join("acli/jira_config.yaml");
+        .join("acli")
+        .join(file);
     let bytes = std::fs::read(path).context("Cannot read existing acli profile metadata")?;
     ensure!(bytes.len() < 1024 * 1024, "acli metadata is too large");
     let c: CliConfig = serde_yaml::from_slice(&bytes)
@@ -39,6 +57,21 @@ fn profile() -> Result<Profile> {
         .into_iter()
         .find(|p| format!("{}:{}", p.cloud_id, p.account_id) == c.current_profile)
         .context("No current acli Jira profile")
+}
+fn profile() -> Result<Profile> {
+    let p = cli_profile("jira_config.yaml")?;
+    if p.auth_type == "oauth_global" {
+        let global = cli_profile("global_auth_config.yaml")?;
+        ensure!(
+            global.cloud_id == p.cloud_id
+                && global.account_id == p.account_id
+                && global.site == p.site
+                && global.email == p.email
+                && global.auth_type == "oauth",
+            "Global OAuth/Jira identities differ; select the same account/site in acli and restart jiraui"
+        );
+    }
+    Ok(p)
 }
 pub struct BoardApi {
     pub id: u64,
@@ -95,7 +128,7 @@ impl BoardApi {
     }
     async fn credential(&self) -> Result<String> {
         self.check_identity()?;
-        let username = format!("jira:{}:{}", self.profile.cloud_id, self.profile.account_id);
+        let username = self.profile.keyring_username();
         let out = timeout(
             Duration::from_secs(10),
             Command::new("secret-tool")
@@ -111,10 +144,10 @@ impl BoardApi {
             out.status.success() && !out.stdout.is_empty(),
             "Cannot access current acli keyring credential"
         );
-        decode_credential(&out.stdout, self.profile.auth_type == "oauth")
+        decode_credential(&out.stdout, self.profile.is_oauth())
     }
     fn url(&self, endpoint: &str) -> Result<Url> {
-        let origin = if self.profile.auth_type == "oauth" {
+        let origin = if self.profile.is_oauth() {
             format!(
                 "https://api.atlassian.com/ex/jira/{}",
                 self.profile.cloud_id
@@ -138,7 +171,7 @@ impl BoardApi {
             .request(method.clone(), self.url(endpoint)?)
             .query(query)
             .header("Accept", "application/json");
-        request = if self.profile.auth_type == "oauth" {
+        request = if self.profile.is_oauth() {
             request.bearer_auth(token)
         } else {
             request.basic_auth(&self.profile.email, Some(token))
@@ -340,6 +373,33 @@ mod tests {
         );
         assert!(move_request(17, "DEV-1,DEV-2", true).is_err());
         assert!(move_request(0, "DEV-1", false).is_err());
+    }
+    #[test]
+    fn global_oauth_uses_its_own_keyring_entry_and_bearer_transport() {
+        let mut p = Profile {
+            site: "synthetic.atlassian.net".into(),
+            cloud_id: "synthetic-cloud".into(),
+            account_id: "synthetic-account".into(),
+            email: "alex@example.com".into(),
+            auth_type: "oauth_global".into(),
+        };
+        assert!(p.is_oauth());
+        assert_eq!(
+            p.keyring_username(),
+            "oauth:synthetic-cloud:synthetic-account"
+        );
+        p.auth_type = "oauth".into();
+        assert!(p.is_oauth());
+        assert_eq!(
+            p.keyring_username(),
+            "jira:synthetic-cloud:synthetic-account"
+        );
+        p.auth_type = "api_token".into();
+        assert!(!p.is_oauth());
+        assert_eq!(
+            p.keyring_username(),
+            "jira:synthetic-cloud:synthetic-account"
+        );
     }
     #[test]
     fn auth_envelopes_never_need_oauth_refresh_implementation() {
