@@ -287,6 +287,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     app.footer_buttons.clear();
     let buttons = [
+        ('r', "Refresh"),
         ('a', "Assign"),
         ('t', "Status"),
         ('e', "Edit"),
@@ -298,7 +299,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ];
     let mut bx = rows[4].x;
     for (key, label) in buttons {
-        let text = format!(" {key} {label} ");
+        let text = if key == 'r' {
+            format!(" F5 {label} ")
+        } else {
+            format!(" {key} {label} ")
+        };
         let w = text.width() as u16;
         if bx + w > area.right() {
             break;
@@ -686,6 +691,19 @@ mod tests {
             assert_eq!(app.visible.len(), count);
             assert_eq!(app.assignee_label(), label);
         }
+        app.search_mode = SearchMode::Text;
+        app.search = "keep search".into();
+        let (rect, key) = app.footer_buttons[0];
+        assert_eq!(key, 'r');
+        let jobs = app.event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x + 1,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert!(matches!(&jobs[..], [Job::Sync { changed: None, .. }]));
+        assert_eq!(app.search, "keep search");
+        assert!(matches!(app.search_mode, SearchMode::Text));
     }
     #[test]
     fn filter_lists_are_visible_on_small_terminals_and_mouse_selection_is_staged() {
@@ -838,6 +856,14 @@ mod tests {
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             assert!(app.tickets_rect.width > 0 && app.ticket_rect.width > 0);
             assert_eq!(app.tabs.len(), 4);
+            let screen = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(screen.contains("F5 Refresh"));
             assert!(
                 app.document
                     .iter()

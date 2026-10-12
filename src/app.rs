@@ -141,6 +141,8 @@ pub struct App {
     pub workspace: Option<Workspace>,
     pub items_are_workspace: bool,
     pub syncing: bool,
+    pub full_sync: bool,
+    pub refresh_pending: bool,
     pub next_sync: Option<Instant>,
     pub dirty: bool,
     pub prefetch: VecDeque<String>,
@@ -219,6 +221,8 @@ impl App {
             workspace: None,
             items_are_workspace: false,
             syncing: false,
+            full_sync: false,
+            refresh_pending: false,
             next_sync: None,
             dirty: false,
             prefetch: VecDeque::new(),
@@ -345,6 +349,8 @@ impl App {
         self.last_query = query.clone();
         self.prefetch.clear();
         self.syncing = false;
+        self.full_sync = false;
+        self.refresh_pending = false;
         self.workspace = None;
         self.items_are_workspace = false;
         self.dirty_details = self
@@ -424,19 +430,75 @@ impl App {
             false,
         );
     }
+    /// Pull the complete scope again and bypass every scoped detail cache.
+    /// Keep the old snapshot visible; never discard useful data on failure.
+    pub fn refresh_all(&mut self) -> Vec<Job> {
+        if self.writing {
+            self.notice("Wait for the in-flight update before refreshing", true);
+            return vec![];
+        }
+        if self.last_query.is_empty() || self.settings.scope().is_err() {
+            return self.reload();
+        }
+        if self.syncing {
+            if !self.full_sync {
+                self.refresh_pending = true;
+            }
+            self.notice(
+                if self.full_sync {
+                    "Full refresh already running"
+                } else {
+                    "Full refresh queued after current sync"
+                },
+                false,
+            );
+            return vec![];
+        }
+        self.refresh_pending = false;
+        self.generation += 1;
+        self.prefetch.clear();
+        let mut keys = self
+            .workspace
+            .as_ref()
+            .map(Workspace::keys)
+            .unwrap_or_default();
+        if !self.detail_key.is_empty() {
+            keys.insert(self.detail_key.clone());
+        }
+        for key in keys {
+            *self.detail_revisions.entry(key.clone()).or_default() += 1;
+            self.pending.remove(&key);
+            self.dirty_details.insert(key);
+        }
+        self.save_dirty();
+        let jobs = self.sync_workspace_mode(true);
+        self.notice(
+            "Refreshing entire workspace; cached tickets remain visible",
+            false,
+        );
+        jobs
+    }
     pub fn sync_workspace(&mut self) -> Vec<Job> {
+        self.sync_workspace_mode(false)
+    }
+    fn sync_workspace_mode(&mut self, full: bool) -> Vec<Job> {
         if self.syncing {
             return vec![];
         }
         let Ok(mine) = self.settings.query(config::MINE, "", "", "") else {
             return vec![];
         };
-        let changed = self.workspace.as_ref().map(|w| {
-            Workspace::recent_query(
-                &self.last_query,
-                config::now().saturating_sub(w.synced_at) / 60 + 2,
-            )
-        });
+        let changed = if full {
+            None
+        } else {
+            self.workspace.as_ref().map(|w| {
+                Workspace::recent_query(
+                    &self.last_query,
+                    config::now().saturating_sub(w.synced_at) / 60 + 2,
+                )
+            })
+        };
+        self.full_sync = full;
         self.syncing = true;
         self.loading = self.workspace.is_none();
         self.next_sync = Some(Instant::now() + Duration::from_secs(60));
@@ -576,7 +638,11 @@ impl App {
         {
             return vec![];
         }
-        if !force && self.backend.kind == Kind::Demo && self.details.contains_key(&key) {
+        if !force
+            && !self.dirty_details.contains(&key)
+            && self.backend.kind == Kind::Demo
+            && self.details.contains_key(&key)
+        {
             return vec![];
         }
         self.pending.insert(key.clone());
@@ -678,6 +744,8 @@ impl App {
                     return vec![];
                 }
                 self.syncing = false;
+                let full = self.full_sync;
+                self.full_sync = false;
                 self.loading = false;
                 match result {
                     Ok((mut workspace, changed)) => {
@@ -687,6 +755,9 @@ impl App {
                             workspace.reindex();
                         }
                         let keys = workspace.keys();
+                        if full {
+                            self.dirty_details.extend(keys.iter().cloned());
+                        }
                         self.dirty_details.extend(changed);
                         if let Some(old) = &self.workspace {
                             for ticket in &workspace.items {
@@ -707,7 +778,9 @@ impl App {
                                 self.pending.remove(key);
                             }
                         }
-                        if self.dirty_details.contains(&self.detail_key) {
+                        if self.dirty_details.contains(&self.detail_key)
+                            || full && !self.detail_key.is_empty()
+                        {
                             self.selection_due = Some(Instant::now());
                         }
                         self.save_dirty();
@@ -745,6 +818,9 @@ impl App {
                         );
                         self.next_sync = Some(Instant::now() + Duration::from_secs(120));
                     }
+                }
+                if self.refresh_pending {
+                    return self.refresh_all();
                 }
             }
             Message::Detail {
@@ -1052,6 +1128,12 @@ impl App {
                 if self.dialog.is_some() {
                     return self.dialog_key(key);
                 }
+                if key.code == KeyCode::F(5)
+                    || key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('r' | 'R'))
+                {
+                    return self.refresh_all();
+                }
                 if key.modifiers.is_empty() && self.search_mode != SearchMode::Text {
                     let next = match key.code {
                         KeyCode::Left => Some(self.view.saturating_sub(1)),
@@ -1070,7 +1152,7 @@ impl App {
                     return self.switch_view(c as usize - '1' as usize);
                 }
                 if let KeyCode::F(n) = key.code
-                    && (1..=9).contains(&n)
+                    && (1..=config::VIEW_NAMES.len() as u8).contains(&n)
                 {
                     return self.switch_view(n as usize - 1);
                 }
@@ -1189,14 +1271,7 @@ impl App {
                             key: String::new(),
                         })
                     }
-                    KeyCode::Char('r') => {
-                        let key = self.detail_key.clone();
-                        let mut jobs = self.sync_workspace();
-                        if !key.is_empty() {
-                            jobs.extend(self.detail_job(key, None, true))
-                        };
-                        return jobs;
-                    }
+                    KeyCode::Char('r') => return self.refresh_all(),
                     KeyCode::Char('l') => self.links(),
                     KeyCode::Char('O') => {
                         if let Some(url) = self.active_ticket().and_then(Ticket::web_url) {
@@ -1336,6 +1411,9 @@ impl App {
                         }
                         for (rect, key) in self.footer_buttons.clone() {
                             if contains(rect, mouse.column, mouse.row) {
+                                if key == 'r' {
+                                    return self.refresh_all();
+                                }
                                 if self.search_mode == SearchMode::Text {
                                     self.remote_search = self.search.clone();
                                     self.search_due = None;
@@ -2270,7 +2348,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows assignee + status lists from the shared cache.\n↑↓ / click picks · Tab / ←→ switches columns · Enter applies both.\nCtrl+R resets both (Enter applies); Esc cancels.\nA / T or top dropdowns select a single assignee/status.\nChanging assignee selects Mine, Available, or filtered Backlog.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nr refreshes · q quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows assignee + status lists from the shared cache.\n↑↓ / click picks · Tab / ←→ switches columns · Enter applies both.\nCtrl+R resets both (Enter applies); Esc cancels.\nA / T or top dropdowns select a single assignee/status.\nChanging assignee selects Mine, Available, or filtered Backlog.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -2631,6 +2709,179 @@ mod tests {
                 .flat_map(|l| &l.chunks)
                 .any(|c| c.text.contains("ready locally"))
         );
+    }
+    #[test]
+    fn full_refresh_shortcuts_bypass_details_and_preserve_the_view() {
+        for event in [
+            key('r', KeyModifiers::NONE),
+            key('r', KeyModifiers::CONTROL),
+            Event::Key(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut a = app();
+            a.read_only = true;
+            a.cache = Cache {
+                directory: Some(dir.path().into()),
+            };
+            let snapshot = a.workspace.clone().unwrap();
+            for t in &snapshot.items {
+                a.cache.put(&full_cache_key(&t.key), t).unwrap();
+                a.full_ready.insert(t.key.clone());
+            }
+            a.selected = 1;
+            a.table.select(Some(1));
+            *a.table.offset_mut() = 1;
+            a.detail_key = "DEV-102".into();
+            a.scroll = 7;
+            a.selection_due = None;
+            let jobs = a.event(event);
+            let [
+                Job::Sync {
+                    generation,
+                    changed,
+                    ..
+                },
+            ] = &jobs[..]
+            else {
+                panic!("full snapshot request missing")
+            };
+            assert!(changed.is_none());
+            assert!(a.full_sync);
+            assert_eq!(a.dirty_details.len(), 3);
+            assert!(a.cache.exists(&full_cache_key("DEV-101")));
+            assert_eq!(
+                a.cache
+                    .get::<HashSet<String>>(&a.dirty_key())
+                    .unwrap()
+                    .0
+                    .len(),
+                3
+            );
+            a.message(Message::Synced {
+                generation: *generation,
+                result: Ok((snapshot.clone(), vec![])),
+            });
+            assert_eq!(
+                (a.view, a.selected, a.table.offset(), a.scroll),
+                (config::BACKLOG, 1, 1, 7)
+            );
+            assert_eq!(a.detail_key, "DEV-102");
+            let jobs = a.advance();
+            assert!(a.background.len() <= 2);
+            assert_eq!(jobs.len(), 3);
+            for job in jobs {
+                let Job::Detail {
+                    key,
+                    lookup,
+                    revision,
+                    background,
+                } = job
+                else {
+                    panic!("refresh must not write")
+                };
+                let ticket = snapshot
+                    .items
+                    .iter()
+                    .find(|t| t.key == key)
+                    .unwrap()
+                    .clone();
+                a.message(Message::Detail {
+                    key,
+                    lookup,
+                    revision,
+                    background,
+                    result: Ok(ticket),
+                });
+            }
+            assert!(a.dirty_details.is_empty());
+        }
+    }
+    #[test]
+    fn full_refresh_coalesces_requests_and_keeps_cached_rows_on_failure() {
+        let mut a = app();
+        let snapshot = a.workspace.clone().unwrap();
+        a.syncing = true;
+        for _ in 0..3 {
+            assert!(a.refresh_all().is_empty());
+        }
+        assert!(a.refresh_pending);
+        let jobs = a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((snapshot.clone(), vec![])),
+        });
+        let [
+            Job::Sync {
+                generation,
+                changed,
+                ..
+            },
+        ] = &jobs[..]
+        else {
+            panic!()
+        };
+        assert!(changed.is_none());
+        assert!(!a.refresh_pending);
+        assert!(a.refresh_all().is_empty());
+        assert!(!a.refresh_pending);
+        a.message(Message::Synced {
+            generation: *generation,
+            result: Err(anyhow::anyhow!("synthetic offline failure")),
+        });
+        assert_eq!(
+            a.items.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(),
+            ["DEV-101", "DEV-102", "DEV-103"]
+        );
+        assert_eq!(a.dirty_details.len(), 3);
+        assert!(a.error.contains("cached tickets retained"));
+    }
+    #[test]
+    fn refresh_rejects_pre_refresh_detail_responses() {
+        let mut a = app();
+        let key = "DEV-101".to_string();
+        a.pending.insert(key.clone());
+        a.background.insert((key.clone(), 0));
+        a.refresh_all();
+        let mut stale = data::demo_tickets().remove(0);
+        stale.fields["summary"] = serde_json::json!("must not undo refresh");
+        a.message(Message::Detail {
+            key: key.clone(),
+            lookup: None,
+            revision: 0,
+            background: true,
+            result: Ok(stale),
+        });
+        assert_ne!(a.details[&key].0.summary(), "must not undo refresh");
+        assert!(a.dirty_details.contains(&key));
+        assert!(!a.full_ready.contains(&key));
+    }
+    #[test]
+    fn refresh_does_not_steal_editor_or_filter_controls_and_works_during_search() {
+        let mut a = app();
+        a.search_mode = SearchMode::Text;
+        a.search = "cached words".into();
+        a.remote_search = "cached words".into();
+        a.assignee_filter = "sam".into();
+        a.status_filter = "To Do".into();
+        let jobs = a.event(key('r', KeyModifiers::CONTROL));
+        assert!(matches!(&jobs[..], [Job::Sync { .. }]));
+        assert_eq!(a.search, "cached words");
+        assert_eq!(a.assignee_filter, "sam");
+        assert_eq!(a.status_filter, "To Do");
+        let mut a = app();
+        a.action_dialog('c');
+        assert!(a.event(key('r', KeyModifiers::CONTROL)).is_empty());
+        assert!(!a.syncing);
+        assert!(matches!(a.dialog, Some(Dialog::Editor { .. })));
+        let mut a = app();
+        a.filters_dialog();
+        assert!(a.event(key('r', KeyModifiers::CONTROL)).is_empty());
+        assert!(!a.syncing);
+        assert!(matches!(a.dialog, Some(Dialog::Filters { .. })));
+        let mut a = app();
+        a.writing = true;
+        assert!(a.refresh_all().is_empty());
+        assert_eq!(a.generation, 0);
+        assert!(a.dirty_details.is_empty());
     }
     #[test]
     fn periodic_sync_uses_updated_overlap_and_is_not_duplicated_by_tabs() {
