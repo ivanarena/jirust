@@ -19,11 +19,13 @@ pub struct Settings {
     pub scope_name: String,
     pub last_view: usize,
     pub view_layout: u8,
+    pub board_id: Option<u64>,
 }
 pub const MINE: usize = 0;
 pub const AVAILABLE: usize = 1;
-pub const BACKLOG: usize = 2;
-pub const VIEW_NAMES: [&str; 3] = ["Mine", "Available", "Backlog"];
+pub const BOARD: usize = 2;
+pub const BACKLOG: usize = 3;
+pub const VIEW_NAMES: [&str; 4] = ["Mine", "Available", "Board", "Backlog"];
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -32,7 +34,8 @@ impl Default for Settings {
             scope_jql: String::new(),
             scope_name: String::new(),
             last_view: MINE,
-            view_layout: 3,
+            view_layout: 4,
+            board_id: None,
         }
     }
 }
@@ -56,14 +59,20 @@ impl Settings {
         let mut out: Self = serde_json::from_value(value.clone())?;
         // Migrate old numeric tabs without reinterpreting Board as Mine or
         // old Backlog-only as Available. All three now share one backlog scope.
-        if value["view_layout"].as_u64() != Some(3) {
+        if value["view_layout"].as_u64() == Some(3) {
+            out.last_view = if out.last_view == 2 {
+                BACKLOG
+            } else {
+                out.last_view.min(AVAILABLE)
+            };
+        } else if value["view_layout"].as_u64() != Some(4) {
             out.last_view = match value["last_view"].as_u64() {
                 Some(3) => MINE,
                 Some(_) => BACKLOG,
                 None => MINE,
             };
         }
-        out.view_layout = 3;
+        out.view_layout = 4;
         out.last_view = out.last_view.min(BACKLOG);
         // Preserve the configured project/scope, never Jira credentials.
         if out.project.is_empty() {
@@ -89,16 +98,19 @@ impl Settings {
     pub fn query(&self, view: usize, search: &str, assignee: &str, status: &str) -> Result<String> {
         let scope = self.scope()?;
         let (base, order) = split_order(&scope);
-        let mut parts = vec![format!("({base})"), "statusCategory != Done".into()];
+        let mut parts = vec![format!("({base})")];
+        if self.board_id.is_none() {
+            parts.push("statusCategory != Done".into());
+        }
         match view {
             MINE => parts.push("assignee = currentUser()".into()),
             AVAILABLE => parts.push("assignee IS EMPTY".into()),
-            BACKLOG => {}
+            BOARD | BACKLOG => {}
             _ => bail!("Unknown view"),
         }
         // Manual assignee filtering belongs to the combined Backlog view;
         // it cannot silently turn Mine or Available into a different preset.
-        if view == BACKLOG && !assignee.trim().is_empty() {
+        if matches!(view, BOARD | BACKLOG) && !assignee.trim().is_empty() {
             parts.push(match assignee.trim() {
                 "@me" => "assignee = currentUser()".into(),
                 "unassigned" => "assignee IS EMPTY".into(),
@@ -307,7 +319,7 @@ mod tests {
         ] {
             let s=Settings::from_value(serde_json::json!({"project":"DEV","last_view":old,"backlog_statuses":[],"board_entry_status":"","views":[{"name":"old","jql":"project = OTHER"}]})).unwrap();
             assert_eq!(s.last_view, new);
-            assert_eq!(s.view_layout, 3);
+            assert_eq!(s.view_layout, 4);
             let json = serde_json::to_value(&s).unwrap();
             assert!(json.get("backlog_statuses").is_none());
             assert!(json.get("views").is_none());
@@ -317,6 +329,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.last_view, AVAILABLE);
+    }
+    #[test]
+    fn migrate_three_views_to_four_and_board_scope_keeps_completed_rows() {
+        let old = Settings::from_value(
+            serde_json::json!({"project":"DEV","view_layout":3,"last_view":2}),
+        )
+        .unwrap();
+        assert_eq!(old.last_view, BACKLOG);
+        let settings = Settings {
+            project: "DEV".into(),
+            board_id: Some(17),
+            ..Default::default()
+        };
+        for view in [MINE, AVAILABLE, BOARD, BACKLOG] {
+            assert!(
+                !settings
+                    .query(view, "", "", "")
+                    .unwrap()
+                    .contains("statusCategory != Done")
+            );
+        }
+        assert!(
+            settings
+                .query(BOARD, "", "sam", "")
+                .unwrap()
+                .contains("assignee = \"sam\"")
+        );
     }
     #[test]
     fn query_escape() {

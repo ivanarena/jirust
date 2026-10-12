@@ -42,7 +42,7 @@ fn main() {
         Settings {
             project: "DEV".into(),
             prefix: "DEV".into(),
-            last_view: 2,
+            last_view: jiraui::config::BACKLOG,
             ..Default::default()
         },
         true,

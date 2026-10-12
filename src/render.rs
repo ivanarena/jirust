@@ -79,7 +79,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let names = app.view_names();
     let mut x = app.scope_rect.right() + 1;
     for (index, name) in names.into_iter().enumerate() {
-        let label = format!(" ^{} {} ", index + 1, data::line(&name));
+        let label = if area.width < 72 {
+            format!(" ^{}{} ", index + 1, data::line(&name))
+        } else {
+            format!(" ^{} {} ", index + 1, data::line(&name))
+        };
         let w = label.width() as u16;
         if x + w > area.right() {
             break;
@@ -546,7 +550,18 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
             let b = block(format!(" Confirm {} · {} ", action.kind, action.key), true);
             let inner = b.inner(rect);
             frame.render_widget(b, rect);
-            let preview = if action.value.chars().count() > 1500 {
+            let preview = if matches!(action.kind.as_str(), "board" | "backlog") {
+                format!(
+                    "Move {} to {} on board {}.\n\nThis changes membership, not workflow status. Jira determines the destination Rank; refresh will show its authoritative position.",
+                    action.key,
+                    if action.kind == "board" {
+                        "Board"
+                    } else {
+                        "Backlog"
+                    },
+                    action.value
+                )
+            } else if action.value.chars().count() > 1500 {
                 action.value.chars().take(1500).collect::<String>() + "…"
             } else {
                 action.value.clone()
@@ -650,10 +665,11 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(app.visible.len(), 1);
         assert_eq!(app.assignee_label(), "Me");
-        assert_eq!(app.tabs.len(), 3);
+        assert_eq!(app.tabs.len(), 4);
         for (view, count, label) in [
             (config::AVAILABLE, 1, "Unassigned"),
-            (config::BACKLOG, 3, "All"),
+            (config::BOARD, 2, "All"),
+            (config::BACKLOG, 1, "All"),
             (config::MINE, 1, "Me"),
         ] {
             let rect = app.tabs[view].0;
@@ -682,7 +698,7 @@ mod tests {
                 Cache { directory: None },
                 Settings {
                     project: "DEV".into(),
-                    last_view: 2,
+                    last_view: crate::config::BACKLOG,
                     ..Default::default()
                 },
                 true,
@@ -750,7 +766,7 @@ mod tests {
             Cache { directory: None },
             Settings {
                 project: "DEV".into(),
-                last_view: 2,
+                last_view: crate::config::BACKLOG,
                 ..Default::default()
             },
             true,
@@ -800,7 +816,7 @@ mod tests {
         for (w, h) in [(60, 16), (82, 26), (120, 24), (163, 28), (180, 56)] {
             let settings = Settings {
                 project: "DEV".into(),
-                last_view: 2,
+                last_view: crate::config::BACKLOG,
                 ..Default::default()
             };
             let mut app = App::new(
@@ -821,7 +837,7 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             assert!(app.tickets_rect.width > 0 && app.ticket_rect.width > 0);
-            assert_eq!(app.tabs.len(), 3);
+            assert_eq!(app.tabs.len(), 4);
             assert!(
                 app.document
                     .iter()

@@ -1,5 +1,6 @@
 pub mod app;
 pub mod backend;
+pub mod board_api;
 pub mod config;
 pub mod data;
 pub mod input;

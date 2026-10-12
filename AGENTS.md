@@ -1,7 +1,7 @@
 # Project guidelines
 
 - This is a personal, private project. Do not change repository visibility or move it to an organization.
-- The UI delegates to existing `acli`/`jira-cli` commands. Do not introduce a direct Jira HTTP client or extract/reimplement CLI authentication without explicit approval.
+- Ordinary Jira reads/writes delegate to existing `acli`/`jira-cli` commands. The user explicitly approved the opt-in `--board <id>` Jira Software API bridge for exact Board/Backlog membership and confirmed single-ticket movement. It may reuse current acli Linux keyring credentials, but OAuth login/refresh remains acli's responsibility. Do not extend direct HTTP or credential access to other operations without explicit approval.
 - Use `tokio::process::Command` with argument arrays, never shell interpolation, for Jira operations.
 - Never commit credentials, CLI account configuration, caches, ticket bodies, screenshots, or fixtures from real accounts. Tests use synthetic DEV tickets only.
 - Never perform real Jira mutations as part of development/tests. Every user-facing write must target one validated ticket key and require explicit confirmation. Respect `--read-only` in both action entry and confirmation.

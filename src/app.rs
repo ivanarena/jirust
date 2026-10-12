@@ -321,10 +321,21 @@ impl App {
         }
     }
     fn workspace_key(&self) -> String {
-        format!("workspace-v1:{}", self.last_query)
+        match self.settings.board_id {
+            Some(id) => format!(
+                "workspace-board-v1:{id}:{}:{}",
+                self.backend.board_identity().unwrap_or_default(),
+                self.last_query
+            ),
+            None => format!("workspace-v1:{}", self.last_query),
+        }
     }
     fn dirty_key(&self) -> String {
-        format!("workspace-dirty:{}", self.last_query)
+        if self.settings.board_id.is_some() {
+            format!("workspace-dirty:{}", self.workspace_key())
+        } else {
+            format!("workspace-dirty:{}", self.last_query)
+        }
     }
     fn save_dirty(&self) {
         let _ = self.cache.put(&self.dirty_key(), &self.dirty_details);
@@ -343,9 +354,10 @@ impl App {
             .unwrap_or_default();
         if let Some((workspace, _)) = self.cache.get::<Workspace>(&self.workspace_key()) {
             self.workspace = Some(workspace)
-        } else if let Some((items, time)) = self
-            .cache
-            .get::<Vec<Ticket>>(&format!("list:{}:{query}", self.limit))
+        } else if self.settings.board_id.is_none()
+            && let Some((items, time)) = self
+                .cache
+                .get::<Vec<Ticket>>(&format!("list:{}:{query}", self.limit))
         {
             let mine = self
                 .settings
@@ -393,9 +405,16 @@ impl App {
     fn local_notice(&mut self) {
         self.notice(
             format!(
-                "{} shown · {} locally ready{}",
+                "{} shown · {} locally ready{}{}",
                 self.visible.len(),
                 self.workspace.as_ref().map(|w| w.items.len()).unwrap_or(0),
+                if self.view == config::BOARD
+                    && self.workspace.as_ref().is_none_or(|w| w.board.is_none())
+                {
+                    " · Board membership unavailable"
+                } else {
+                    ""
+                },
                 if self.workspace.as_ref().is_some_and(|w| !w.complete) {
                     " · partial scope"
                 } else {
@@ -1190,7 +1209,7 @@ impl App {
                             return vec![Job::Comments(key)];
                         }
                     }
-                    KeyCode::Char('a' | 't' | 'e' | 'c' | 'L') => {
+                    KeyCode::Char('a' | 't' | 'e' | 'c' | 'L' | 'm') => {
                         if let KeyCode::Char(c) = key.code {
                             self.action_dialog(c)
                         }
@@ -1533,9 +1552,10 @@ impl App {
         self.view = match value.as_str() {
             "@me" => config::MINE,
             "unassigned" => config::AVAILABLE,
+            _ if self.view == config::BOARD => config::BOARD,
             _ => config::BACKLOG,
         };
-        self.assignee_filter = if self.view == config::BACKLOG {
+        self.assignee_filter = if matches!(self.view, config::BOARD | config::BACKLOG) {
             value
         } else {
             String::new()
@@ -1786,6 +1806,36 @@ impl App {
             return;
         };
         match c {
+            'm' => {
+                let Some(id) = self.settings.board_id else {
+                    self.notice(
+                        "Configure --board <id> for exact membership and moves",
+                        true,
+                    );
+                    return;
+                };
+                let Some(board) = self.workspace.as_ref().and_then(|w| w.board.as_ref()) else {
+                    self.notice(
+                        "Load verified Board membership before moving a ticket",
+                        true,
+                    );
+                    return;
+                };
+                if self
+                    .workspace
+                    .as_ref()
+                    .is_none_or(|w| !w.items.iter().any(|t| t.key == ticket.key))
+                {
+                    self.notice("Ticket is outside the loaded Board/Backlog scope", true);
+                    return;
+                }
+                let kind = if board.contains(&ticket.key) {
+                    "backlog"
+                } else {
+                    "board"
+                };
+                self.confirm(Action::new(kind, &ticket.key, &id.to_string()));
+            }
             'a' => self.assignee_picker(false),
             't' => self.status_picker(false),
             'e' => {
@@ -1994,6 +2044,10 @@ impl App {
             },
             Dialog::Confirm(action) => {
                 if key.code == KeyCode::Char('y') {
+                    if self.writing {
+                        self.notice("Another update is in flight", true);
+                        return vec![];
+                    }
                     if self.read_only {
                         self.notice("Read-only update blocked", true);
                         return vec![];
@@ -2216,7 +2270,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nTHREE PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Backlog: combined Board + Backlog ticket scope, all assignees.\nClick the tabs, or use Alt+1…3 / F1…F3 as terminal fallbacks.\nNo separate Board view, backlog-status mapping, or sprint settings.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows assignee + status lists from the shared cache.\n↑↓ / click picks · Tab / ←→ switches columns · Enter applies both.\nCtrl+R resets both (Enter applies); Esc cancels.\nA / T or top dropdowns select a single assignee/status.\nChanging assignee selects Mine, Available, or filtered Backlog.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nr refreshes · q quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows assignee + status lists from the shared cache.\n↑↓ / click picks · Tab / ←→ switches columns · Enter applies both.\nCtrl+R resets both (Enter applies); Esc cancels.\nA / T or top dropdowns select a single assignee/status.\nChanging assignee selects Mine, Available, or filtered Backlog.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nr refreshes · q quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -2224,7 +2278,7 @@ mod tests {
     fn app() -> App {
         let mut settings = Settings {
             project: "DEV".into(),
-            last_view: 2,
+            last_view: config::BACKLOG,
             ..Default::default()
         };
         settings.prefix = "DEV".into();
@@ -2262,7 +2316,7 @@ mod tests {
         a.event(key('1', KeyModifiers::NONE));
         assert_eq!(a.search_mode as u8, SearchMode::Number as u8);
         assert_eq!(a.search, "1");
-        assert_eq!(a.view, 2);
+        assert_eq!(a.view, config::BACKLOG);
         a.event(key('0', KeyModifiers::NONE));
         a.event(key('1', KeyModifiers::NONE));
         assert_eq!(a.search, "101");
@@ -2362,11 +2416,15 @@ mod tests {
     #[test]
     fn predefined_views_need_no_status_mapping() {
         let mut a = app();
-        assert_eq!(a.view_names(), vec!["Mine", "Available", "Backlog"]);
+        assert_eq!(
+            a.view_names(),
+            vec!["Mine", "Available", "Board", "Backlog"]
+        );
         for (keycode, view) in [
             ('1', config::MINE),
             ('2', config::AVAILABLE),
-            ('3', config::BACKLOG),
+            ('3', config::BOARD),
+            ('4', config::BACKLOG),
         ] {
             let jobs = a.event(key(keycode, KeyModifiers::CONTROL));
             assert_eq!(a.view, view);
@@ -2402,10 +2460,12 @@ mod tests {
     fn arrows_switch_views_without_queries_or_stealing_editor_keys() {
         let mut a = app();
         for (code, view) in [
+            (KeyCode::Left, config::BOARD),
             (KeyCode::Left, config::AVAILABLE),
             (KeyCode::Left, config::MINE),
             (KeyCode::Left, config::MINE),
             (KeyCode::Right, config::AVAILABLE),
+            (KeyCode::Right, config::BOARD),
             (KeyCode::Right, config::BACKLOG),
             (KeyCode::Right, config::BACKLOG),
         ] {
@@ -2821,6 +2881,104 @@ mod tests {
         assert_eq!(a.selected, 0);
         assert_eq!(a.table.offset(), 0);
         assert_eq!(a.detail_key, "DEV-101");
+    }
+    #[test]
+    fn membership_tabs_and_available_use_both_sections_without_sorting() {
+        let mut a = app();
+        a.settings.board_id = Some(17);
+        let w = a.workspace.as_mut().unwrap();
+        w.board = Some(HashSet::from(["DEV-101".into(), "DEV-103".into()]));
+        w.items[0].fields["status"] =
+            serde_json::json!({"name":"Done","statusCategory":{"key":"done"}});
+        w.items[0].fields["assignee"] = serde_json::Value::Null;
+        w.reindex();
+        a.items_are_workspace = false;
+        a.last_query = a.settings.query(config::BACKLOG, "", "", "").unwrap();
+        a.apply_local();
+        for (view, keys) in [
+            (config::BOARD, vec!["DEV-101", "DEV-103"]),
+            (config::BACKLOG, vec!["DEV-102"]),
+            (config::AVAILABLE, vec!["DEV-101", "DEV-102"]),
+        ] {
+            assert!(a.switch_view(view).is_empty());
+            assert_eq!(
+                a.visible
+                    .iter()
+                    .map(|i| a.items[*i].key.as_str())
+                    .collect::<Vec<_>>(),
+                keys
+            );
+        }
+        a.switch_view(config::BOARD);
+        a.status_filter = "Done".into();
+        a.reload();
+        assert_eq!(a.visible.len(), 1);
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-101");
+    }
+    #[test]
+    fn moving_requires_verified_membership_and_confirmation_at_both_read_only_boundaries() {
+        let mut a = app();
+        a.settings.board_id = Some(17);
+        a.workspace.as_mut().unwrap().board = Some(HashSet::from(["DEV-101".into()]));
+        a.action_dialog('m');
+        let Some(Dialog::Confirm(ref action)) = a.dialog else {
+            panic!("confirmation missing")
+        };
+        assert_eq!(
+            (
+                action.kind.as_str(),
+                action.key.as_str(),
+                action.value.as_str()
+            ),
+            ("backlog", "DEV-101", "17")
+        );
+        // DEV-101 is the selected legacy Backlog row here; membership, not tab,
+        // determines destination even after a stale/filtered selection.
+        assert_eq!(action.kind, "backlog");
+        a.read_only = true;
+        assert!(a.event(key('y', KeyModifiers::NONE)).is_empty());
+        assert!(!a.writing);
+        a.action_dialog('m');
+        assert!(a.dialog.is_none());
+        a.read_only = false;
+        a.action_dialog('m');
+        let jobs = a.event(key('y', KeyModifiers::NONE));
+        assert!(
+            matches!(&jobs[..],[Job::Write(Action{kind,key,..})] if kind=="backlog"&&key=="DEV-101")
+        );
+        let mut a = app();
+        a.settings.board_id = Some(17);
+        a.action_dialog('m');
+        assert!(a.dialog.is_none());
+    }
+    #[test]
+    fn membership_cache_is_board_specific_and_preserves_order_on_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        a.settings.board_id = Some(17);
+        a.last_query = a.settings.query(config::BACKLOG, "", "", "").unwrap();
+        a.cache = Cache {
+            directory: Some(dir.path().into()),
+        };
+        a.workspace.as_mut().unwrap().board = Some(HashSet::from(["DEV-101".into()]));
+        a.cache
+            .put(&a.workspace_key(), a.workspace.as_ref().unwrap())
+            .unwrap();
+        let mut next = App::new(
+            a.backend.clone(),
+            a.cache.clone(),
+            a.settings.clone(),
+            true,
+            500,
+            PathBuf::new(),
+        );
+        next.reload();
+        next.switch_view(config::BOARD);
+        assert_eq!(next.selected_ticket().unwrap().key, "DEV-101");
+        let old_key = next.workspace_key();
+        next.settings.board_id = Some(18);
+        assert_ne!(next.workspace_key(), old_key);
+        assert!(next.cache.get::<Workspace>(&next.workspace_key()).is_none());
     }
     #[test]
     fn assignments_use_identity_not_display_name() {

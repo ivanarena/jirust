@@ -51,6 +51,7 @@ pub struct Backend {
     pub binary: PathBuf,
     slots: Semaphore,
     demo: Mutex<BTreeMap<String, Ticket>>,
+    api: std::sync::RwLock<Option<Arc<crate::board_api::BoardApi>>>,
 }
 impl Backend {
     pub fn new(kind: &str, binary: Option<PathBuf>) -> Result<Arc<Self>> {
@@ -80,6 +81,7 @@ impl Backend {
             kind,
             binary,
             slots: Semaphore::new(3),
+            api: std::sync::RwLock::new(None),
             demo: Mutex::new(
                 data::demo_tickets()
                     .into_iter()
@@ -87,6 +89,29 @@ impl Backend {
                     .collect(),
             ),
         }))
+    }
+    pub fn configure_board(&self, id: Option<u64>) -> Result<()> {
+        if self.kind == Kind::Demo {
+            return Ok(());
+        }
+        let api = match id {
+            Some(id) => {
+                if self.kind != Kind::Acli {
+                    bail!("Board API requires existing acli authentication")
+                };
+                Some(Arc::new(crate::board_api::BoardApi::new(id)?))
+            }
+            None => None,
+        };
+        *self.api.write().unwrap() = api;
+        Ok(())
+    }
+    pub fn board_identity(&self) -> Option<String> {
+        self.api
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|a| a.cache_identity())
     }
     async fn run(&self, args: &[String]) -> Result<Vec<u8>> {
         let operation = async {
@@ -257,6 +282,23 @@ impl Backend {
         mine: &str,
         changed: Option<&str>,
     ) -> Result<(crate::workspace::Workspace, Vec<String>)> {
+        let api = self.api.read().unwrap().clone();
+        if let Some(api) = api {
+            // Let acli refresh its own OAuth token before reading the keyring.
+            self.boards("").await?;
+            let (mut workspace, mine, changes) =
+                tokio::try_join!(api.workspace(base), self.dataset(mine, true), async {
+                    match changed {
+                        Some(q) => self.dataset(q, true).await,
+                        None => Ok(Vec::new()),
+                    }
+                })?;
+            if !crate::workspace::valid_items(&mine) || !crate::workspace::valid_items(&changes) {
+                bail!("CLI returned invalid keys")
+            }
+            workspace.mine = mine.into_iter().map(|t| t.key).collect();
+            return Ok((workspace, changes.into_iter().map(|t| t.key).collect()));
+        }
         let (items, mine, changes) =
             tokio::try_join!(self.dataset(base, false), self.dataset(mine, true), async {
                 match changed {
@@ -274,10 +316,32 @@ impl Backend {
             || (items.len() < 100 && mine.len() < 100 && changes.len() < 100);
         // Keep the CLI's Rank sequence; removing containers/children must
         // be a stable filter, never a key/date/status sort.
-        let items = items.into_iter().filter(Ticket::backlog_ticket).collect();
+        let mut items: Vec<_> = items.into_iter().filter(Ticket::backlog_ticket).collect();
+        let board = if self.kind == Kind::Demo {
+            let keys: std::collections::HashSet<String> = items
+                .iter()
+                .filter(|t| {
+                    t.fields["_jiraui_board"]
+                        .as_bool()
+                        .unwrap_or(matches!(t.key.as_str(), "DEV-101" | "DEV-103"))
+                })
+                .map(|t| t.key.clone())
+                .collect();
+            let mut ordered: Vec<_> = items
+                .iter()
+                .filter(|t| keys.contains(&t.key))
+                .cloned()
+                .collect();
+            ordered.extend(items.into_iter().filter(|t| !keys.contains(&t.key)));
+            items = ordered;
+            Some(keys)
+        } else {
+            None
+        };
         let mut workspace = crate::workspace::Workspace {
             items,
             mine: mine.into_iter().map(|t| t.key).collect(),
+            board,
             complete,
             synced_at: crate::config::now(),
             ..Default::default()
@@ -362,6 +426,21 @@ impl Backend {
     }
     pub async fn apply(&self, a: &Action) -> Result<()> {
         data::require_key(&a.key)?;
+        if let Some(api) = self.api.read().unwrap().as_ref() {
+            api.check_identity()?;
+        }
+        if matches!(a.kind.as_str(), "board" | "backlog") && self.kind != Kind::Demo {
+            let api = self
+                .api
+                .read()
+                .unwrap()
+                .clone()
+                .context("Configure a Board API ID before moving tickets")?;
+            if a.value != api.id.to_string() {
+                bail!("Board changed since confirmation; move rejected")
+            }
+            return api.move_ticket(&a.key, a.kind == "board").await;
+        }
         if a.value.trim().is_empty() {
             bail!("Empty update rejected")
         }
@@ -375,6 +454,7 @@ impl Backend {
             let mut map = self.demo.lock().await;
             let t = map.get_mut(&a.key).context("Demo ticket not found")?;
             match a.kind.as_str() {
+                "board" | "backlog" => t.fields["_jiraui_board"] = json!(a.kind == "board"),
                 "status" => {
                     t.fields["status"]["name"] = json!(a.value);
                     t.fields["status"]["statusCategory"]["key"] =
@@ -702,6 +782,43 @@ mod tests {
         assert_eq!(b.search(q, 500).await.unwrap().len(), 1);
         let q = "project = \"DEV\" AND assignee IS EMPTY";
         assert_eq!(b.search(q, 500).await.unwrap()[0].key, "DEV-102");
+    }
+    #[tokio::test]
+    async fn demo_membership_moves_do_not_transition_status() {
+        let b = Backend::new("demo", None).unwrap();
+        let settings = crate::config::Settings {
+            project: "DEV".into(),
+            board_id: Some(1),
+            ..Default::default()
+        };
+        let before = b.get("DEV-102").await.unwrap().status();
+        b.apply(&Action::new("board", "DEV-102", "1"))
+            .await
+            .unwrap();
+        let q = settings.query(crate::config::BACKLOG, "", "", "").unwrap();
+        let mine = settings.query(crate::config::MINE, "", "", "").unwrap();
+        assert!(
+            b.workspace(&q, &mine, None)
+                .await
+                .unwrap()
+                .0
+                .board
+                .unwrap()
+                .contains("DEV-102")
+        );
+        assert_eq!(b.get("DEV-102").await.unwrap().status(), before);
+        b.apply(&Action::new("backlog", "DEV-102", "1"))
+            .await
+            .unwrap();
+        assert!(
+            !b.workspace(&q, &mine, None)
+                .await
+                .unwrap()
+                .0
+                .board
+                .unwrap()
+                .contains("DEV-102")
+        );
     }
     #[tokio::test]
     async fn fake_mutations_only() {

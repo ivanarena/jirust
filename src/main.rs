@@ -41,6 +41,9 @@ struct Options {
     cli_bin: Option<PathBuf>,
     #[arg(long)]
     read_only: bool,
+    /// Opt in to Jira Software APIs using existing acli credentials.
+    #[arg(long,value_parser=clap::value_parser!(u64).range(1..))]
+    board: Option<u64>,
     #[arg(long)]
     no_cache: bool,
     #[arg(long)]
@@ -79,14 +82,22 @@ async fn main() -> Result<()> {
         Settings {
             project: "DEV".into(),
             last_view: jiraui::config::MINE,
+            board_id: Some(1),
             ..Default::default()
         }
     } else {
         Settings::load()?
     };
-    let scope_override = opts.project.is_some() || opts.prefix.is_some() || opts.jql.is_some();
+    let scope_override = opts.project.is_some()
+        || opts.prefix.is_some()
+        || opts.jql.is_some()
+        || opts.board.is_some();
     if let Some(project) = opts.project {
-        settings.project = project.to_uppercase();
+        let project = project.to_uppercase();
+        if settings.project != project {
+            settings.board_id = None;
+        }
+        settings.project = project;
         if opts.prefix.is_none() {
             settings.prefix.clear();
         }
@@ -100,13 +111,17 @@ async fn main() -> Result<()> {
     if let Some(jql) = opts.jql {
         settings.scope_jql = jql
     };
+    if let Some(id) = opts.board {
+        settings.board_id = Some(id)
+    };
+    backend.configure_board(settings.board_id)?;
     let limit = if backend.kind == Kind::Jira {
         usize::from(opts.limit).min(100)
     } else {
         usize::from(opts.limit)
     };
     if opts.check {
-        let q = settings.query(2, "", "", "")?;
+        let q = settings.query(jiraui::config::BACKLOG, "", "", "")?;
         let mine = settings.query(jiraui::config::MINE, "", "", "")?;
         let (workspace, _) = backend.workspace(&q, &mine, None).await?;
         let items = workspace.items;

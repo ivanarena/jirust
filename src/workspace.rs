@@ -10,6 +10,9 @@ use std::collections::{HashMap, HashSet};
 pub struct Workspace {
     pub items: Vec<Ticket>,
     pub mine: HashSet<String>,
+    /// Exact API membership. None denotes a legacy, unverified scope.
+    #[serde(default)]
+    pub board: Option<HashSet<String>>,
     pub complete: bool,
     pub synced_at: u64,
     /// Derived once on load/sync, never serialized or rebuilt per keystroke.
@@ -93,7 +96,7 @@ impl SearchRow {
         {
             return false;
         }
-        if view == config::BACKLOG && !assignee.is_empty() {
+        if matches!(view, config::BOARD | config::BACKLOG) && !assignee.is_empty() {
             let matches = match assignee {
                 "@me" => mine,
                 "unassigned" => self.unassigned,
@@ -130,6 +133,13 @@ impl Workspace {
         status: &str,
         words: &[&str],
     ) -> bool {
+        let is_board = self
+            .board
+            .as_ref()
+            .is_some_and(|keys| keys.contains(&t.key));
+        if view == config::BOARD && !is_board || view == config::BACKLOG && is_board {
+            return false;
+        }
         if let Some(row) = self.index.get(&t.key) {
             row.matches(self.mine.contains(&t.key), view, assignee, status, words)
         } else {
