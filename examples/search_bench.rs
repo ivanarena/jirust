@@ -1,6 +1,6 @@
 //! Synthetic-only end-to-end search benchmark: cargo run --release --example search_bench
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use jiraui::{
+use jirust::{
     app::{App, Message},
     backend::Backend,
     config::{Cache, Settings},
@@ -42,7 +42,7 @@ fn main() {
         Settings {
             project: "DEV".into(),
             prefix: "DEV".into(),
-            last_view: jiraui::config::BACKLOG,
+            last_view: jirust::config::BACKLOG,
             ..Default::default()
         },
         true,

@@ -8,7 +8,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use jiraui::{
+use jirust::{
     app::{App, Job, Message},
     backend::{Backend, Kind},
     config::{Cache, Settings},
@@ -206,7 +206,7 @@ async fn main() -> Result<()> {
     let mut settings = if backend.kind == Kind::Demo {
         Settings {
             project: "DEV".into(),
-            last_view: jiraui::config::MINE,
+            last_view: jirust::config::MINE,
             board_id: Some(1),
             ..Default::default()
         }
@@ -280,14 +280,14 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     if opts.check {
-        let q = settings.query(jiraui::config::BACKLOG, "", "", "")?;
-        let mine = settings.query(jiraui::config::MINE, "", "", "")?;
+        let q = settings.query(jirust::config::BACKLOG, "", "", "")?;
+        let mine = settings.query(jirust::config::MINE, "", "", "")?;
         let (workspace, _) = backend.workspace(&q, &mine, None).await?;
         let counts = [
-            jiraui::config::MINE,
-            jiraui::config::AVAILABLE,
-            jiraui::config::BOARD,
-            jiraui::config::BACKLOG,
+            jirust::config::MINE,
+            jirust::config::AVAILABLE,
+            jirust::config::BOARD,
+            jirust::config::BACKLOG,
         ]
         .map(|view| {
             workspace
@@ -316,13 +316,13 @@ async fn main() -> Result<()> {
         settings.save()?;
     }
     if !io::stdin().is_terminal() {
-        bail!("Run jiraui in a terminal, or use --check")
+        bail!("Run jirust in a terminal, or use --check")
     }
     let scope = backend.scope().await;
     let cache = Cache::new(&scope, opts.no_cache || backend.kind == Kind::Demo)?;
     let attachment_dir = opts
         .attachment_dir
-        .unwrap_or(jiraui::config::attachment_directory(&scope)?);
+        .unwrap_or(jirust::config::attachment_directory(&scope)?);
     enable_raw_mode()?;
     let guard = TerminalGuard;
     execute!(
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn move_parses_one_key_destination_and_global_read_only() {
         let (o, _) = options(&[
-            "jiraui",
+            "jirust",
             "move",
             "DEV-102",
             "--to",
@@ -557,7 +557,7 @@ mod tests {
         );
         assert!(
             Options::command()
-                .try_get_matches_from(["jiraui", "move", "DEV-102", "DEV-103", "--to", "board"])
+                .try_get_matches_from(["jirust", "move", "DEV-102", "DEV-103", "--to", "board"])
                 .is_err()
         );
     }
@@ -566,14 +566,14 @@ mod tests {
         let e = env(
             "JIRA_PROJECT=DEV\nJIRA_PREFIX=OLD\nJIRA_BOARD_ID=17\nJIRA_JQL='project = DEV'\nJIRA_READ_ONLY=false\n",
         );
-        let (mut o, m) = options(&["jiraui", "--project", "NEW", "--read-only"]);
+        let (mut o, m) = options(&["jirust", "--project", "NEW", "--read-only"]);
         o.apply_environment(&e, &m).unwrap();
         assert!(o.read_only);
         assert_eq!(o.project.as_deref(), Some("NEW"));
         assert!(o.prefix.is_none());
         assert!(o.board.is_none());
         assert!(o.jql.is_none());
-        let (mut o, m) = options(&["jiraui"]);
+        let (mut o, m) = options(&["jirust"]);
         o.apply_environment(&e, &m).unwrap();
         assert_eq!(o.project.as_deref(), Some("DEV"));
         assert_eq!(o.board, Some(17));
@@ -581,11 +581,11 @@ mod tests {
     #[test]
     fn demo_does_not_apply_company_env_and_read_only_env_cannot_be_bypassed_by_yes() {
         let e = env("JIRA_PROJECT=OTHER\nJIRA_BOARD_ID=17\nJIRA_READ_ONLY=true\n");
-        let (mut o, m) = options(&["jiraui", "--demo"]);
+        let (mut o, m) = options(&["jirust", "--demo"]);
         o.apply_environment(&e, &m).unwrap();
         assert!(o.project.is_none());
         assert!(o.board.is_none());
-        let (mut o, m) = options(&["jiraui", "move", "DEV-102", "--to", "board", "--yes"]);
+        let (mut o, m) = options(&["jirust", "move", "DEV-102", "--to", "board", "--yes"]);
         o.apply_environment(&e, &m).unwrap();
         assert!(o.read_only);
     }

@@ -1,7 +1,7 @@
 .PHONY: build test check install
 build:
 	cargo build --release --locked
-	install -Dm755 target/release/jiraui bin/jiraui
+	install -Dm755 target/release/jirust bin/jirust
 test:
 	cargo test --locked
 check:
@@ -9,4 +9,4 @@ check:
 	cargo clippy --locked --all-targets -- -D warnings
 	cargo test --locked
 install: build
-	install -Dm755 bin/jiraui "$(HOME)/.local/bin/jiraui"
+	install -Dm755 bin/jirust "$(HOME)/.local/bin/jirust"

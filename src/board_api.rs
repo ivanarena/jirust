@@ -68,7 +68,7 @@ fn profile() -> Result<Profile> {
                 && global.site == p.site
                 && global.email == p.email
                 && global.auth_type == "oauth",
-            "Global OAuth/Jira identities differ; select the same account/site in acli and restart jiraui"
+            "Global OAuth/Jira identities differ; select the same account/site in acli and restart jirust"
         );
     }
     Ok(p)
@@ -77,7 +77,7 @@ pub(crate) fn check_environment(credentials: &crate::environment::Credentials) -
     let current = profile()?;
     ensure!(
         current.site == credentials.site && current.email.eq_ignore_ascii_case(&credentials.email),
-        "Local environment and acli account/site differ; run jiraui auth with this environment, then restart"
+        "Local environment and acli account/site differ; run jirust auth with this environment, then restart"
     );
     Ok(())
 }
@@ -135,7 +135,7 @@ impl BoardApi {
     pub fn check_identity(&self) -> Result<()> {
         ensure!(
             profile()? == self.profile,
-            "Jira account/site/authentication changed; restart jiraui"
+            "Jira account/site/authentication changed; restart jirust"
         );
         Ok(())
     }

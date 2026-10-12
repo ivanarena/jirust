@@ -37,7 +37,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     if area.width < 60 || area.height < 16 {
         frame.render_widget(
-            Paragraph::new("jiraui needs 60×16 cells. Resize/zoom this pane. q quits."),
+            Paragraph::new("jirust needs 60×16 cells. Resize/zoom this pane. q quits."),
             area,
         );
         return;
@@ -58,7 +58,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.settings.scope_name.clone()
     };
     let brand = format!(
-        " jiraui {} ",
+        " jirust {} ",
         if scope.is_empty() {
             "· scope?"
         } else {

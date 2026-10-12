@@ -1,9 +1,9 @@
-# jiraui
+# jirust
 
 A lightweight **Rust + Ratatui** Jira terminal client. Two panes, no browser engine. Ordinary operations use your existing **acli** or **jira-cli**. The optional Board/Backlog integration reuses acli authentication for Jira Software APIs.
 
 ```text
-jiraui · scope       ^1 Mine     ^2 Available     ^3 Board     ^4 Backlog
+jirust · scope       ^1 Mine     ^2 Available     ^3 Board     ^4 Backlog
 / Search Mine        Assignee: Me ▾              Status: Any ▾
 ╭ Tickets ──────────────────╮╭ Ticket ───────────────────────╮
 │ Key · Status · Assignee  ││ Description, reporter, links  │
@@ -31,8 +31,8 @@ Enable the approved API bridge with **`--board <id>`** (remembered in settings).
 ## Move a ticket from the command line
 
 ```sh
-jiraui move DEV-123 --to board
-jiraui move DEV-123 --to backlog
+jirust move DEV-123 --to board
+jirust move DEV-123 --to backlog
 ```
 
 The configured `JIRA_BOARD_ID` / remembered Board is used; override with `--board <id>`. Each command fetches verified live membership, checks that **one validated key** is in the current scope, names the source/destination and Board ID, and asks you to type the key to confirm. `--yes` is explicit single-ticket confirmation for noninteractive use. Membership/scope are revalidated after confirmation; already-at-destination is a no-op. No workflow transition is requested; Jira determines Rank. `--read-only` (including `JIRA_READ_ONLY=true`) blocks movement at entry and confirmation. Never retry uncertain writes automatically. In the TUI, **m** reviews the equivalent move.
@@ -78,10 +78,10 @@ Requires Rust **1.90+**, a terminal, and an authenticated CLI.
 ```sh
 make check
 make install
-jiraui
-jiraui --demo
-jiraui --project DEV
-jiraui --project DEV --read-only --no-cache --check
+jirust
+jirust --demo
+jirust --project DEV
+jirust --project DEV --read-only --no-cache --check
 ```
 
 Explicit scope flags are remembered for subsequent launches (except `--check`/demo). `--project` infers the matching prefix and replaces a previous scope unless `--prefix`/`--jql` are supplied. Automatic backend selection prefers the installed `acli`; override with `--backend acli|jira|demo` and optionally `--cli-bin /path/to/binary`. Authentication validity is still the CLI's responsibility. `/usr/bin/jira` is preferred over wrappers.
@@ -90,18 +90,20 @@ The acli workspace fetch uses **pagination**, not the old 500-row limit, so all 
 
 `--read-only` blocks both update entry and confirmation. Writes are never automatically retried after failure/timeout; the outcome may be unknown. Reload before retrying. Development mutation tests use only synthetic DEV fixtures.
 
-Settings live at `$XDG_CONFIG_HOME/jiraui/config.json`; ticket caches at `$XDG_CACHE_HOME/jiraui/rust/<account-hash>/`. CLI-reported identity/site determines the cache namespace; unknown identity disables persistent ticket caching. Files are 0600, directories 0700. `--no-cache` disables ticket persistence; demo saves neither settings nor caches. Restart after switching CLI account/site.
+Settings live at `$XDG_CONFIG_HOME/jirust/config.json`; ticket caches at `$XDG_CACHE_HOME/jirust/rust/<account-hash>/`. CLI-reported identity/site determines the cache namespace; unknown identity disables persistent ticket caching. Files are 0600, directories 0700. `--no-cache` disables ticket persistence; demo saves neither settings nor caches. Restart after switching CLI account/site.
+
+When upgrading from the old app name, **quit the old process first**, then start `jirust`. On first use, legacy config/cache directories are renamed to the new directories, preserving the private environment file, settings, account namespaces and attachments without rewriting their contents. An existing new directory is never overwritten. Demo does not migrate personal configuration.
 
 ### Local environment configuration
 
-Copy the synthetic `.env.example` to **`$XDG_CONFIG_HOME/jiraui/.env`** (normally `~/.config/jiraui/.env`) and set permissions to **0600**. Put the company HTTPS URL, email, API token without scopes, project/prefix, Board ID and optional settings there. The real file is plaintext: protect it and never commit/share it. The tracked template contains no credentials. Alternatively use a private `./.env`, or select an explicit file with `--env-file /path/to/.env`.
+Copy the synthetic `.env.example` to **`$XDG_CONFIG_HOME/jirust/.env`** (normally `~/.config/jirust/.env`) and set permissions to **0600**. Put the company HTTPS URL, email, API token without scopes, project/prefix, Board ID and optional settings there. The real file is plaintext: protect it and never commit/share it. The tracked template contains no credentials. Alternatively use a private `./.env`, or select an explicit file with `--env-file /path/to/.env`.
 
 Precedence: explicit CLI flags → exported environment variables → selected dotenv file → saved/default settings. File discovery: explicit `--env-file`, otherwise `./.env`, otherwise the user config dotenv file. File values are not exported into the process or child environments. Demo ignores local/company configuration entirely. A new explicit project does not inherit another project's environment Board/prefix/JQL.
 
 ```sh
-jiraui auth                            # token piped privately to acli stdin
-jiraui --read-only --no-cache --check  # validate without changing tickets
-jiraui                                # start the TUI
+jirust auth                            # token piped privately to acli stdin
+jirust --read-only --no-cache --check  # validate without changing tickets
+jirust                                # start the TUI
 ```
 
 `JIRA_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN` must be supplied together. Only HTTPS Atlassian Cloud origins are accepted; credential-bearing URLs, redirects and arbitrary hosts are rejected. The Board bridge uses the local token directly; ordinary operations still use acli authentication. `auth` explicitly updates acli's own keyring/profile from that token; startup never silently switches CLI accounts. A mismatched site/email fails closed and asks you to authenticate explicitly. Restart after editing authentication variables.
@@ -110,7 +112,7 @@ Other variables: `JIRA_PROJECT`, `JIRA_PREFIX`, `JIRA_BOARD_ID`, `JIRA_JQL`, `JI
 
 ### Board API authentication without a local token
 
-Linux `secret-tool` must be installed when using the keyring fallback. The bridge reads only the active acli Jira profile's keyring entry; credentials are kept in memory. Both site OAuth and global OAuth are supported; global OAuth uses its own keyring entry and requires matching active global/Jira identities. Some OAuth grants work for ordinary issues but lack Jira Software API scopes (HTTP 401 `scope does not match`). A successful browser/global OAuth login alone does not grant missing scopes. The app cannot grant these permissions. Use a supported acli API-token login **without scopes**, supplying the token privately through stdin: `acli jira auth login --site mysite.atlassian.net --email you@example.com --token`. Do not put tokens in command arguments, this repository, or chat. Restart afterward, then validate read-only with `jiraui --board 17 --read-only --check`. Live membership/parity must be verified for each board after authorization succeeds.
+Linux `secret-tool` must be installed when using the keyring fallback. The bridge reads only the active acli Jira profile's keyring entry; credentials are kept in memory. Both site OAuth and global OAuth are supported; global OAuth uses its own keyring entry and requires matching active global/Jira identities. Some OAuth grants work for ordinary issues but lack Jira Software API scopes (HTTP 401 `scope does not match`). A successful browser/global OAuth login alone does not grant missing scopes. The app cannot grant these permissions. Use a supported acli API-token login **without scopes**, supplying the token privately through stdin: `acli jira auth login --site mysite.atlassian.net --email you@example.com --token`. Do not put tokens in command arguments, this repository, or chat. Restart afterward, then validate read-only with `jirust --board 17 --read-only --check`. Live membership/parity must be verified for each board after authorization succeeds.
 
 CLI jobs use argument arrays, asynchronous execution, concurrency limits, and timeouts. Rendering is event-driven; network updates happen independently of local navigation. Untrusted terminal controls are stripped and browser links must be ordinary HTTP(S) URLs. Only the explicit `--board` API bridge uses direct HTTP with a private environment token or current acli keyring credentials. It pins HTTPS origins, disables redirects, bounds concurrency/response sizes, and never logs tokens or writes them into app settings/caches. The only user-approved plaintext credential storage is the private local environment file. Account/site/auth changes require restart. OAuth login and refresh remain delegated to acli.
 

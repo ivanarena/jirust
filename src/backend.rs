@@ -365,7 +365,7 @@ impl Backend {
             let keys: std::collections::HashSet<String> = items
                 .iter()
                 .filter(|t| {
-                    t.fields["_jiraui_board"]
+                    t.fields["_jirust_board"]
                         .as_bool()
                         .unwrap_or(matches!(t.key.as_str(), "DEV-101" | "DEV-103"))
                 })
@@ -498,7 +498,7 @@ impl Backend {
             let mut map = self.demo.lock().await;
             let t = map.get_mut(&a.key).context("Demo ticket not found")?;
             match a.kind.as_str() {
-                "board" | "backlog" => t.fields["_jiraui_board"] = json!(a.kind == "board"),
+                "board" | "backlog" => t.fields["_jirust_board"] = json!(a.kind == "board"),
                 "status" => {
                     t.fields["status"]["name"] = json!(a.value);
                     t.fields["status"]["statusCategory"]["key"] =

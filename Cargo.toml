@@ -1,6 +1,6 @@
 [package]
-name = "jiraui"
-version = "0.6.0"
+name = "jirust"
+version = "0.6.1"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT"

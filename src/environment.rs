@@ -1,6 +1,5 @@
 //! Explicit local configuration; never put credentials in Settings or Debug output.
 use anyhow::{Context, Result, ensure};
-use directories::BaseDirs;
 use std::{
     collections::BTreeMap,
     fs,
@@ -23,9 +22,7 @@ impl Environment {
         let path = match explicit {
             Some(path) => Some(path.to_owned()),
             None if Path::new(".env").exists() => Some(PathBuf::from(".env")),
-            None => BaseDirs::new()
-                .map(|d| d.config_dir().join("jiraui/.env"))
-                .filter(|p| p.exists()),
+            None => Some(crate::config::config_directory()?.join(".env")).filter(|p| p.exists()),
         };
         let Some(path) = path else {
             return Ok(Self::default());

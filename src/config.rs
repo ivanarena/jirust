@@ -161,19 +161,34 @@ pub(crate) fn split_order(query: &str) -> (&str, &str) {
 pub fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
+// Retain the old spelling only for one-time migration. Never overwrite an
+// existing Jirust directory, and never deserialize/rewrite credentials.
+fn migrate_directory(base: &Path) -> Result<PathBuf> {
+    let target = base.join("jirust");
+    let legacy = base.join("jiraui");
+    if !target.exists() && legacy.exists() {
+        let metadata = fs::symlink_metadata(&legacy)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            bail!("Legacy application directory must be a real directory");
+        }
+        fs::rename(&legacy, &target).context("Cannot migrate legacy application directory")?;
+    }
+    Ok(target)
+}
+pub fn config_directory() -> Result<PathBuf> {
+    migrate_directory(BaseDirs::new().context("No user directory")?.config_dir())
+}
+fn cache_directory() -> Result<PathBuf> {
+    migrate_directory(BaseDirs::new().context("No user directory")?.cache_dir())
+}
 pub fn attachment_directory(scope: &str) -> Result<PathBuf> {
-    Ok(BaseDirs::new()
-        .context("No user directory")?
-        .cache_dir()
-        .join("jiraui/rust")
+    Ok(cache_directory()?
+        .join("rust")
         .join(hash(scope))
         .join("attachments"))
 }
 pub fn config_path() -> Result<PathBuf> {
-    Ok(BaseDirs::new()
-        .context("No user directory")?
-        .config_dir()
-        .join("jiraui/config.json"))
+    Ok(config_directory()?.join("config.json"))
 }
 fn private_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path)?;
@@ -209,11 +224,7 @@ impl Cache {
         if disabled || scope.is_empty() {
             return Ok(Self { directory: None });
         }
-        let path = BaseDirs::new()
-            .context("No user directory")?
-            .cache_dir()
-            .join("jiraui/rust")
-            .join(hash(scope));
+        let path = cache_directory()?.join("rust").join(hash(scope));
         private_dir(&path)?;
         Ok(Self {
             directory: Some(path),
@@ -267,6 +278,54 @@ pub fn local_attachment(root: &Path, key: &str, filename: &str) -> Option<PathBu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rename_migrates_whole_private_directory_once_without_touching_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("jiraui");
+        private_write(&legacy.join(".env"), b"SYNTHETIC_TOKEN=synthetic\n").unwrap();
+        private_write(&legacy.join("config.json"), b"{}").unwrap();
+        private_write(
+            &legacy.join("rust/account/snapshot.json"),
+            b"synthetic-cache",
+        )
+        .unwrap();
+        let target = migrate_directory(dir.path()).unwrap();
+        assert_eq!(target, dir.path().join("jirust"));
+        assert!(!legacy.exists());
+        assert_eq!(
+            fs::read(target.join(".env")).unwrap(),
+            b"SYNTHETIC_TOKEN=synthetic\n"
+        );
+        assert_eq!(
+            fs::read(target.join("rust/account/snapshot.json")).unwrap(),
+            b"synthetic-cache"
+        );
+        assert_eq!(migrate_directory(dir.path()).unwrap(), target);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(target.join(".env"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+    #[test]
+    fn rename_never_overwrites_existing_new_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        private_write(&dir.path().join("jiraui/config.json"), b"old").unwrap();
+        private_write(&dir.path().join("jirust/config.json"), b"new").unwrap();
+        let target = migrate_directory(dir.path()).unwrap();
+        assert_eq!(fs::read(target.join("config.json")).unwrap(), b"new");
+        assert_eq!(
+            fs::read(dir.path().join("jiraui/config.json")).unwrap(),
+            b"old"
+        );
+    }
     #[test]
     fn three_assignment_views_share_the_combined_backlog_scope() {
         let s = Settings {
