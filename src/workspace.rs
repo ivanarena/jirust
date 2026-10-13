@@ -59,8 +59,9 @@ impl SearchRow {
         }
         let user = ticket.user("assignee");
         let mut text = format!(
-            "{} {} {} {} {} {} ",
+            "{} {} {} {} {} {} {} ",
             ticket.key,
+            ticket.kind(),
             ticket.summary(),
             ticket.status(),
             user.label(),
@@ -187,6 +188,13 @@ impl Workspace {
                 .insert(row.key.clone(), SearchRow::new(row, position));
         }
     }
+    /// True Jira/view membership count, independent of search and filters.
+    pub fn view_count(&self, view: usize) -> usize {
+        self.items
+            .iter()
+            .filter(|t| self.matches_words(t, view, &[], &[], &[]))
+            .count()
+    }
     pub fn recent_query(base: &str, minutes: u64) -> String {
         let (where_clause, order) = config::split_order(base);
         format!(
@@ -208,6 +216,28 @@ pub fn valid_items(items: &[Ticket]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn epics_are_searchable_and_obey_actual_membership_and_rank() {
+        let mut w = Workspace {
+            items: data::demo_tickets(),
+            board: Some(["DEV-101".into()].into()),
+            mine: ["DEV-101".into()].into(),
+            ..Default::default()
+        };
+        w.items[0].fields["issuetype"] = serde_json::json!({"name":"Epic","hierarchyLevel":1});
+        w.items[1].fields["issuetype"] = serde_json::json!({"name":"Epic","hierarchyLevel":1});
+        w.reindex();
+        assert!(w.matches(&w.items[0], config::BOARD, "", "", "epic"));
+        assert!(!w.matches(&w.items[0], config::BACKLOG, "", "", "epic"));
+        assert!(w.matches(&w.items[1], config::BACKLOG, "", "", "epic"));
+        assert!(w.matches(&w.items[1], config::AVAILABLE, "", "", "epic"));
+        assert!(!w.matches(&w.items[1], config::MINE, "", "", "epic"));
+        assert_eq!(w.view_count(config::BACKLOG), 2);
+        assert_eq!(
+            w.items.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(),
+            ["DEV-101", "DEV-102", "DEV-103"]
+        );
+    }
     #[test]
     fn multi_filters_intersect_preset_membership_and_preserve_rank_order() {
         let mut items = data::demo_tickets();

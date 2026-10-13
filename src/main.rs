@@ -289,26 +289,22 @@ async fn main() -> Result<()> {
             jirust::config::BOARD,
             jirust::config::BACKLOG,
         ]
-        .map(|view| {
-            workspace
-                .items
-                .iter()
-                .filter(|t| workspace.matches(t, view, "", "", ""))
-                .count()
-        });
+        .map(|view| workspace.view_count(view));
+        let epics = workspace.items.iter().filter(|t| t.is_epic()).count();
         let items = workspace.items;
         if let Some(t) = items.first() {
             backend.get(&t.key).await?;
         };
         println!(
-            "backend={} search=ok tickets={} detail={} mine={} available={} board={} backlog={} (read-only; no records changed)",
+            "backend={} search=ok tickets={} detail={} mine={} available={} board={} backlog={} epics={} (read-only; no records changed)",
             backend.kind.name(),
             items.len(),
             if items.is_empty() { "skipped" } else { "ok" },
             counts[0],
             counts[1],
             counts[2],
-            counts[3]
+            counts[3],
+            epics
         );
         return Ok(());
     }

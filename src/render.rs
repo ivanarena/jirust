@@ -1,12 +1,12 @@
 use crate::{
     app::{App, Dialog, Focus, SearchMode},
-    data, markdown,
+    appearance, data, markdown,
 };
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Text},
+    text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, Wrap},
 };
 use ratatui_image::Image;
@@ -179,14 +179,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let table = if app.row_height == 1 {
         let header = Row::new(["Key", "Status", "Assignee", "Summary"])
             .style(Style::default().fg(Color::DarkGray));
-        let data_rows = app.visible.iter().map(|i| {
+        let data_rows = app.visible.iter().enumerate().map(|(position, i)| {
             let t = &app.items[*i];
             Row::new(vec![
-                Cell::from(t.key.clone()),
-                Cell::from(t.status()),
+                Cell::from(t.key.clone()).style(if t.is_epic() {
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                }),
+                Cell::from(t.status()).style(appearance::status_style(t)),
                 Cell::from(t.user("assignee").label()),
-                Cell::from(t.summary()),
+                Cell::from(appearance::summary(t)),
             ])
+            .style(if position == app.selected {
+                selection()
+            } else {
+                Style::default()
+            })
         });
         Table::new(
             data_rows,
@@ -201,26 +212,70 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         let header = Row::new(["Key", "Ticket / Assignee · Status"])
             .style(Style::default().fg(Color::DarkGray));
-        let data_rows = app.visible.iter().map(|i| {
+        let data_rows = app.visible.iter().enumerate().map(|(position, i)| {
             let t = &app.items[*i];
             Row::new(vec![
-                Cell::from(t.key.clone()),
+                Cell::from(t.key.clone()).style(if t.is_epic() {
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                }),
                 Cell::from(Text::from(vec![
-                    Line::from(t.summary()),
-                    Line::styled(
-                        format!("{} · {}", t.user("assignee").label(), t.status()),
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    Line::from(appearance::summary(t)),
+                    Line::from(vec![
+                        Span::styled(
+                            format!("{} · ", t.user("assignee").label()),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled(t.status(), appearance::status_style(t)),
+                    ]),
                 ])),
             ])
+            .style(if position == app.selected {
+                selection()
+            } else {
+                Style::default()
+            })
             .height(2)
         });
         Table::new(data_rows, [Constraint::Length(11), Constraint::Min(20)]).header(header)
     }
     .column_spacing(1)
-    .row_highlight_style(selection())
+    .row_highlight_style(
+        Style::default()
+            .bg(Color::Rgb(215, 232, 248))
+            .add_modifier(Modifier::BOLD),
+    )
     .block(left_block);
     frame.render_stateful_widget(table, panes[0], &mut app.table);
+    if app.visible.is_empty() && !app.loading {
+        let count = app
+            .workspace
+            .as_ref()
+            .map(|w| w.view_count(app.view))
+            .unwrap_or(0);
+        let message = if count > 0 {
+            format!(
+                "No tickets match these filters.\n{count} tickets are in {}.\nF6 / x clears filters and search.",
+                app.view_names()[app.view]
+            )
+        } else {
+            "No tickets in this view.\nF5 refreshes; f reviews filters.".into()
+        };
+        frame.render_widget(
+            Paragraph::new(message)
+                .wrap(Wrap { trim: true })
+                .style(Style::default().fg(Color::DarkGray)),
+            Rect::new(
+                inner.x,
+                inner.y + 1,
+                inner.width,
+                inner.height.saturating_sub(1),
+            ),
+        );
+    }
     let right_block = block(
         if app.detail_key.is_empty() {
             " Ticket ".into()
@@ -290,6 +345,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.footer_buttons.clear();
     let buttons = [
         ('r', "Refresh"),
+        ('x', "Clear filters"),
         ('a', "Assign"),
         ('t', "Status"),
         ('e', "Edit"),
@@ -303,6 +359,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     for (key, label) in buttons {
         let text = if key == 'r' {
             format!(" F5 {label} ")
+        } else if key == 'x' {
+            format!(" F6 {label} ")
         } else {
             format!(" {key} {label} ")
         };
@@ -903,7 +961,76 @@ mod tests {
             })
             .collect();
         assert_eq!(order, ["DEV-84", "DEV-97", "DEV-61"]);
-        assert!(!rows.iter().any(|s| s.contains("DEV-1 ")));
+        assert!(
+            rows.iter()
+                .any(|s| s.contains("DEV-1 ") && s.contains("Epic ·"))
+        );
+    }
+    #[test]
+    fn status_badges_keep_colors_on_selected_and_narrow_rows_and_empty_filters_explain_count() {
+        for (width, height) in [(60, 16), (140, 26)] {
+            let mut app = App::new(
+                Backend::new("demo", None).unwrap(),
+                Cache { directory: None },
+                Settings {
+                    project: "DEV".into(),
+                    last_view: crate::config::BACKLOG,
+                    ..Default::default()
+                },
+                true,
+                500,
+                std::path::PathBuf::new(),
+            );
+            let mut items = data::demo_tickets();
+            items[0].fields["status"] =
+                serde_json::json!({"name":"Done","statusCategory":{"key":"done"}});
+            items[1].fields["status"] =
+                serde_json::json!({"name":"Queued","statusCategory":{"key":"new"}});
+            app.message(crate::app::Message::Synced {
+                generation: app.generation,
+                result: Ok((
+                    crate::workspace::Workspace {
+                        items,
+                        complete: true,
+                        ..Default::default()
+                    },
+                    vec![],
+                )),
+            });
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let colors = app
+                .items
+                .iter()
+                .map(|t| appearance::status_style(t).fg.unwrap())
+                .collect::<Vec<_>>();
+            let b = terminal.backend().buffer();
+            for color in colors {
+                assert!(
+                    (app.tickets_rect.y..app.tickets_rect.bottom())
+                        .any(|y| (app.tickets_rect.x..app.tickets_rect.right())
+                            .any(|x| b[(x, y)].fg == color)),
+                    "Missing status color on {width}-column terminal"
+                );
+            }
+            app.last_query = app
+                .settings
+                .query(crate::config::BACKLOG, "", "", "")
+                .unwrap();
+            app.status_filter = "Missing status".into();
+            app.reload();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let screen = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(screen.contains("No tickets match"));
+            assert!(screen.contains("3 tickets are in Backlog"));
+            assert!(screen.contains("F6 Clear filters"));
+        }
     }
     #[test]
     fn two_panes_and_top_views_fit() {

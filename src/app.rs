@@ -420,8 +420,13 @@ impl App {
     fn local_notice(&mut self) {
         self.notice(
             format!(
-                "{} shown · {} locally ready{}{}",
+                "{} shown · {} in {} · {} locally ready{}{}{}",
                 self.visible.len(),
+                self.workspace
+                    .as_ref()
+                    .map(|w| w.view_count(self.view))
+                    .unwrap_or(0),
+                config::VIEW_NAMES[self.view],
                 self.workspace.as_ref().map(|w| w.items.len()).unwrap_or(0),
                 if self.view == config::BOARD
                     && self.workspace.as_ref().is_none_or(|w| w.board.is_none())
@@ -434,10 +439,33 @@ impl App {
                     " · partial scope"
                 } else {
                     ""
+                },
+                if !self.assignee_filter.is_empty()
+                    || !self.status_filter.is_empty()
+                    || !self.local_search.is_empty()
+                    || !self.remote_search.is_empty()
+                {
+                    " · filters active (F6 clears)"
+                } else {
+                    ""
                 }
             ),
             false,
         );
+    }
+    pub fn clear_filters(&mut self) -> Vec<Job> {
+        self.assignee_filter.clear();
+        self.status_filter.clear();
+        self.remote_search.clear();
+        self.local_search.clear();
+        self.search.clear();
+        self.search_mode = SearchMode::None;
+        self.lookup_active = false;
+        self.lookup_generation += 1;
+        self.search_due = None;
+        self.selected = 0;
+        *self.table.offset_mut() = 0;
+        self.reload()
     }
     /// Pull the complete scope again and bypass every scoped detail cache.
     /// Keep the old snapshot visible; never discard useful data on failure.
@@ -1147,6 +1175,9 @@ impl App {
                 {
                     return self.refresh_all();
                 }
+                if key.code == KeyCode::F(6) {
+                    return self.clear_filters();
+                }
                 if key.modifiers.is_empty() && self.search_mode != SearchMode::Text {
                     let next = match key.code {
                         KeyCode::Left => Some(self.view.saturating_sub(1)),
@@ -1186,6 +1217,7 @@ impl App {
                     return vec![];
                 }
                 match key.code {
+                    KeyCode::Char('x') => return self.clear_filters(),
                     KeyCode::Char('q') => {
                         if self.writing {
                             self.notice("Wait for the in-flight update before quitting", true)
@@ -1959,6 +1991,10 @@ impl App {
         };
         match c {
             'm' => {
+                if ticket.is_epic() {
+                    self.notice("Epic containers: Board/Backlog movement is disabled", true);
+                    return;
+                }
                 let Some(id) = self.settings.board_id else {
                     self.notice(
                         "Configure --board <id> for exact membership and moves",
@@ -2274,6 +2310,18 @@ impl App {
                         self.notice("Read-only update blocked", true);
                         return vec![];
                     };
+                    if matches!(action.kind.as_str(), "board" | "backlog")
+                        && self
+                            .workspace
+                            .as_ref()
+                            .is_some_and(|w| w.ticket(&action.key).is_some_and(Ticket::is_epic))
+                    {
+                        self.notice(
+                            "Epic containers cannot be moved between Board and Backlog",
+                            true,
+                        );
+                        return vec![];
+                    }
                     self.writing = true;
                     self.notice(format!("Updating {}…", action.key), false);
                     return vec![Job::Write(action.clone())];
@@ -2492,7 +2540,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nOR within each list, AND between lists and text; the current view stays fixed.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nOR within each list, AND between lists and text; the current view stays fixed.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears all filters and search, without changing the view.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nEpics are included and labeled; / epic searches their type. Status badges are visual only.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -3439,7 +3487,75 @@ mod tests {
         assert!(a.search_due.is_none());
     }
     #[test]
-    fn old_cached_inventory_removes_numerical_epic_blocks_but_keeps_rank_order() {
+    fn filtered_empty_backlog_refresh_keeps_membership_and_f6_restores_rows_locally() {
+        let mut a = app();
+        let mut w = a.workspace.clone().unwrap();
+        w.board = Some(["DEV-101".into(), "DEV-103".into()].into());
+        w.reindex();
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((w.clone(), vec![])),
+        });
+        a.switch_view(config::BOARD);
+        a.status_filter = "In Progress".into();
+        a.reload();
+        assert_eq!(a.visible.len(), 1);
+        a.switch_view(config::BACKLOG);
+        assert!(a.visible.is_empty());
+        assert_eq!(a.workspace.as_ref().unwrap().view_count(config::BACKLOG), 1);
+        assert!(a.status.contains("1 in Backlog"));
+        assert!(a.status.contains("filters active"));
+        a.refresh_all();
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((w, vec![])),
+        });
+        assert!(a.visible.is_empty());
+        assert_eq!(a.status_filter, "In Progress");
+        assert!(
+            a.event(Event::Key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE)))
+                .is_empty()
+        );
+        assert_eq!(a.view, config::BACKLOG);
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-102");
+        assert!(a.status_filter.is_empty());
+        a.dialog = Some(Dialog::Editor {
+            title: "Synthetic comment".into(),
+            kind: "comment".into(),
+            key: "DEV-102".into(),
+            value: "keep draft".into(),
+            cursor: 10,
+        });
+        a.event(Event::Key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE)));
+        let Some(Dialog::Editor { value, .. }) = a.dialog else {
+            panic!()
+        };
+        assert_eq!(value, "keep draft");
+    }
+    #[test]
+    fn epic_containers_cannot_be_moved_at_entry_or_confirmation() {
+        let mut a = app();
+        a.read_only = false;
+        a.settings.board_id = Some(17);
+        let mut w = a.workspace.clone().unwrap();
+        w.board = Some(["DEV-101".into()].into());
+        w.items[0].fields["issuetype"] = serde_json::json!({"name":"Epic","hierarchyLevel":1});
+        w.reindex();
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((w, vec![])),
+        });
+        a.view = config::BOARD;
+        a.apply_local();
+        a.action_dialog('m');
+        assert!(a.dialog.is_none());
+        assert!(a.status.contains("Epic containers"));
+        a.confirm(Action::new("backlog", "DEV-101", "17"));
+        assert!(a.event(key('y', KeyModifiers::NONE)).is_empty());
+        assert!(!a.writing);
+    }
+    #[test]
+    fn cached_inventory_keeps_epics_and_rank_order_but_excludes_subtasks() {
         let dir = tempfile::tempdir().unwrap();
         let mut a = app();
         a.cache = Cache {
@@ -3469,7 +3585,7 @@ mod tests {
                 .iter()
                 .map(|t| t.key.as_str())
                 .collect::<Vec<_>>(),
-            ["DEV-103", "DEV-102", "DEV-101"]
+            ["DEV-1", "DEV-103", "DEV-102", "DEV-101"]
         );
     }
     #[test]

@@ -1,4 +1,5 @@
 pub mod app;
+pub mod appearance;
 pub mod backend;
 pub mod board_api;
 pub mod config;

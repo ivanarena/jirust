@@ -475,6 +475,20 @@ pub fn ticket_document(t: &Ticket, width: u16) -> Vec<DocLine> {
         t.description()
     );
     let mut lines = render(&md, width, t);
+    // Only the metadata status line(s), not matching words in the ticket body.
+    if let Some(start) = lines
+        .iter()
+        .position(|l| l.chunks.iter().any(|c| c.text.trim() == "Status:"))
+    {
+        for line in lines.iter_mut().skip(start) {
+            if line.chunks.iter().any(|c| c.text.trim() == "Assignee:") {
+                break;
+            }
+            for chunk in &mut line.chunks {
+                chunk.style = chunk.style.patch(crate::appearance::status_style(t));
+            }
+        }
+    }
     let targets = t.targets();
     if !targets.is_empty() {
         lines.extend(render("## Links & attachments", width, t));

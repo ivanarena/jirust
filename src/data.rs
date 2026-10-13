@@ -47,19 +47,21 @@ impl Ticket {
     pub fn kind(&self) -> String {
         text(&self.fields["issuetype"]["name"])
     }
-    /// The backlog page's ticket inventory excludes hierarchy containers and
-    /// child tasks. They remain accessible through direct issue lookup.
+    pub fn is_epic(&self) -> bool {
+        self.kind().eq_ignore_ascii_case("Epic")
+            || self.fields["issuetype"]["hierarchyLevel"].as_i64() == Some(1)
+    }
+    /// Show standard tickets and epics, but keep child tasks in direct lookup.
     pub fn backlog_ticket(&self) -> bool {
         let kind = self.fields["issuetype"]["name"].as_str().unwrap_or("");
-        !kind.eq_ignore_ascii_case("Epic")
-            && !kind.eq_ignore_ascii_case("Sub-Task")
+        !kind.eq_ignore_ascii_case("Sub-Task")
             && !kind.eq_ignore_ascii_case("Subtask")
             && !self.fields["issuetype"]["subtask"]
                 .as_bool()
                 .unwrap_or(false)
             && !self.fields["issuetype"]["hierarchyLevel"]
                 .as_i64()
-                .is_some_and(|level| level != 0)
+                .is_some_and(|level| level != 0 && level != 1)
     }
     pub fn description(&self) -> String {
         adf_markdown(&self.fields["description"])
@@ -508,16 +510,16 @@ mod tests {
         assert!(!valid_key("DEV-1,DEV-2"));
     }
     #[test]
-    fn backlog_inventory_excludes_containers_and_child_tasks() {
+    fn list_inventory_includes_epics_but_excludes_child_tasks() {
         let mut ticket = demo_tickets().remove(0);
         assert!(ticket.backlog_ticket());
-        for kind in ["Epic", "Sub-Task", "Subtask"] {
+        for kind in ["Sub-Task", "Subtask"] {
             ticket.fields["issuetype"] = json!({"name":kind});
             assert!(!ticket.backlog_ticket());
         }
         ticket.fields["issuetype"] = json!({"name":"Localized child type","subtask":true});
         assert!(!ticket.backlog_ticket());
-        for kind in ["Bug", "Task", "Story", "Design"] {
+        for kind in ["Epic", "Bug", "Task", "Story", "Design"] {
             ticket.fields["issuetype"] = json!({"name":kind});
             assert!(ticket.backlog_ticket());
         }

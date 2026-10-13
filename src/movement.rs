@@ -48,6 +48,12 @@ fn plan(
         workspace.ticket(key).is_some(),
         "Ticket is not in the loaded Board/Backlog scope"
     );
+    ensure!(
+        !workspace
+            .ticket(key)
+            .is_some_and(crate::data::Ticket::is_epic),
+        "Epic containers cannot be moved between Board and Backlog"
+    );
     if membership.contains(key) == (to == Destination::Board) {
         return Ok(None);
     }
@@ -105,6 +111,24 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn epic_containers_are_not_move_candidates() {
+        let mut w = Workspace {
+            items: data::demo_tickets(),
+            complete: true,
+            board: Some(Default::default()),
+            ..Default::default()
+        };
+        w.items[0].fields["issuetype"] = serde_json::json!({"name":"Epic"});
+        for to in [Destination::Board, Destination::Backlog] {
+            assert!(
+                plan(&w, 17, "DEV-101", to, false)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Epic containers")
+            );
+        }
+    }
     #[tokio::test]
     async fn confirmed_demo_move_is_one_ticket_and_does_not_change_status() {
         let backend = Backend::new("demo", None).unwrap();

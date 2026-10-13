@@ -578,6 +578,24 @@ mod tests {
         assert!(membership_query(&model, &bad, "project = DEV").is_err());
     }
     #[test]
+    fn actual_epic_membership_keeps_rank_and_is_not_inferred_from_type() {
+        let mut tickets = crate::data::demo_tickets();
+        tickets[0].fields["issuetype"] = json!({"name":"Epic","hierarchyLevel":1});
+        tickets[1].fields["issuetype"] = json!({"name":"Epic","hierarchyLevel":1});
+        let w = merge_membership(
+            vec![tickets[0].clone()],
+            vec![tickets[2].clone(), tickets[1].clone()],
+        )
+        .unwrap();
+        assert_eq!(
+            w.items.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(),
+            ["DEV-101", "DEV-103", "DEV-102"]
+        );
+        assert_eq!(w.view_count(crate::config::BOARD), 1);
+        assert_eq!(w.view_count(crate::config::BACKLOG), 2);
+        assert!(!w.board.as_ref().unwrap().contains("DEV-102"));
+    }
+    #[test]
     fn empty_board_is_valid_and_does_not_query_all_project_issues() {
         let model = json!({"isSimpleBoard":true,"backlogStrategy":"ISSUE_LIST","boardIssueList":{"key":"synthetic-list"}});
         let plan = json!({"isTruncated":false,"isIssueLimitExceeded":false,"workViewIssueListKey":"synthetic-list","boardIssueIds":[],"issues":[]});
