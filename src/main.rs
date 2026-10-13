@@ -293,12 +293,17 @@ async fn main() -> Result<()> {
         ]
         .map(|view| workspace.view_count(view));
         let epics = workspace.items.iter().filter(|t| t.is_epic()).count();
+        let estimated = workspace
+            .items
+            .iter()
+            .filter(|t| t.story_points().is_some())
+            .count();
         let items = workspace.items;
         if let Some(t) = items.first() {
             backend.get(&t.key).await?;
         };
         println!(
-            "backend={} search=ok tickets={} detail={} mine={} available={} board={} backlog={} epics={} (read-only; no records changed)",
+            "backend={} search=ok tickets={} detail={} mine={} available={} board={} backlog={} epics={} story_points={} (read-only; no records changed)",
             backend.kind.name(),
             items.len(),
             if items.is_empty() { "skipped" } else { "ok" },
@@ -306,7 +311,8 @@ async fn main() -> Result<()> {
             counts[1],
             counts[2],
             counts[3],
-            epics
+            epics,
+            estimated
         );
         return Ok(());
     }
@@ -497,7 +503,11 @@ fn dispatch(
                         &attachment,
                         cache,
                         picker,
-                        size,
+                        if inline {
+                            ImageLayout::Inline(size.0)
+                        } else {
+                            ImageLayout::Preview(size)
+                        },
                         cancel,
                     )
                     .await;
@@ -506,13 +516,19 @@ fn dispatch(
                             generation,
                             key,
                             id,
-                            result,
+                            result: result.and_then(|p| match p {
+                                PreparedImage::Inline(p) => Ok(p),
+                                _ => Err(anyhow::anyhow!("Unexpected image mode")),
+                            }),
                         }
                     } else {
                         Message::Image {
                             generation,
                             name,
-                            result,
+                            result: result.and_then(|p| match p {
+                                PreparedImage::Preview(p) => Ok(p),
+                                _ => Err(anyhow::anyhow!("Unexpected image mode")),
+                            }),
                         }
                     }
                 }
@@ -550,15 +566,23 @@ fn dispatch(
 }
 static IMAGE_DECODERS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
+enum ImageLayout {
+    Inline(u16),
+    Preview((u16, u16)),
+}
+enum PreparedImage {
+    Inline(jirust::images::InlineImage),
+    Preview(ratatui_image::protocol::Protocol),
+}
 async fn attachment_protocol(
     backend: &Backend,
     key: &str,
     attachment: &data::Attachment,
     cache: Option<PathBuf>,
     picker: Picker,
-    size: (u16, u16),
+    layout: ImageLayout,
     mut cancel: tokio::sync::watch::Receiver<bool>,
-) -> Result<ratatui_image::protocol::Protocol> {
+) -> Result<PreparedImage> {
     anyhow::ensure!(!*cancel.borrow(), "Image cancelled");
     let decoder_cancel = cancel.clone();
     let operation = async {
@@ -580,7 +604,16 @@ async fn attachment_protocol(
             if let Some(p) = &cache {
                 let _ = jirust::images::store(p, &bytes);
             }
-            Ok(picker.new_protocol(image, Size::new(size.0, size.1), Resize::Fit(None))?)
+            match layout {
+                ImageLayout::Inline(width) => Ok(PreparedImage::Inline(
+                    jirust::images::make_inline(&picker, image, width)?,
+                )),
+                ImageLayout::Preview(size) => Ok(PreparedImage::Preview(picker.new_protocol(
+                    image,
+                    Size::new(size.0, size.1),
+                    Resize::Fit(None),
+                )?)),
+            }
         })
         .await
         .map_err(|_| anyhow::anyhow!("Image decoder failed"))?
@@ -614,7 +647,7 @@ mod tests {
             &attachment,
             None,
             Picker::halfblocks(),
-            (40, 10),
+            ImageLayout::Inline(40),
             rx,
         )
         .await

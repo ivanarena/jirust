@@ -212,6 +212,16 @@ pub fn status_label(name: &str) -> String {
         name.into()
     }
 }
+pub fn epic_style(selected: bool) -> Style {
+    Style::default()
+        .fg(Color::Rgb(88, 28, 140))
+        .bg(if selected {
+            Color::Rgb(216, 187, 246)
+        } else {
+            Color::Rgb(241, 229, 255)
+        })
+        .add_modifier(Modifier::BOLD)
+}
 pub fn summary(ticket: &Ticket) -> String {
     if ticket.is_epic() {
         format!("Epic · {}", ticket.summary())

@@ -466,18 +466,26 @@ pub fn ticket_document_with_status(t: &Ticket, width: u16, status_style: Style) 
         .map(|a| a.iter().map(data::text).collect::<Vec<_>>().join(", "))
         .unwrap_or_default();
     let md = format!(
-        "# {} — {}\n\n**Status:** {}  \n**Assignee:** {}  \n**Reporter:** {}  \n**Type:** {} · **Priority:** {}  \n**Labels:** {}\n\n---\n\n{}\n",
+        "# {} — {}\n\n**Status:** {}  \n**Assignee:** {}  \n**Reporter:** {}  \n**Type:** {} · **Priority:** {}  \n**Story points:** {}  \n**Labels:** {}\n\n---\n\n{}\n",
         t.key,
-        t.summary(),
+        crate::appearance::summary(t),
         crate::appearance::status_label(&t.status()),
         t.user("assignee").label(),
         t.user("reporter").label(),
         t.kind(),
         t.priority(),
+        t.points_label(),
         labels,
         t.description()
     );
     let mut lines = render(&md, width, t);
+    if t.is_epic() {
+        for row in lines.iter_mut().take_while(|row| !row.chunks.is_empty()) {
+            for chunk in &mut row.chunks {
+                chunk.style = chunk.style.patch(crate::appearance::epic_style(false));
+            }
+        }
+    }
     // Only the metadata status line(s), not matching words in the ticket body.
     if let Some(end) = lines
         .iter()
@@ -515,7 +523,11 @@ pub fn ticket_document_with_status(t: &Ticket, width: u16, status_style: Style) 
     if let Some(fields) = t.fields.as_object() {
         let mut customs = Vec::new();
         for (key, v) in fields {
-            if key.starts_with("customfield_") && !v.is_null() && v != &json!([]) && v != &json!("")
+            if key.starts_with("customfield_")
+                && !t.estimate_fields.contains(key)
+                && !v.is_null()
+                && v != &json!([])
+                && v != &json!("")
             {
                 let name = t.names[key].as_str().unwrap_or(key);
                 let value = if v.is_string() {
@@ -731,6 +743,23 @@ pub fn to_adf(md: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn points_metadata_is_human_readable_and_epic_title_keeps_its_highlight() {
+        let mut t = data::demo_tickets().remove(1);
+        t.fields["issuetype"] = json!({"name":"Epic"});
+        let rows = ticket_document(&t, 80);
+        let text = rows
+            .iter()
+            .map(|r| r.chunks.iter().map(|c| c.text.as_str()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Story points: 0"));
+        assert!(text.contains("Epic ·"));
+        assert_eq!(
+            rows[0].chunks[0].style.bg,
+            crate::appearance::epic_style(false).bg
+        );
+    }
     #[test]
     fn styled_markdown_and_link_hit_test() {
         let t = data::demo_tickets().remove(0);

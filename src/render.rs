@@ -181,23 +181,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let inner = left_block.inner(panes[0]);
     app.row_height = if inner.width < 65 { 2 } else { 1 };
     let table = if app.row_height == 1 {
-        let header = Row::new(["Key", "Status", "Assignee", "Summary"])
+        let header = Row::new(["Key", "Status", "Assignee", "SP", "Summary"])
             .style(Style::default().fg(Color::DarkGray));
         let data_rows = app.visible.iter().enumerate().map(|(position, i)| {
             let t = &app.items[*i];
             Row::new(vec![
-                Cell::from(t.key.clone()).style(if t.is_epic() {
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                }),
+                Cell::from(t.key.clone()),
                 Cell::from(appearance::status_label(&t.status())).style(app.status_colors.style(t)),
                 Cell::from(t.user("assignee").label()),
+                Cell::from(t.points_label()),
                 Cell::from(appearance::summary(t)),
             ])
-            .style(if position == app.selected {
+            .style(if t.is_epic() {
+                appearance::epic_style(position == app.selected)
+            } else if position == app.selected {
                 selection()
             } else {
                 Style::default()
@@ -209,23 +206,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 Constraint::Length(11),
                 Constraint::Length(13),
                 Constraint::Length(14),
+                Constraint::Length(4),
                 Constraint::Min(12),
             ],
         )
         .header(header)
     } else {
-        let header = Row::new(["Key", "Ticket / Status · Assignee"])
+        let header = Row::new(["Key", "Ticket / Status · SP · Assignee"])
             .style(Style::default().fg(Color::DarkGray));
         let data_rows = app.visible.iter().enumerate().map(|(position, i)| {
             let t = &app.items[*i];
             Row::new(vec![
-                Cell::from(t.key.clone()).style(if t.is_epic() {
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                }),
+                Cell::from(t.key.clone()),
                 Cell::from(Text::from(vec![
                     Line::from(appearance::summary(t)),
                     Line::from(vec![
@@ -234,13 +226,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                             app.status_colors.style(t),
                         ),
                         Span::styled(
-                            format!(" · {}", t.user("assignee").label()),
+                            format!(
+                                " · SP:{} · {}",
+                                t.points_label(),
+                                t.user("assignee").label()
+                            ),
                             Style::default().fg(Color::DarkGray),
                         ),
                     ]),
                 ])),
             ])
-            .style(if position == app.selected {
+            .style(if t.is_epic() {
+                appearance::epic_style(position == app.selected)
+            } else if position == app.selected {
                 selection()
             } else {
                 Style::default()
@@ -330,47 +328,37 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             {
                 continue;
             }
-            let full = slot.row >= app.scroll
-                && slot.row + slot.height as usize <= app.scroll + right.height as usize;
             let y = right.y + slot.row.saturating_sub(app.scroll) as u16;
+            let visible_height = (slot.row + slot.height as usize)
+                .min(app.scroll + right.height as usize)
+                - slot.row.max(app.scroll);
             if slot.row > app.scroll
                 && let Some(InlineImageState::Ready(image)) =
                     app.inline_images.get(&slot.attachment.id)
             {
-                let mode = match image {
-                    ratatui_image::protocol::Protocol::Halfblocks(_) => "halfblocks",
-                    ratatui_image::protocol::Protocol::Kitty(_) => "Kitty",
-                    ratatui_image::protocol::Protocol::Sixel(_) => "Sixel",
-                    ratatui_image::protocol::Protocol::ITerm2(_) => "iTerm2",
-                };
+                let mode = image.mode;
                 frame.render_widget(
                     Paragraph::new(format!("▧ {} · {mode}", data::line(&slot.attachment.name)))
                         .style(Style::default().fg(Color::Blue)),
                     Rect::new(right.x, y.saturating_sub(1), right.width, 1),
                 );
             }
-            let rect = Rect::new(
-                right.x,
-                y,
-                right.width,
-                slot.height.min(right.bottom().saturating_sub(y)),
-            );
-            if full
-                && let Some(InlineImageState::Ready(image)) =
-                    app.inline_images.get(&slot.attachment.id)
+            let rect = Rect::new(right.x, y, right.width, visible_height as u16);
+            if let Some(InlineImageState::Ready(image)) = app.inline_images.get(&slot.attachment.id)
             {
                 frame.render_widget(Clear, rect);
-                frame.render_widget(Image::new(image), rect);
+                let offset = (slot.row as i64 - app.scroll as i64)
+                    .clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+                frame.render_widget(
+                    ratatui_image::sliced::SlicedImage::new(&image.protocol, (0, offset).into()),
+                    right,
+                );
             } else {
-                let caption = if !full {
-                    "Image partly outside viewport · i jumps to images".into()
-                } else {
-                    match app.inline_images.get(&slot.attachment.id) {
-                        Some(InlineImageState::Failed(e)) => {
-                            format!("Image unavailable: {e} · i retries / l opens attachments")
-                        }
-                        _ => "Loading image… (read-only)".into(),
+                let caption = match app.inline_images.get(&slot.attachment.id) {
+                    Some(InlineImageState::Failed(e)) => {
+                        format!("Image unavailable: {e} · i retries / l opens attachments")
                     }
+                    _ => "Loading full-width image… (read-only)".into(),
                 };
                 frame.render_widget(
                     Paragraph::new(caption)
@@ -1126,9 +1114,62 @@ mod tests {
         }
     }
     #[test]
+    fn epic_rows_are_purple_on_wide_narrow_and_selected_rows_without_erasing_status_badges() {
+        for width in [60, 140] {
+            let mut app = App::new(
+                Backend::new("demo", None).unwrap(),
+                Cache { directory: None },
+                Settings {
+                    project: "DEV".into(),
+                    last_view: crate::config::BACKLOG,
+                    ..Default::default()
+                },
+                true,
+                500,
+                std::path::PathBuf::new(),
+            );
+            let mut items = data::demo_tickets();
+            items[0].fields["issuetype"] = serde_json::json!({"name":"Epic"});
+            items[0].fields["status"] = serde_json::json!({"name":"Done"});
+            items[1].fields["issuetype"] = serde_json::json!({"name":"Epic"});
+            items[1].fields["status"] = serde_json::json!({"name":"Discarded"});
+            app.message(crate::app::Message::Synced {
+                generation: app.generation,
+                result: Ok((
+                    crate::workspace::Workspace {
+                        items,
+                        complete: true,
+                        ..Default::default()
+                    },
+                    vec![],
+                )),
+            });
+            let mut terminal = Terminal::new(TestBackend::new(width, 26)).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let b = terminal.backend().buffer();
+            for bg in [
+                appearance::epic_style(true).bg.unwrap(),
+                appearance::epic_style(false).bg.unwrap(),
+                app.status_colors.style_name("Done").bg.unwrap(),
+                app.status_colors.style_name("Discarded").bg.unwrap(),
+            ] {
+                assert!(
+                    (app.tickets_rect.y..app.tickets_rect.bottom())
+                        .any(|y| (app.tickets_rect.x..app.tickets_rect.right())
+                            .any(|x| b[(x, y)].bg == bg)),
+                    "Missing epic/status background at {width} columns"
+                );
+            }
+            let text = b.content.iter().map(|c| c.symbol()).collect::<String>();
+            assert!(text.contains("Epic ·"));
+            assert!(text.contains("SP"));
+            assert!(text.contains("Story points:"));
+        }
+    }
+    #[test]
     fn terminal_renders_inline_halfblock_images_in_ticket_pane() {
         use crate::app::{InlineImageState, Message};
-        use ratatui_image::{Resize, picker::Picker};
+        use ratatui_image::picker::Picker;
         let mut app = App::new(
             Backend::new("demo", None).unwrap(),
             Cache { directory: None },
@@ -1163,15 +1204,18 @@ mod tests {
             8,
             image::Rgb([240, 20, 30]),
         ));
-        let p = Picker::halfblocks()
-            .new_protocol(
-                image,
-                ratatui::layout::Size::new(app.inline_size.0, app.inline_size.1),
-                Resize::Fit(None),
-            )
-            .unwrap();
+        let p =
+            crate::images::make_inline(&Picker::halfblocks(), image, app.inline_size.0).unwrap();
+        assert_eq!(p.protocol.size().width, app.inline_size.0);
+        assert!(p.protocol.size().height > 10);
         app.inline_images
-            .insert("23".into(), InlineImageState::Ready(p));
+            .insert("23".into(), InlineImageState::Pending);
+        app.message(Message::InlineImage {
+            generation: app.inline_generation,
+            key: app.detail_key.clone(),
+            id: "23".into(),
+            result: Ok(p),
+        });
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let b = terminal.backend().buffer();
         assert!((app.ticket_rect.y..app.ticket_rect.bottom()).any(|y| {
@@ -1179,6 +1223,33 @@ mod tests {
                 b[(x, y)].bg == Color::Rgb(240, 20, 30) || b[(x, y)].fg == Color::Rgb(240, 20, 30)
             })
         }));
+        app.scroll = app.inline_slots[0].row + 12;
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let right = app.ticket_rect;
+        let b = terminal.backend().buffer();
+        assert!(
+            (right.x + 1..right.right() - 1)
+                .all(|x| b[(x, right.y + 1)].bg == Color::Rgb(240, 20, 30)
+                    || b[(x, right.y + 1)].fg == Color::Rgb(240, 20, 30)),
+            "Scrolled image must still fill the whole ticket pane width"
+        );
+        let id = app.inline_slots[0].attachment.id.clone();
+        let old_width = app.inline_size.0;
+        let offset = app.scroll - app.inline_slots[0].row;
+        let generation = app.inline_generation;
+        terminal.backend_mut().resize(120, 20);
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(app.inline_generation > generation);
+        assert!(app.inline_images.is_empty());
+        let slot = app
+            .inline_slots
+            .iter()
+            .find(|s| s.attachment.id == id)
+            .unwrap();
+        assert_eq!(
+            app.scroll,
+            slot.row + offset * app.inline_size.0 as usize / old_width as usize
+        );
     }
     #[test]
     fn two_panes_and_top_views_fit() {

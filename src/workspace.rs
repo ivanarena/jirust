@@ -184,6 +184,7 @@ impl Workspace {
             ] {
                 row.fields[field] = ticket.fields[field].clone();
             }
+            row.update_estimates(ticket);
             self.index
                 .insert(row.key.clone(), SearchRow::new(row, position));
         }
@@ -315,6 +316,26 @@ mod tests {
         w.reindex();
         assert!(w.matches(&w.items[0], config::BACKLOG, "", "", "checklist separate"));
         assert!(!w.matches(&w.items[0], config::BACKLOG, "", "", "listseparate"));
+    }
+    #[test]
+    fn estimate_hydration_keeps_rank_and_does_not_turn_zero_into_unknown() {
+        let mut w = Workspace {
+            items: data::demo_tickets(),
+            ..Default::default()
+        };
+        w.reindex();
+        let keys = w.items.iter().map(|t| t.key.clone()).collect::<Vec<_>>();
+        let mut t = w.items[0].clone();
+        t.fields["customfield_90123"] = serde_json::json!(0);
+        w.update(&t);
+        assert_eq!(w.items[0].points_label(), "0");
+        assert_eq!(
+            keys,
+            w.items.iter().map(|t| t.key.clone()).collect::<Vec<_>>()
+        );
+        t.fields["customfield_90123"] = serde_json::Value::Null;
+        w.update(&t);
+        assert_eq!(w.items[0].points_label(), "—");
     }
     #[test]
     fn duplicate_page_keys_are_rejected_instead_of_corrupting_search_positions() {

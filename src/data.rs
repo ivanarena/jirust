@@ -21,6 +21,8 @@ pub struct Ticket {
     pub fields: Value,
     #[serde(default)]
     pub names: Value,
+    #[serde(default)]
+    pub estimate_fields: Vec<String>,
     #[serde(default, deserialize_with = "null_default")]
     pub transitions: Vec<Value>,
 }
@@ -40,6 +42,65 @@ impl Ticket {
     }
     pub fn user(&self, field: &str) -> User {
         User::from_value(&self.fields[field])
+    }
+    pub fn story_points(&self) -> Option<f64> {
+        let mut ids = self
+            .estimate_fields
+            .iter()
+            .filter(|id| crate::estimates::valid_field(id))
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Some(names) = self.names.as_object() {
+            ids.extend(
+                names
+                    .iter()
+                    .filter(|(id, name)| {
+                        crate::estimates::valid_field(id)
+                            && name.as_str().is_some_and(crate::estimates::point_name)
+                    })
+                    .map(|(id, _)| id.as_str()),
+            );
+        }
+        // Multiple populated point fields are ambiguous; never sum or choose one.
+        let values = ids
+            .into_iter()
+            .filter_map(|id| self.fields.get(id))
+            .filter(|v| !v.is_null())
+            .collect::<Vec<_>>();
+        if values.len() != 1 {
+            return None;
+        }
+        values[0]
+            .as_f64()
+            .filter(|n| n.is_finite() && *n >= 0. && *n <= 1_000_000.)
+    }
+    pub fn update_estimates(&mut self, other: &Ticket) {
+        let mut ids = other
+            .estimate_fields
+            .iter()
+            .filter(|id| crate::estimates::valid_field(id))
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Some(names) = other.names.as_object() {
+            ids.extend(
+                names
+                    .iter()
+                    .filter(|(id, name)| {
+                        crate::estimates::valid_field(id)
+                            && name.as_str().is_some_and(crate::estimates::point_name)
+                    })
+                    .map(|(id, _)| id.clone()),
+            );
+        }
+        for id in &ids {
+            self.fields[id] = other.fields[id].clone();
+        }
+        self.estimate_fields = ids.into_iter().collect();
+    }
+    pub fn points_label(&self) -> String {
+        self.story_points()
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "—".into())
     }
     pub fn priority(&self) -> String {
         text(&self.fields["priority"]["name"])
@@ -505,8 +566,8 @@ pub fn adf_markdown(v: &Value) -> String {
 }
 pub fn demo_tickets() -> Vec<Ticket> {
     serde_json::from_value(json!([
-        {"key":"DEV-101","self":"https://example.atlassian.net/rest/api/3/issue/101","fields":{"summary":"A simpler two-pane terminal workspace","status":{"name":"In Progress","statusCategory":{"key":"indeterminate"}},"assignee":{"displayName":"Alex","accountId":"alex","emailAddress":"alex@example.com"},"reporter":{"displayName":"Sam"},"priority":{"name":"High"},"issuetype":{"name":"Story"},"description":{"type":"doc","content":[{"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"Fast navigation"}]},{"type":"paragraph","content":[{"type":"text","text":"Bold","marks":[{"type":"strong"}]},{"type":"text","text":" descriptions with "},{"type":"text","text":"links","marks":[{"type":"link","attrs":{"href":"https://example.com/docs"}}]}]}]},"issuelinks":[{"type":{"outward":"blocks"},"outwardIssue":{"key":"DEV-102","fields":{"summary":"Improve number lookup"}}}],"comment":{"total":1,"comments":[{"author":{"displayName":"Sam"},"body":"Try **101** to find this ticket."}]}}},
-        {"key":"DEV-102","self":"https://example.atlassian.net/rest/api/3/issue/102","fields":{"summary":"Typing digits finds a ticket automatically","status":{"name":"Refinement","statusCategory":{"key":"new"}},"assignee":null,"reporter":{"displayName":"Alex"},"priority":{"name":"Medium"},"issuetype":{"name":"Task"},"description":"# Ticket search\n\nType `102` anywhere in the main view.\n\n- No Enter required\n- Ctrl+1 switches views instead\n\nRelated: DEV-101"}},
+        {"key":"DEV-101","estimate_fields":["customfield_90123"],"self":"https://example.atlassian.net/rest/api/3/issue/101","fields":{"customfield_90123":3,"summary":"A simpler two-pane terminal workspace","status":{"name":"In Progress","statusCategory":{"key":"indeterminate"}},"assignee":{"displayName":"Alex","accountId":"alex","emailAddress":"alex@example.com"},"reporter":{"displayName":"Sam"},"priority":{"name":"High"},"issuetype":{"name":"Story"},"description":{"type":"doc","content":[{"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"Fast navigation"}]},{"type":"paragraph","content":[{"type":"text","text":"Bold","marks":[{"type":"strong"}]},{"type":"text","text":" descriptions with "},{"type":"text","text":"links","marks":[{"type":"link","attrs":{"href":"https://example.com/docs"}}]}]}]},"issuelinks":[{"type":{"outward":"blocks"},"outwardIssue":{"key":"DEV-102","fields":{"summary":"Improve number lookup"}}}],"comment":{"total":1,"comments":[{"author":{"displayName":"Sam"},"body":"Try **101** to find this ticket."}]}}},
+        {"key":"DEV-102","estimate_fields":["customfield_90123"],"self":"https://example.atlassian.net/rest/api/3/issue/102","fields":{"customfield_90123":0,"summary":"Typing digits finds a ticket automatically","status":{"name":"Refinement","statusCategory":{"key":"new"}},"assignee":null,"reporter":{"displayName":"Alex"},"priority":{"name":"Medium"},"issuetype":{"name":"Task"},"description":"# Ticket search\n\nType `102` anywhere in the main view.\n\n- No Enter required\n- Ctrl+1 switches views instead\n\nRelated: DEV-101"}},
         {"key":"DEV-103","self":"https://example.atlassian.net/rest/api/3/issue/103","fields":{"summary":"Make assignment explicit and safe","status":{"name":"To Do","statusCategory":{"key":"new"}},"assignee":{"displayName":"Sam","accountId":"sam","emailAddress":"sam@example.com"},"reporter":{"displayName":"Alex"},"priority":{"name":"Low"},"issuetype":{"name":"Task"},"description":"Choose **Me**, **Unassigned**, a known person, or enter an email/account ID.\n\nUpdates need a separate confirmation."}}
     ])).unwrap()
 }
@@ -514,6 +575,38 @@ pub fn demo_tickets() -> Vec<Ticket> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn story_points_keep_zero_and_fractions_and_never_guess_or_sum_fields() {
+        let mut t = demo_tickets().remove(0);
+        assert_eq!(t.points_label(), "3");
+        for (value, expected) in [
+            (json!(0), "0"),
+            (json!(2.5), "2.5"),
+            (Value::Null, "—"),
+            (json!(-1), "—"),
+            (json!("5"), "—"),
+            (json!(true), "—"),
+        ] {
+            t.fields["customfield_90123"] = value;
+            assert_eq!(t.points_label(), expected);
+        }
+        t.estimate_fields.clear();
+        t.fields["customfield_90123"] = json!(5);
+        assert_eq!(t.points_label(), "—");
+        t.names = json!({"customfield_90123":"Story Points"});
+        assert_eq!(t.points_label(), "5");
+        t.estimate_fields = vec!["customfield_90234".into()];
+        t.fields["customfield_90234"] = json!(8);
+        assert_eq!(t.points_label(), "—");
+        t.fields["customfield_90234"] = Value::Null;
+        assert_eq!(t.points_label(), "5");
+        let mut row = Ticket {
+            fields: json!({}),
+            ..Default::default()
+        };
+        row.update_estimates(&t);
+        assert_eq!(row.points_label(), "5");
+    }
     #[test]
     fn digits_and_keys() {
         assert_eq!(number_key("DEV", "3084").as_deref(), Some("DEV-3084"));

@@ -14,6 +14,47 @@ pub const MAX_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_PIXELS: u64 = 12_000_000;
 pub const CACHE_BYTES: u64 = 128 * 1024 * 1024;
 pub const MAX_INLINE: usize = 8;
+pub struct InlineImage {
+    pub protocol: ratatui_image::sliced::SlicedProtocol,
+    pub mode: &'static str,
+}
+pub fn make_inline(
+    picker: &ratatui_image::picker::Picker,
+    image: DynamicImage,
+    width: u16,
+) -> Result<InlineImage> {
+    ensure!(width > 0 && width <= 1024, "Image pane width exceeds limit");
+    let font = picker.font_size();
+    let pixels = u64::from(width) * u64::from(font.width.max(1));
+    let height = (pixels * u64::from(image.height()))
+        .div_ceil(u64::from(image.width().max(1)))
+        .max(1);
+    ensure!(
+        pixels * height <= 4_000_000 && height.div_ceil(u64::from(font.height.max(1))) <= 4096,
+        "Image is too tall for bounded full-width rendering; use the larger preview"
+    );
+    let image = image.resize_exact(
+        pixels as u32,
+        height as u32,
+        image::imageops::FilterType::Triangle,
+    );
+    let mut picker = picker.clone();
+    // Kitty's Unicode row/column diacritic table is finite. Use the universal
+    // renderer for longer images instead of silently losing their bottom rows.
+    if picker.protocol_type() == ratatui_image::picker::ProtocolType::Kitty
+        && (width > 256 || height.div_ceil(u64::from(font.height.max(1))) > 256)
+    {
+        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Halfblocks);
+    }
+    let protocol = ratatui_image::sliced::SlicedProtocol::new(&picker, image, None)?;
+    let mode = match picker.protocol_type() {
+        ratatui_image::picker::ProtocolType::Kitty => "Kitty",
+        ratatui_image::picker::ProtocolType::Sixel => "Sixel",
+        ratatui_image::picker::ProtocolType::Halfblocks => "halfblocks",
+        _ => "iTerm2",
+    };
+    Ok(InlineImage { protocol, mode })
+}
 #[derive(Clone)]
 pub struct ImageSlot {
     pub row: usize,
@@ -24,6 +65,7 @@ pub fn insert_rows(
     lines: &mut Vec<crate::markdown::DocLine>,
     ticket: &data::Ticket,
     height: u16,
+    heights: &std::collections::BTreeMap<String, u16>,
 ) -> Vec<ImageSlot> {
     use crate::markdown::{Chunk, DocLine};
     use ratatui::style::{Color, Style};
@@ -48,6 +90,7 @@ pub fn insert_rows(
     }];
     let mut slots = vec![];
     for a in attachments.iter().take(MAX_INLINE) {
+        let height = heights.get(&a.id).copied().unwrap_or(height);
         rows.push(DocLine {
             chunks: vec![Chunk {
                 text: format!("▧ {}", data::line(&a.name)),
@@ -284,6 +327,14 @@ mod tests {
             .write_to(&mut out, ImageFormat::Png)
             .unwrap();
         out.into_inner()
+    }
+    #[test]
+    fn full_width_images_keep_aspect_ratio_and_bound_scaled_allocations() {
+        let p = ratatui_image::picker::Picker::halfblocks();
+        let image = make_inline(&p, DynamicImage::new_rgb8(64, 32), 80).unwrap();
+        assert_eq!(image.protocol.size(), ratatui::layout::Size::new(80, 20));
+        assert!(make_inline(&p, DynamicImage::new_rgb8(1, 10000), 80).is_err());
+        assert!(make_inline(&p, DynamicImage::new_rgb8(1, 1), 1025).is_err());
     }
     #[test]
     fn decoding_and_cache_are_bounded_private_and_id_keyed() {

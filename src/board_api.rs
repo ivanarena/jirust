@@ -199,6 +199,61 @@ impl ImageApi {
         );
         Ok(())
     }
+    fn origin(&self) -> String {
+        if self.credentials.is_none() && self.profile.is_oauth() {
+            format!(
+                "https://api.atlassian.com/ex/jira/{}",
+                self.profile.cloud_id
+            )
+        } else {
+            format!("https://{}", self.profile.site)
+        }
+    }
+    pub async fn estimate_fields(&self) -> Result<Vec<String>> {
+        let _permit = self.slots.acquire().await?;
+        self.check_identity()?;
+        let token = profile_credential(&self.profile, self.credentials.as_ref()).await?;
+        let request = self
+            .client
+            .get(format!("{}/rest/api/3/field", self.origin()))
+            .header("Accept", "application/json");
+        let request = if self.credentials.is_none() && self.profile.is_oauth() {
+            request.bearer_auth(token)
+        } else {
+            request.basic_auth(&self.profile.email, Some(token))
+        };
+        let mut response = request
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("Field metadata request failed (details redacted)"))?;
+        ensure!(
+            response.status().as_u16() == 200,
+            "Field metadata HTTP {} (details redacted)",
+            response.status().as_u16()
+        );
+        ensure!(
+            response
+                .content_length()
+                .is_none_or(|n| n <= 2 * 1024 * 1024),
+            "Field metadata exceeds limit"
+        );
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| anyhow::anyhow!("Field metadata response interrupted"))?
+        {
+            ensure!(
+                bytes.len() + chunk.len() <= 2 * 1024 * 1024,
+                "Field metadata exceeds limit"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        self.check_identity()?;
+        let metadata: Value = serde_json::from_slice(&bytes)
+            .map_err(|_| anyhow::anyhow!("Invalid field metadata JSON"))?;
+        crate::estimates::fields(&metadata)
+    }
     fn url(&self, id: &str) -> Result<Url> {
         ensure!(crate::images::valid_id(id), "Invalid image attachment ID");
         let origin = if self.credentials.is_none() && self.profile.is_oauth() {
@@ -370,13 +425,45 @@ impl BoardApi {
         }
         serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("Invalid Board API JSON"))
     }
-    async fn issues(&self, endpoint: &str, jql: &str) -> Result<Vec<Ticket>> {
+    async fn issues(
+        &self,
+        endpoint: &str,
+        jql: &str,
+        estimate_fields: &[String],
+    ) -> Result<Vec<Ticket>> {
+        ensure!(
+            estimate_fields
+                .iter()
+                .all(|f| crate::estimates::valid_field(f)),
+            "Invalid estimate field metadata"
+        );
+        let mut fields =
+            "summary,status,assignee,reporter,priority,issuetype,labels,description".to_owned();
+        for id in estimate_fields {
+            fields.push(',');
+            fields.push_str(id);
+        }
         let mut all = Vec::new();
         let mut start = 0usize;
         loop {
-            let v=self.request(Method::GET,endpoint,&[("startAt",start.to_string()),("maxResults","100".into()),("jql",jql.into()),("fields","summary,status,assignee,reporter,priority,issuetype,labels,description".into())],None).await?;
-            let page: Vec<Ticket> = serde_json::from_value(v["issues"].clone())
+            let v = self
+                .request(
+                    Method::GET,
+                    endpoint,
+                    &[
+                        ("startAt", start.to_string()),
+                        ("maxResults", "100".into()),
+                        ("jql", jql.into()),
+                        ("fields", fields.clone()),
+                    ],
+                    None,
+                )
+                .await?;
+            let mut page: Vec<Ticket> = serde_json::from_value(v["issues"].clone())
                 .context("Missing Board API issue page")?;
+            for t in &mut page {
+                t.estimate_fields = estimate_fields.to_vec();
+            }
             ensure!(
                 crate::workspace::valid_items(&page),
                 "Board API returned invalid or duplicate keys"
@@ -408,7 +495,7 @@ impl BoardApi {
         );
         Ok(all)
     }
-    pub async fn workspace(&self, scope: &str) -> Result<Workspace> {
+    pub async fn workspace(&self, scope: &str, estimate_fields: &[String]) -> Result<Workspace> {
         let (base, _) = crate::config::split_order(scope);
         let jql = format!("({base}) ORDER BY Rank ASC");
         // The public /board/issue resource is the whole saved-filter scope,
@@ -440,11 +527,11 @@ impl BoardApi {
         let (board, backlog) = tokio::try_join!(
             async {
                 match board_query {
-                    Some(q) => self.issues(&board_endpoint, &q).await,
+                    Some(q) => self.issues(&board_endpoint, &q, estimate_fields).await,
                     None => Ok(Vec::new()),
                 }
             },
-            self.issues(&backlog_endpoint, &jql)
+            self.issues(&backlog_endpoint, &jql, estimate_fields)
         )?;
         merge_membership(board, backlog)
     }

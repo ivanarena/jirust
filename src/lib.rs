@@ -5,6 +5,7 @@ pub mod board_api;
 pub mod config;
 pub mod data;
 pub mod environment;
+pub mod estimates;
 pub mod filters;
 pub mod images;
 pub mod input;

@@ -77,7 +77,7 @@ pub enum Message {
         generation: u64,
         key: String,
         id: String,
-        result: Result<Protocol>,
+        result: Result<crate::images::InlineImage>,
     },
     Image {
         generation: u64,
@@ -156,7 +156,7 @@ pub enum Dialog {
 }
 pub enum InlineImageState {
     Pending,
-    Ready(Protocol),
+    Ready(crate::images::InlineImage),
     Failed(String),
 }
 #[derive(Clone, Default)]
@@ -223,6 +223,7 @@ pub struct App {
     pub inline_size: (u16, u16),
     pub inline_generation: u64,
     pub inline_slots: Vec<crate::images::ImageSlot>,
+    pub inline_heights: BTreeMap<String, u16>,
     pub inline_images: BTreeMap<String, InlineImageState>,
     inline_cancel: tokio::sync::watch::Sender<bool>,
     preview_cancel: tokio::sync::watch::Sender<bool>,
@@ -318,6 +319,7 @@ impl App {
             inline_size: (0, 0),
             inline_generation: 0,
             inline_slots: vec![],
+            inline_heights: BTreeMap::new(),
             inline_images: BTreeMap::new(),
             inline_cancel: tokio::sync::watch::channel(false).0,
             preview_cancel: tokio::sync::watch::channel(false).0,
@@ -847,7 +849,7 @@ impl App {
         let visible = self
             .inline_slots
             .iter()
-            .filter(|s| s.row >= self.scroll && s.row + s.height as usize <= self.scroll + height)
+            .filter(|s| s.row < self.scroll + height && s.row + s.height as usize > self.scroll)
             .map(|s| s.attachment.id.clone())
             .collect::<HashSet<_>>();
         self.inline_images
@@ -1041,6 +1043,7 @@ impl App {
                                 ] {
                                     item.fields[field] = ticket.fields[field].clone();
                                 }
+                                item.update_estimates(&ticket);
                             }
                         }
                         self.trim_details(&key);
@@ -1144,9 +1147,23 @@ impl App {
                     return vec![];
                 }
                 self.inline_images.insert(
-                    id,
+                    id.clone(),
                     match result {
-                        Ok(p) => InlineImageState::Ready(p),
+                        Ok(p) => {
+                            let height = p.protocol.size().height;
+                            if let Some(slot) =
+                                self.inline_slots.iter().find(|s| s.attachment.id == id)
+                                && slot.row + slot.height as usize <= self.scroll
+                            {
+                                self.scroll = self
+                                    .scroll
+                                    .saturating_add(height as usize)
+                                    .saturating_sub(slot.height as usize);
+                            }
+                            self.inline_heights.insert(id.clone(), height);
+                            self.doc_dirty = true;
+                            InlineImageState::Ready(p)
+                        }
                         Err(e) => InlineImageState::Failed(data::line(&e.to_string())),
                     },
                 );
@@ -1172,10 +1189,31 @@ impl App {
     }
     pub fn document(&mut self, width: u16) {
         let height = self.ticket_rect.height.saturating_sub(3).clamp(3, 10);
+        let mut anchor = None;
         if self.inline_key != self.detail_key || self.inline_size != (width, height) {
             self.inline_cancel.send_replace(true);
             self.inline_cancel = tokio::sync::watch::channel(false).0;
             self.inline_generation += 1;
+            if self.inline_key == self.detail_key && self.inline_size.0 > 0 {
+                let old_width = usize::from(self.inline_size.0);
+                anchor = self
+                    .inline_slots
+                    .iter()
+                    .find(|s| s.row <= self.scroll && self.scroll < s.row + s.height as usize)
+                    .map(|s| {
+                        (
+                            s.attachment.id.clone(),
+                            (self.scroll - s.row) * usize::from(width) / old_width,
+                        )
+                    });
+                for h in self.inline_heights.values_mut() {
+                    *h = (usize::from(*h) * usize::from(width))
+                        .div_ceil(old_width)
+                        .clamp(1, 4096) as u16;
+                }
+            } else {
+                self.inline_heights.clear();
+            }
             self.inline_key = self.detail_key.clone();
             self.inline_size = (width, height);
             self.inline_images.clear();
@@ -1214,7 +1252,14 @@ impl App {
                     .get(&self.detail_key)
                     .map(|(t, _)| t)
                     .or_else(|| self.items.iter().find(|t| t.key == self.detail_key))
-                    .map(|t| crate::images::insert_rows(&mut self.document, t, height))
+                    .map(|t| {
+                        crate::images::insert_rows(
+                            &mut self.document,
+                            t,
+                            height,
+                            &self.inline_heights,
+                        )
+                    })
                     .unwrap_or_default()
             } else {
                 vec![]
@@ -1231,6 +1276,13 @@ impl App {
                 self.inline_cancel = tokio::sync::watch::channel(false).0;
                 self.inline_generation += 1;
                 self.inline_images.clear();
+            }
+            self.inline_heights
+                .retain(|id, _| self.inline_slots.iter().any(|s| s.attachment.id == *id));
+            if let Some((id, offset)) = anchor
+                && let Some(slot) = self.inline_slots.iter().find(|s| s.attachment.id == id)
+            {
+                self.scroll = slot.row + offset.min(slot.height.saturating_sub(1) as usize);
             }
             self.doc_width = width;
             self.doc_dirty = false;
@@ -2360,8 +2412,10 @@ impl App {
                         &attachment.id,
                     ),
                     size: (
-                        self.ticket_rect.width.saturating_sub(4),
-                        self.ticket_rect.height.saturating_sub(4),
+                        (self.tickets_rect.width + self.ticket_rect.width)
+                            .saturating_sub(10)
+                            .max(10),
+                        self.ticket_rect.height.saturating_sub(4).max(6),
                     ),
                     inline: false,
                     cancel: self.preview_cancel.subscribe(),
@@ -2791,7 +2845,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nEpics are included and labeled; / epic searches their type. Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, when fully visible.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nEpics have purple row/title highlights; / epic searches their type. SP shows story points (— unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {

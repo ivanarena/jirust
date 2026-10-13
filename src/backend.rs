@@ -54,6 +54,7 @@ pub struct Backend {
     api: std::sync::RwLock<Option<Arc<crate::board_api::BoardApi>>>,
     image_api: std::sync::RwLock<Option<Arc<crate::board_api::ImageApi>>>,
     image_slots: Semaphore,
+    estimate_fields: tokio::sync::OnceCell<Vec<String>>,
     credentials: std::sync::RwLock<Option<Arc<crate::environment::Credentials>>>,
 }
 impl Backend {
@@ -87,6 +88,7 @@ impl Backend {
             api: std::sync::RwLock::new(None),
             image_api: std::sync::RwLock::new(None),
             image_slots: Semaphore::new(2),
+            estimate_fields: tokio::sync::OnceCell::new(),
             credentials: std::sync::RwLock::new(None),
             demo: Mutex::new(
                 data::demo_tickets()
@@ -181,6 +183,19 @@ impl Backend {
         let bytes = api.download(attachment).await?;
         api.check_identity()?;
         Ok(bytes)
+    }
+    async fn estimate_fields(&self) -> Vec<String> {
+        self.estimate_fields
+            .get_or_init(|| async {
+                let api = self.image_api.read().unwrap().clone();
+                if let Some(api) = api {
+                    api.estimate_fields().await.unwrap_or_default()
+                } else {
+                    vec![]
+                }
+            })
+            .await
+            .clone()
     }
     pub fn board_identity(&self) -> Option<String> {
         self.api
@@ -368,13 +383,17 @@ impl Backend {
         if let Some(api) = api {
             // Let acli refresh its own OAuth token before reading the keyring.
             self.boards("").await?;
-            let (mut workspace, mine, changes) =
-                tokio::try_join!(api.workspace(base), self.dataset(mine, true), async {
+            let fields = self.estimate_fields().await;
+            let (mut workspace, mine, changes) = tokio::try_join!(
+                api.workspace(base, &fields),
+                self.dataset(mine, true),
+                async {
                     match changed {
                         Some(q) => self.dataset(q, true).await,
                         None => Ok(Vec::new()),
                     }
-                })?;
+                }
+            )?;
             if !crate::workspace::valid_items(&mine) || !crate::workspace::valid_items(&changes) {
                 bail!("CLI returned invalid keys")
             }
@@ -449,8 +468,10 @@ impl Backend {
         } else {
             strings(&["issue", "view", key, "--raw"])
         };
-        serde_json::from_slice(&self.run(&args).await?)
-            .context("CLI returned an unsupported ticket JSON shape")
+        let mut ticket: Ticket = serde_json::from_slice(&self.run(&args).await?)
+            .context("CLI returned an unsupported ticket JSON shape")?;
+        ticket.estimate_fields = self.estimate_fields().await;
+        Ok(ticket)
     }
     pub async fn comments(&self, key: &str) -> Result<Vec<Value>> {
         data::require_key(key)?;
