@@ -1,4 +1,4 @@
-//! Visual status badges only; colors never determine Jira membership or order.
+//! Visual status/parent-epic badges; colors never determine membership or order.
 use crate::data::Ticket;
 use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};
@@ -124,6 +124,108 @@ impl StatusColors {
             .unwrap_or_else(|| fallback_style(name))
     }
 }
+pub const EPIC_COLORS_CACHE: &str = "epic-colors-v1";
+const EPIC_SLOTS: u32 = 4112;
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct EpicColors {
+    slots: BTreeMap<String, u32>,
+}
+fn epic_background(slot: u32) -> (u8, u8, u8) {
+    if slot < 16 {
+        return PALETTE[slot as usize];
+    }
+    let n = ((slot - 16) * 1597) % 4096;
+    (
+        24 + 14 * (n % 16) as u8,
+        24 + 14 * ((n / 16) % 16) as u8,
+        24 + 14 * ((n / 256) % 16) as u8,
+    )
+}
+impl EpicColors {
+    pub fn valid(&self) -> bool {
+        self.slots.len() <= EPIC_SLOTS as usize
+            && self.slots.iter().all(|(k, s)| {
+                k.len() <= 1024
+                    && crate::data::valid_key(k)
+                    && *k == k.to_uppercase()
+                    && *s < EPIC_SLOTS
+            })
+            && self
+                .slots
+                .values()
+                .map(|s| epic_background(*s))
+                .collect::<BTreeSet<_>>()
+                .len()
+                == self.slots.len()
+    }
+    pub fn register<'a>(&mut self, tickets: impl IntoIterator<Item = &'a Ticket>) -> bool {
+        let keys = tickets
+            .into_iter()
+            .flat_map(|t| {
+                t.parent_epic()
+                    .map(|e| e.key)
+                    .into_iter()
+                    .chain(t.is_epic().then(|| t.key.clone()))
+            })
+            .map(|k| k.to_uppercase())
+            .filter(|k| k.len() <= 1024 && crate::data::valid_key(k))
+            .collect::<BTreeSet<_>>();
+        let keys = keys
+            .into_iter()
+            .filter(|k| !self.slots.contains_key(k))
+            .collect::<Vec<_>>();
+        if keys.is_empty() {
+            return false;
+        }
+        let mut used = self.slots.values().copied().collect::<BTreeSet<_>>();
+        let mut used_labs = used
+            .iter()
+            .map(|s| lab(epic_background(*s)))
+            .collect::<Vec<_>>();
+        // A spread-out candidate grid for larger epic sets, not a repeating
+        // 8/16-color hash. Calculate Lab once, outside the assignment loop.
+        let candidates = (0..528)
+            .map(|s| (s, lab(epic_background(s))))
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for key in keys {
+            let slot = candidates
+                .iter()
+                .filter(|(s, _)| !used.contains(s))
+                .max_by(|(_, a), (_, b)| {
+                    let score = |l: &[f64; 3]| {
+                        used_labs
+                            .iter()
+                            .map(|u| l.iter().zip(u).map(|(a, b)| (a - b).powi(2)).sum::<f64>())
+                            .fold(f64::INFINITY, f64::min)
+                    };
+                    score(a).total_cmp(&score(b))
+                })
+                .map(|(s, _)| *s)
+                .or_else(|| (528..EPIC_SLOTS).find(|s| !used.contains(s)));
+            let Some(slot) = slot else {
+                break;
+            };
+            used.insert(slot);
+            used_labs.push(lab(epic_background(slot)));
+            self.slots.insert(key, slot);
+            changed = true;
+        }
+        changed
+    }
+    pub fn style_key(&self, key: &str) -> Style {
+        self.slots
+            .get(&key.to_uppercase())
+            .map(|s| style_rgb(epic_background(*s)))
+            .unwrap_or_else(|| epic_label_style(key))
+    }
+    pub fn style(&self, ticket: &Ticket) -> Style {
+        ticket
+            .parent_epic()
+            .map(|e| self.style_key(&e.key))
+            .unwrap_or_default()
+    }
+}
 fn background(slot: u32) -> (u8, u8, u8) {
     if let Some(rgb) = PALETTE.get(slot as usize) {
         return *rgb;
@@ -175,7 +277,9 @@ fn separation(rgb: (u8, u8, u8), used: &BTreeSet<(u8, u8, u8)>) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 fn style_for(slot: u32) -> Style {
-    let rgb = background(slot);
+    style_rgb(background(slot))
+}
+fn style_rgb(rgb: (u8, u8, u8)) -> Style {
     let l = luminance(rgb);
     // Choose whichever has the greater WCAG contrast against this solid badge.
     let text = if (l + 0.05) / 0.05 >= 1.05 / (l + 0.05) {
@@ -212,13 +316,26 @@ pub fn status_label(name: &str) -> String {
         name.into()
     }
 }
-pub fn epic_label_style() -> Style {
-    Style::default()
-        .fg(Color::Rgb(88, 28, 140))
-        .bg(Color::Rgb(241, 229, 255))
-        .add_modifier(Modifier::BOLD)
+/// Standalone callers have a key-based fallback; App uses the collision-free
+/// account-cached registry for both list and detail labels.
+pub fn epic_label_style(key: &str) -> Style {
+    let hash = key.to_uppercase().bytes().fold(2166136261u32, |h, b| {
+        (h ^ u32::from(b)).wrapping_mul(16777619)
+    });
+    style_rgb(epic_background(16 + hash % 4096))
 }
 pub fn ticket_summary(ticket: &Ticket, width: u16) -> ratatui::text::Line<'static> {
+    let style = ticket
+        .parent_epic()
+        .map(|e| epic_label_style(&e.key))
+        .unwrap_or_default();
+    ticket_summary_with_style(ticket, width, style)
+}
+pub fn ticket_summary_with_style(
+    ticket: &Ticket,
+    width: u16,
+    epic_style: Style,
+) -> ratatui::text::Line<'static> {
     use ratatui::text::{Line, Span};
     use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
     let mut spans = vec![];
@@ -242,7 +359,7 @@ pub fn ticket_summary(ticket: &Ticket, width: u16) -> ratatui::text::Line<'stati
                 }
                 label.push('…');
             }
-            spans.push(Span::styled(format!(" {label} "), epic_label_style()));
+            spans.push(Span::styled(format!(" {label} "), epic_style));
             spans.push(Span::raw(" "));
         }
     }
@@ -267,6 +384,60 @@ mod tests {
         t
     }
     #[test]
+    fn epic_colors_are_unique_contrast_safe_key_based_and_stable_after_restart_and_additions() {
+        let mut items = (1..=100)
+            .map(|i| {
+                let mut t = crate::data::demo_tickets().remove(0);
+                t.key = format!("DEV-{i}");
+                t.fields["issuetype"] = json!({"name":"Epic"});
+                t
+            })
+            .collect::<Vec<_>>();
+        let mut colors = EpicColors::default();
+        assert!(colors.register(&items));
+        assert!(colors.valid());
+        assert_eq!(colors.slots.len(), 100);
+        assert_eq!(
+            items
+                .iter()
+                .map(|t| epic_background(colors.slots[&t.key]))
+                .collect::<BTreeSet<_>>()
+                .len(),
+            100
+        );
+        for t in &items {
+            let s = colors.style_key(&t.key);
+            let Color::Rgb(r, g, b) = s.bg.unwrap() else {
+                panic!()
+            };
+            let l = luminance((r, g, b));
+            let contrast = if s.fg == Some(Color::Rgb(0, 0, 0)) {
+                (l + 0.05) / 0.05
+            } else {
+                1.05 / (l + 0.05)
+            };
+            assert!(contrast >= 4.5);
+        }
+        let before = colors.slots.clone();
+        let mut restored: EpicColors =
+            serde_json::from_slice(&serde_json::to_vec(&colors).unwrap()).unwrap();
+        assert!(restored.valid());
+        items[0].fields["summary"] = json!("Renamed epic");
+        assert!(!restored.register(&items));
+        assert_eq!(restored.style_key("dev-1"), colors.style_key("DEV-1"));
+        let mut new = items[0].clone();
+        new.key = "DEV-200".into();
+        assert!(restored.register([&new]));
+        for (k, s) in before {
+            assert_eq!(restored.slots[&k], s);
+        }
+        let invalid: EpicColors =
+            serde_json::from_value(json!({"slots":{"DEV-1":0,"DEV-2":0}})).unwrap();
+        assert!(!invalid.valid());
+        let invalid: EpicColors = serde_json::from_value(json!({"slots":{"DEV-1":4112}})).unwrap();
+        assert!(!invalid.valid());
+    }
+    #[test]
     fn only_parent_labels_are_colored_truncated_by_cells_and_precede_plain_ticket_titles() {
         use unicode_width::UnicodeWidthStr;
         let mut t = crate::data::demo_tickets().remove(0);
@@ -276,7 +447,7 @@ mod tests {
         t.fields["parent"] = json!({"key":"DEV-900","fields":{"summary":"界界界界界界界界界界界界界界界界界","issuetype":{"name":"Epic"}}});
         let line = ticket_summary(&t, 30);
         assert_eq!(line.spans.len(), 3);
-        assert_eq!(line.spans[0].style, epic_label_style());
+        assert_eq!(line.spans[0].style, epic_label_style("DEV-900"));
         assert!(line.spans[0].content.width() <= 10);
         assert_eq!(line.spans[2].content, t.summary());
         assert!(line.spans[2].style.bg.is_none());

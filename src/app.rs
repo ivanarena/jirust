@@ -169,6 +169,7 @@ pub struct ViewFilters {
 }
 pub struct App {
     pub status_colors: crate::appearance::StatusColors,
+    pub epic_colors: crate::appearance::EpicColors,
     view_filters: [ViewFilters; 4],
     pub backend: Arc<Backend>,
     pub cache: Cache,
@@ -264,8 +265,14 @@ impl App {
             .map(|(c, _)| c)
             .filter(crate::appearance::StatusColors::valid)
             .unwrap_or_default();
+        let epic_colors = cache
+            .get::<crate::appearance::EpicColors>(crate::appearance::EPIC_COLORS_CACHE)
+            .map(|(c, _)| c)
+            .filter(crate::appearance::EpicColors::valid)
+            .unwrap_or_default();
         Self {
             status_colors,
+            epic_colors,
             view_filters: std::array::from_fn(|_| ViewFilters::default()),
             backend,
             cache,
@@ -469,6 +476,11 @@ impl App {
                 let _ = self
                     .cache
                     .put(crate::appearance::STATUS_COLORS_CACHE, &self.status_colors);
+            }
+            if self.epic_colors.register(&workspace.items) {
+                let _ = self
+                    .cache
+                    .put(crate::appearance::EPIC_COLORS_CACHE, &self.epic_colors);
             }
         }
         self.apply_local();
@@ -730,6 +742,11 @@ impl App {
                     .cache
                     .put(crate::appearance::STATUS_COLORS_CACHE, &self.status_colors);
             }
+            if self.epic_colors.register([&t]) {
+                let _ = self
+                    .cache
+                    .put(crate::appearance::EPIC_COLORS_CACHE, &self.epic_colors);
+            }
             self.details.insert(key.into(), (t, time));
             self.trim_details(key);
             self.doc_dirty = true;
@@ -938,6 +955,11 @@ impl App {
                                 .cache
                                 .put(crate::appearance::STATUS_COLORS_CACHE, &self.status_colors);
                         }
+                        if self.epic_colors.register(&workspace.items) {
+                            let _ = self
+                                .cache
+                                .put(crate::appearance::EPIC_COLORS_CACHE, &self.epic_colors);
+                        }
                         let keys = workspace.keys();
                         if full {
                             self.dirty_details.extend(keys.iter().cloned());
@@ -1035,6 +1057,11 @@ impl App {
                             let _ = self
                                 .cache
                                 .put(crate::appearance::STATUS_COLORS_CACHE, &self.status_colors);
+                        }
+                        if self.epic_colors.register([&ticket]) {
+                            let _ = self
+                                .cache
+                                .put(crate::appearance::EPIC_COLORS_CACHE, &self.epic_colors);
                         }
                         let _ = self.cache.put(&full_cache_key(&key), &ticket);
                         self.dirty_details.remove(&key);
@@ -1255,10 +1282,11 @@ impl App {
         }
         if self.doc_dirty || self.doc_width != width {
             self.document = if let Some((ticket, _)) = self.details.get(&self.detail_key) {
-                markdown::ticket_document_with_status(
+                markdown::ticket_document_with_styles(
                     ticket,
                     width,
                     self.status_colors.style(ticket),
+                    self.epic_colors.style(ticket),
                 )
             } else if let Some(ticket) = self.items.iter().find(|t| t.key == self.detail_key) {
                 let mut lines = markdown::render(
@@ -1266,10 +1294,11 @@ impl App {
                     width,
                     ticket,
                 );
-                lines.extend(markdown::ticket_document_with_status(
+                lines.extend(markdown::ticket_document_with_styles(
                     ticket,
                     width,
                     self.status_colors.style(ticket),
+                    self.epic_colors.style(ticket),
                 ));
                 lines
             } else {
@@ -2892,7 +2921,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Mouse opens detail links. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a purple label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Mouse opens detail links. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -3266,6 +3295,56 @@ mod tests {
         a.document(50);
         assert!(a.inline_slots.is_empty());
         assert!(a.inline_jobs().is_empty());
+    }
+    #[test]
+    fn epic_palette_cache_keeps_list_and_detail_colors_identical_across_restart_and_views() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        a.cache = Cache {
+            directory: Some(dir.path().to_owned()),
+        };
+        let items = data::demo_tickets();
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((
+                Workspace {
+                    items,
+                    complete: true,
+                    ..Default::default()
+                },
+                vec![],
+            )),
+        });
+        let color = a.epic_colors.style_key("DEV-900");
+        let t = a.workspace.as_ref().unwrap().ticket("DEV-102").unwrap();
+        assert_eq!(a.epic_colors.style(t), color);
+        let list = crate::appearance::ticket_summary_with_style(t, 80, color);
+        let detail = markdown::ticket_document_with_styles(t, 80, a.status_colors.style(t), color);
+        assert_eq!(list.spans[0].style.bg, detail[0].chunks[0].style.bg);
+        let restarted = App::new(
+            a.backend.clone(),
+            a.cache.clone(),
+            a.settings.clone(),
+            true,
+            500,
+            PathBuf::new(),
+        );
+        assert_eq!(restarted.epic_colors.style_key("DEV-900"), color);
+        assert!(restarted.epic_colors.valid());
+        for v in 0..4 {
+            a.switch_view(v);
+            assert_eq!(a.epic_colors.style_key("DEV-900"), color);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for entry in std::fs::read_dir(dir.path()).unwrap() {
+                assert_eq!(
+                    entry.unwrap().metadata().unwrap().permissions().mode() & 0o077,
+                    0
+                );
+            }
+        }
     }
     #[test]
     fn palette_cache_keeps_status_colors_identical_after_restart() {

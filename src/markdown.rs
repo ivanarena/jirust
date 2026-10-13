@@ -461,6 +461,18 @@ pub fn ticket_document(t: &Ticket, width: u16) -> Vec<DocLine> {
     ticket_document_with_status(t, width, crate::appearance::status_style(t))
 }
 pub fn ticket_document_with_status(t: &Ticket, width: u16, status_style: Style) -> Vec<DocLine> {
+    let style = t
+        .parent_epic()
+        .map(|e| crate::appearance::epic_label_style(&e.key))
+        .unwrap_or_default();
+    ticket_document_with_styles(t, width, status_style, style)
+}
+pub fn ticket_document_with_styles(
+    t: &Ticket,
+    width: u16,
+    status_style: Style,
+    epic_style: Style,
+) -> Vec<DocLine> {
     let labels = t.fields["labels"]
         .as_array()
         .map(|a| a.iter().map(data::text).collect::<Vec<_>>().join(", "))
@@ -483,7 +495,7 @@ pub fn ticket_document_with_status(t: &Ticket, width: u16, status_style: Style) 
         let badge = DocLine {
             chunks: vec![Chunk {
                 text: format!(" {} ", epic.name),
-                style: crate::appearance::epic_label_style(),
+                style: epic_style,
                 target: Some(Target::ticket(epic.key.clone(), &epic.key)),
             }],
         };
@@ -761,7 +773,7 @@ mod tests {
         assert!(
             rows.iter()
                 .flat_map(|r| &r.chunks)
-                .all(|c| c.style.bg != crate::appearance::epic_label_style().bg)
+                .all(|c| c.style.bg != crate::appearance::epic_label_style("DEV-900").bg)
         );
         t.fields["issuetype"] = json!({"name":"Story"});
         t.fields["parent"] =
@@ -770,7 +782,7 @@ mod tests {
         assert_eq!(rows[0].chunks[0].text, " Platform ");
         assert_eq!(
             rows[0].chunks[0].style.bg,
-            crate::appearance::epic_label_style().bg
+            crate::appearance::epic_label_style("DEV-900").bg
         );
         assert_eq!(
             rows[0].target_at(1).unwrap().key.as_deref(),

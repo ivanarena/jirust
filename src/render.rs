@@ -190,9 +190,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 Cell::from(appearance::status_label(&t.status())).style(app.status_colors.style(t)),
                 Cell::from(t.user("assignee").display_label()),
                 Cell::from(t.points_label()),
-                Cell::from(appearance::ticket_summary(
+                Cell::from(appearance::ticket_summary_with_style(
                     t,
                     inner.width.saturating_sub(46),
+                    app.epic_colors.style(t),
                 )),
             ])
             .style(if position == app.selected {
@@ -220,7 +221,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Row::new(vec![
                 Cell::from(t.key.clone()),
                 Cell::from(Text::from(vec![
-                    appearance::ticket_summary(t, inner.width.saturating_sub(12)),
+                    appearance::ticket_summary_with_style(
+                        t,
+                        inner.width.saturating_sub(12),
+                        app.epic_colors.style(t),
+                    ),
                     Line::from(vec![
                         Span::styled(
                             appearance::status_label(&t.status()),
@@ -1258,11 +1263,15 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(width, 26)).unwrap();
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             let b = terminal.backend().buffer();
-            let badge = appearance::epic_label_style().bg.unwrap();
-            for y in app.tickets_rect.y + 2..app.tickets_rect.y + 2 + 2 * app.row_height {
+            let badge = app.epic_colors.style_key("DEV-900").bg.unwrap();
+            for position in 0..2 {
+                let y = app.tickets_rect.y + 2 + position * app.row_height;
+                let start = app.tickets_rect.x + if app.row_height == 1 { 47 } else { 13 };
                 assert!(
-                    (app.tickets_rect.x..app.tickets_rect.right()).all(|x| b[(x, y)].bg != badge),
-                    "Epic ticket rows must not be purple"
+                    (app.tickets_rect.x + 1..app.tickets_rect.x + 12)
+                        .chain(start..app.tickets_rect.right() - 1)
+                        .all(|x| b[(x, y)].bg != badge),
+                    "Epic ticket keys/titles must not have epic-label colors"
                 );
             }
             for bg in [
