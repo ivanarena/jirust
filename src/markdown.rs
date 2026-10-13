@@ -469,7 +469,7 @@ pub fn ticket_document_with_status(t: &Ticket, width: u16, status_style: Style) 
         "# {} — {}\n\n**Status:** {}  \n**Assignee:** {}  \n**Reporter:** {}  \n**Type:** {} · **Priority:** {}  \n**Labels:** {}\n\n---\n\n{}\n",
         t.key,
         t.summary(),
-        t.status(),
+        crate::appearance::status_label(&t.status()),
         t.user("assignee").label(),
         t.user("reporter").label(),
         t.kind(),
@@ -479,14 +479,14 @@ pub fn ticket_document_with_status(t: &Ticket, width: u16, status_style: Style) 
     );
     let mut lines = render(&md, width, t);
     // Only the metadata status line(s), not matching words in the ticket body.
-    if let Some(start) = lines
+    if let Some(end) = lines
         .iter()
-        .position(|l| l.chunks.iter().any(|c| c.text.trim() == "Status:"))
+        .position(|l| l.chunks.iter().any(|c| c.text.trim() == "Assignee:"))
+        && let Some(start) = (0..end)
+            .rev()
+            .find(|i| lines[*i].chunks.iter().any(|c| c.text.trim() == "Status:"))
     {
-        for line in lines.iter_mut().skip(start) {
-            if line.chunks.iter().any(|c| c.text.trim() == "Assignee:") {
-                break;
-            }
+        for line in &mut lines[start..end] {
             for chunk in &mut line.chunks {
                 chunk.style = chunk.style.patch(status_style);
             }

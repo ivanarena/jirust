@@ -1,5 +1,5 @@
 use crate::{
-    app::{App, Dialog, Focus, SearchMode},
+    app::{App, Dialog, Focus, InlineImageState, SearchMode},
     appearance, data, markdown,
 };
 use ratatui::{
@@ -104,7 +104,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Min(22),
-            Constraint::Length(22),
+            Constraint::Length(24),
             Constraint::Length(23),
         ])
         .split(rows[1]);
@@ -148,7 +148,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             } else if app.status_filter.len() > 1 {
                 format!("{} selected", app.status_filter.len())
             } else {
-                app.status_filter.single().to_owned()
+                appearance::status_label(app.status_filter.single())
             }
         ))
         .style(if app.status_filter.len() == 1 {
@@ -193,7 +193,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 } else {
                     Style::default()
                 }),
-                Cell::from(t.status()).style(app.status_colors.style(t)),
+                Cell::from(appearance::status_label(&t.status())).style(app.status_colors.style(t)),
                 Cell::from(t.user("assignee").label()),
                 Cell::from(appearance::summary(t)),
             ])
@@ -229,7 +229,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 Cell::from(Text::from(vec![
                     Line::from(appearance::summary(t)),
                     Line::from(vec![
-                        Span::styled(t.status(), app.status_colors.style(t)),
+                        Span::styled(
+                            appearance::status_label(&t.status()),
+                            app.status_colors.style(t),
+                        ),
                         Span::styled(
                             format!(" · {}", t.user("assignee").label()),
                             Style::default().fg(Color::DarkGray),
@@ -322,7 +325,63 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .take(right.height as usize)
             .map(|l| l.line())
             .collect::<Vec<_>>();
-        frame.render_widget(Paragraph::new(lines), right)
+        frame.render_widget(Paragraph::new(lines), right);
+        for slot in &app.inline_slots {
+            if slot.row + slot.height as usize <= app.scroll
+                || slot.row >= app.scroll + right.height as usize
+            {
+                continue;
+            }
+            let full = slot.row >= app.scroll
+                && slot.row + slot.height as usize <= app.scroll + right.height as usize;
+            let y = right.y + slot.row.saturating_sub(app.scroll) as u16;
+            if slot.row > app.scroll
+                && let Some(InlineImageState::Ready(image)) =
+                    app.inline_images.get(&slot.attachment.id)
+            {
+                let mode = match image {
+                    ratatui_image::protocol::Protocol::Halfblocks(_) => "halfblocks",
+                    ratatui_image::protocol::Protocol::Kitty(_) => "Kitty",
+                    ratatui_image::protocol::Protocol::Sixel(_) => "Sixel",
+                    ratatui_image::protocol::Protocol::ITerm2(_) => "iTerm2",
+                };
+                frame.render_widget(
+                    Paragraph::new(format!("▧ {} · {mode}", data::line(&slot.attachment.name)))
+                        .style(Style::default().fg(Color::Blue)),
+                    Rect::new(right.x, y.saturating_sub(1), right.width, 1),
+                );
+            }
+            let rect = Rect::new(
+                right.x,
+                y,
+                right.width,
+                slot.height.min(right.bottom().saturating_sub(y)),
+            );
+            if full
+                && let Some(InlineImageState::Ready(image)) =
+                    app.inline_images.get(&slot.attachment.id)
+            {
+                frame.render_widget(Clear, rect);
+                frame.render_widget(Image::new(image), rect);
+            } else {
+                let caption = if !full {
+                    "Image partly outside viewport · i jumps to images".into()
+                } else {
+                    match app.inline_images.get(&slot.attachment.id) {
+                        Some(InlineImageState::Failed(e)) => {
+                            format!("Image unavailable: {e} · i retries / l opens attachments")
+                        }
+                        _ => "Loading image… (read-only)".into(),
+                    }
+                };
+                frame.render_widget(
+                    Paragraph::new(caption)
+                        .wrap(Wrap { trim: true })
+                        .style(Style::default().fg(Color::DarkGray)),
+                    rect,
+                );
+            }
+        }
     }
     let mode = if app.read_only {
         "READ ONLY · "
@@ -354,6 +413,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ('t', "Status"),
         ('e', "Edit"),
         ('c', "Comment"),
+        ('i', "Images"),
         ('l', "Links"),
         ('O', "Jira"),
         ('f', "Filters"),
@@ -496,7 +556,20 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
                             } else {
                                 " "
                             },
-                            data::line(&choice.label)
+                            if column == 1
+                                && matches!(
+                                    choice.value.to_ascii_lowercase().as_str(),
+                                    "done" | "discarded"
+                                )
+                            {
+                                format!(
+                                    "{} {}",
+                                    appearance::status_label(&choice.value),
+                                    data::line(&choice.label)
+                                )
+                            } else {
+                                data::line(&choice.label)
+                            }
                         ))
                         .style(style),
                         Rect::new(list.x, list.y + y as u16, list.width, 1),
@@ -1051,6 +1124,61 @@ mod tests {
             assert!(screen.contains("3 tickets are in Backlog"));
             assert!(screen.contains("F6 Clear filters"));
         }
+    }
+    #[test]
+    fn terminal_renders_inline_halfblock_images_in_ticket_pane() {
+        use crate::app::{InlineImageState, Message};
+        use ratatui_image::{Resize, picker::Picker};
+        let mut app = App::new(
+            Backend::new("demo", None).unwrap(),
+            Cache { directory: None },
+            Settings {
+                project: "DEV".into(),
+                last_view: crate::config::BACKLOG,
+                ..Default::default()
+            },
+            true,
+            500,
+            std::path::PathBuf::new(),
+        );
+        let mut t = data::demo_tickets().remove(0);
+        t.fields["attachment"] = serde_json::json!([{"id":"23","filename":"synthetic.png","mimeType":"image/png","size":20}]);
+        app.message(Message::Synced {
+            generation: app.generation,
+            result: Ok((
+                crate::workspace::Workspace {
+                    items: vec![t.clone()],
+                    ..Default::default()
+                },
+                vec![],
+            )),
+        });
+        app.details.insert(t.key.clone(), (t, 0));
+        let mut terminal = Terminal::new(TestBackend::new(140, 20)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let slot = app.inline_slots[0].clone();
+        app.scroll = slot.row;
+        let image = image::DynamicImage::ImageRgb8(image::ImageBuffer::from_pixel(
+            4,
+            8,
+            image::Rgb([240, 20, 30]),
+        ));
+        let p = Picker::halfblocks()
+            .new_protocol(
+                image,
+                ratatui::layout::Size::new(app.inline_size.0, app.inline_size.1),
+                Resize::Fit(None),
+            )
+            .unwrap();
+        app.inline_images
+            .insert("23".into(), InlineImageState::Ready(p));
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let b = terminal.backend().buffer();
+        assert!((app.ticket_rect.y..app.ticket_rect.bottom()).any(|y| {
+            (app.ticket_rect.x..app.ticket_rect.right()).any(|x| {
+                b[(x, y)].bg == Color::Rgb(240, 20, 30) || b[(x, y)].fg == Color::Rgb(240, 20, 30)
+            })
+        }));
     }
     #[test]
     fn two_panes_and_top_views_fit() {

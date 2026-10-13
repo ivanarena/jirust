@@ -87,6 +87,7 @@ impl Ticket {
                 id: text(&v["id"]),
                 name: text(&v["filename"]),
                 mime: text(&v["mimeType"]),
+                size: v["size"].as_u64().unwrap_or(0),
             })
             .collect()
     }
@@ -247,6 +248,16 @@ pub struct Attachment {
     pub id: String,
     pub name: String,
     pub mime: String,
+    #[serde(default)]
+    pub size: u64,
+}
+impl Attachment {
+    pub fn is_image(&self) -> bool {
+        matches!(
+            self.mime.to_ascii_lowercase().as_str(),
+            "image/png" | "image/jpeg" | "image/jpg" | "image/gif" | "image/webp"
+        )
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Target {

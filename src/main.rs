@@ -68,6 +68,8 @@ struct Options {
     attachment_dir: Option<PathBuf>,
     #[arg(long,default_value="auto",value_parser=["auto","kitty","halfblocks"])]
     image_protocol: String,
+    #[arg(long = "no-inline-images", alias = "no-images")]
+    no_images: bool,
 }
 #[derive(Subcommand)]
 enum CliCommand {
@@ -353,6 +355,7 @@ async fn main() -> Result<()> {
         limit,
         attachment_dir,
     );
+    app.automatic_images = !opts.no_images;
     let jobs = app.reload();
     dispatch(jobs, &backend, &picker, &tx, &app.settings.project);
     let mut dirty = true;
@@ -477,6 +480,42 @@ fn dispatch(
                     .await;
                     Message::Notice(result)
                 }
+                Job::AttachmentImage {
+                    generation,
+                    key,
+                    attachment,
+                    cache,
+                    size,
+                    inline,
+                    cancel,
+                } => {
+                    let id = attachment.id.clone();
+                    let name = attachment.name.clone();
+                    let result = attachment_protocol(
+                        &backend,
+                        &key,
+                        &attachment,
+                        cache,
+                        picker,
+                        size,
+                        cancel,
+                    )
+                    .await;
+                    if inline {
+                        Message::InlineImage {
+                            generation,
+                            key,
+                            id,
+                            result,
+                        }
+                    } else {
+                        Message::Image {
+                            generation,
+                            name,
+                            result,
+                        }
+                    }
+                }
                 Job::Preview {
                     generation,
                     path,
@@ -486,22 +525,10 @@ fn dispatch(
                         .file_name()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_else(|| "image".into());
+                    let permit = IMAGE_DECODERS.clone().acquire_owned().await;
                     let result = tokio::task::spawn_blocking(move || {
-                        let metadata = std::fs::metadata(&path)?;
-                        if metadata.len() > 16 * 1024 * 1024 {
-                            bail!("Image is larger than 16 MiB")
-                        };
-                        let dimensions = image::ImageReader::open(&path)?
-                            .with_guessed_format()?
-                            .into_dimensions()?;
-                        if u64::from(dimensions.0) * u64::from(dimensions.1) > 12_000_000 {
-                            bail!("Image exceeds 12 million pixels")
-                        };
-                        let mut reader = image::ImageReader::open(path)?.with_guessed_format()?;
-                        let mut limits = image::Limits::default();
-                        limits.max_alloc = Some(64 * 1024 * 1024);
-                        reader.limits(limits);
-                        let image = reader.decode()?;
+                        let _permit = permit?;
+                        let image = jirust::images::decode(&jirust::images::local_bytes(&path)?)?;
                         Ok(picker.new_protocol(
                             image,
                             Size::new(size.0, size.1),
@@ -521,6 +548,45 @@ fn dispatch(
         });
     }
 }
+static IMAGE_DECODERS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
+async fn attachment_protocol(
+    backend: &Backend,
+    key: &str,
+    attachment: &data::Attachment,
+    cache: Option<PathBuf>,
+    picker: Picker,
+    size: (u16, u16),
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> Result<ratatui_image::protocol::Protocol> {
+    anyhow::ensure!(!*cancel.borrow(), "Image cancelled");
+    let decoder_cancel = cancel.clone();
+    let operation = async {
+        let cached = cache.as_deref().and_then(jirust::images::cached_bytes);
+        let bytes = backend.image_bytes(key, attachment, cached).await?;
+        let permit = IMAGE_DECODERS.clone().acquire_owned().await?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let image = match jirust::images::decode(&bytes) {
+                Ok(i) => i,
+                Err(e) => {
+                    if let Some(p) = &cache {
+                        let _ = std::fs::remove_file(p);
+                    }
+                    return Err(e);
+                }
+            };
+            anyhow::ensure!(!*decoder_cancel.borrow(), "Image cancelled");
+            if let Some(p) = &cache {
+                let _ = jirust::images::store(p, &bytes);
+            }
+            Ok(picker.new_protocol(image, Size::new(size.0, size.1), Resize::Fit(None))?)
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("Image decoder failed"))?
+    };
+    tokio::select! {result=operation=>result,_=cancel.changed()=>Err(anyhow::anyhow!("Image cancelled"))}
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,6 +598,29 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(text.as_bytes()).unwrap();
         Environment::load(Some(f.path())).unwrap()
+    }
+    #[tokio::test]
+    async fn cancelled_image_jobs_do_not_start_network_or_cli_reads() {
+        let backend = Backend::new("demo", None).unwrap();
+        let (_, rx) = tokio::sync::watch::channel(true);
+        let attachment = data::Attachment {
+            id: "23".into(),
+            mime: "image/png".into(),
+            ..Default::default()
+        };
+        let e = attachment_protocol(
+            &backend,
+            "DEV-101",
+            &attachment,
+            None,
+            Picker::halfblocks(),
+            (40, 10),
+            rx,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(e.to_string().contains("cancelled"));
     }
     #[test]
     fn move_parses_one_key_destination_and_global_read_only() {

@@ -36,6 +36,15 @@ pub enum Job {
     Comments(String),
     Write(Action),
     Browser(String),
+    AttachmentImage {
+        generation: u64,
+        key: String,
+        attachment: data::Attachment,
+        cache: Option<PathBuf>,
+        size: (u16, u16),
+        inline: bool,
+        cancel: tokio::sync::watch::Receiver<bool>,
+    },
     Preview {
         generation: u64,
         path: PathBuf,
@@ -64,6 +73,12 @@ pub enum Message {
         result: Result<()>,
     },
     Notice(Result<String>),
+    InlineImage {
+        generation: u64,
+        key: String,
+        id: String,
+        result: Result<Protocol>,
+    },
     Image {
         generation: u64,
         name: String,
@@ -139,6 +154,11 @@ pub enum Dialog {
         scroll: u16,
     },
 }
+pub enum InlineImageState {
+    Pending,
+    Ready(Protocol),
+    Failed(String),
+}
 #[derive(Clone, Default)]
 pub struct ViewFilters {
     assignee: Selection,
@@ -198,6 +218,14 @@ pub struct App {
     pub error: String,
     pub quit: bool,
     pub preview: Option<(Protocol, String)>,
+    pub automatic_images: bool,
+    pub inline_key: String,
+    pub inline_size: (u16, u16),
+    pub inline_generation: u64,
+    pub inline_slots: Vec<crate::images::ImageSlot>,
+    pub inline_images: BTreeMap<String, InlineImageState>,
+    inline_cancel: tokio::sync::watch::Sender<bool>,
+    preview_cancel: tokio::sync::watch::Sender<bool>,
     pub image_generation: u64,
     pub awaiting_image: bool,
     pub attachment_dir: PathBuf,
@@ -285,6 +313,14 @@ impl App {
             error: String::new(),
             quit: false,
             preview: None,
+            automatic_images: true,
+            inline_key: String::new(),
+            inline_size: (0, 0),
+            inline_generation: 0,
+            inline_slots: vec![],
+            inline_images: BTreeMap::new(),
+            inline_cancel: tokio::sync::watch::channel(false).0,
+            preview_cancel: tokio::sync::watch::channel(false).0,
             image_generation: 0,
             awaiting_image: false,
             attachment_dir,
@@ -506,6 +542,11 @@ impl App {
             self.notice("Wait for the in-flight update before refreshing", true);
             return vec![];
         }
+        self.inline_cancel.send_replace(true);
+        self.inline_cancel = tokio::sync::watch::channel(false).0;
+        self.inline_generation += 1;
+        self.inline_images
+            .retain(|_, state| matches!(state, InlineImageState::Ready(_)));
         if self.last_query.is_empty() || self.settings.scope().is_err() {
             return self.reload();
         }
@@ -769,6 +810,9 @@ impl App {
         if self.next_sync.is_some_and(|d| now >= d) && !self.syncing && !self.writing {
             jobs.extend(self.sync_workspace());
         }
+        if !self.writing {
+            jobs.extend(self.inline_jobs());
+        }
         if !self.syncing && !self.writing {
             while self.background.len() < 2 {
                 let Some(key) = self.prefetch.pop_front() else {
@@ -792,6 +836,53 @@ impl App {
                     background: true,
                 });
             }
+        }
+        jobs
+    }
+    fn inline_jobs(&mut self) -> Vec<Job> {
+        if !self.automatic_images || self.inline_key != self.detail_key {
+            return vec![];
+        }
+        let height = self.ticket_rect.height.saturating_sub(2) as usize;
+        let visible = self
+            .inline_slots
+            .iter()
+            .filter(|s| s.row >= self.scroll && s.row + s.height as usize <= self.scroll + height)
+            .map(|s| s.attachment.id.clone())
+            .collect::<HashSet<_>>();
+        self.inline_images
+            .retain(|id, state| visible.contains(id) || matches!(state, InlineImageState::Pending));
+        let mut pending = self
+            .inline_images
+            .values()
+            .filter(|s| matches!(s, InlineImageState::Pending))
+            .count();
+        let mut jobs = vec![];
+        for slot in &self.inline_slots {
+            if pending == 2 {
+                break;
+            }
+            if !visible.contains(&slot.attachment.id)
+                || self.inline_images.contains_key(&slot.attachment.id)
+            {
+                continue;
+            }
+            self.inline_images
+                .insert(slot.attachment.id.clone(), InlineImageState::Pending);
+            pending += 1;
+            jobs.push(Job::AttachmentImage {
+                generation: self.inline_generation,
+                key: self.detail_key.clone(),
+                attachment: slot.attachment.clone(),
+                cache: crate::images::cache_path(
+                    self.cache.directory.as_deref(),
+                    &self.detail_key,
+                    &slot.attachment.id,
+                ),
+                size: self.inline_size,
+                inline: true,
+                cancel: self.inline_cancel.subscribe(),
+            });
         }
         jobs
     }
@@ -1039,6 +1130,27 @@ impl App {
                 Ok(text) => self.notice(text, false),
                 Err(e) => self.notice(e.to_string(), true),
             },
+            Message::InlineImage {
+                generation,
+                key,
+                id,
+                result,
+            } => {
+                if generation != self.inline_generation
+                    || key != self.detail_key
+                    || key != self.inline_key
+                    || !self.inline_images.contains_key(&id)
+                {
+                    return vec![];
+                }
+                self.inline_images.insert(
+                    id,
+                    match result {
+                        Ok(p) => InlineImageState::Ready(p),
+                        Err(e) => InlineImageState::Failed(data::line(&e.to_string())),
+                    },
+                );
+            }
             Message::Image {
                 generation,
                 name,
@@ -1059,6 +1171,17 @@ impl App {
         vec![]
     }
     pub fn document(&mut self, width: u16) {
+        let height = self.ticket_rect.height.saturating_sub(3).clamp(3, 10);
+        if self.inline_key != self.detail_key || self.inline_size != (width, height) {
+            self.inline_cancel.send_replace(true);
+            self.inline_cancel = tokio::sync::watch::channel(false).0;
+            self.inline_generation += 1;
+            self.inline_key = self.detail_key.clone();
+            self.inline_size = (width, height);
+            self.inline_images.clear();
+            self.inline_slots.clear();
+            self.doc_dirty = true;
+        }
         if self.doc_dirty || self.doc_width != width {
             self.document = if let Some((ticket, _)) = self.details.get(&self.detail_key) {
                 markdown::ticket_document_with_status(
@@ -1081,6 +1204,34 @@ impl App {
             } else {
                 vec![]
             };
+            let previous_ids = self
+                .inline_slots
+                .iter()
+                .map(|s| s.attachment.id.clone())
+                .collect::<Vec<_>>();
+            self.inline_slots = if self.automatic_images {
+                self.details
+                    .get(&self.detail_key)
+                    .map(|(t, _)| t)
+                    .or_else(|| self.items.iter().find(|t| t.key == self.detail_key))
+                    .map(|t| crate::images::insert_rows(&mut self.document, t, height))
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
+            if !self.inline_images.is_empty()
+                && previous_ids
+                    != self
+                        .inline_slots
+                        .iter()
+                        .map(|s| s.attachment.id.clone())
+                        .collect::<Vec<_>>()
+            {
+                self.inline_cancel.send_replace(true);
+                self.inline_cancel = tokio::sync::watch::channel(false).0;
+                self.inline_generation += 1;
+                self.inline_images.clear();
+            }
             self.doc_width = width;
             self.doc_dirty = false;
             self.scroll = self.scroll.min(self.document.len().saturating_sub(1));
@@ -1220,14 +1371,18 @@ impl App {
                 self.doc_dirty = true;
                 self.preview = None;
                 self.image_generation += 1;
-                self.awaiting_image = false
+                self.awaiting_image = false;
+                self.preview_cancel.send_replace(true);
+                self.preview_cancel = tokio::sync::watch::channel(false).0;
             }
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 if self.preview.is_some() || self.awaiting_image {
                     if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
                         self.preview = None;
                         self.awaiting_image = false;
-                        self.image_generation += 1
+                        self.image_generation += 1;
+                        self.preview_cancel.send_replace(true);
+                        self.preview_cancel = tokio::sync::watch::channel(false).0;
                     };
                     return vec![];
                 }
@@ -1399,7 +1554,13 @@ impl App {
                             self.action_dialog(c)
                         }
                     }
-                    KeyCode::Char('i') => {
+                    KeyCode::Char('i') if !self.inline_slots.is_empty() => {
+                        self.focus = Focus::Ticket;
+                        self.scroll = self.inline_slots[0].row.saturating_sub(1);
+                        self.inline_images
+                            .retain(|_, s| !matches!(s, InlineImageState::Failed(_)));
+                    }
+                    KeyCode::Char('i' | 'I') => {
                         self.dialog = Some(Dialog::Form {
                             title: "Preview a downloaded image".into(),
                             labels: vec!["Local image path".into()],
@@ -2149,7 +2310,7 @@ impl App {
                 })
                 .collect();
             self.dialog = Some(Dialog::Picker {
-                title: "Links & attachments · internal tickets / browser / local image".into(),
+                title: "Links & attachments · internal tickets / browser / image preview".into(),
                 choices,
                 selected: 0,
                 purpose: Purpose::Links,
@@ -2172,7 +2333,7 @@ impl App {
     }
     fn open_target(&mut self, target: Target) -> Vec<Job> {
         if let Some(attachment) = &target.attachment {
-            if attachment.mime.starts_with("image/")
+            if attachment.is_image()
                 && let Some(path) = config::local_attachment(
                     &self.attachment_dir,
                     &self.detail_key,
@@ -2181,10 +2342,32 @@ impl App {
             {
                 return self.preview_job(path);
             }
-            self.notice(
-                "Attachment opens in Jira; CLI has no authenticated download action",
-                false,
-            )
+            if attachment.is_image() {
+                if let Err(e) = crate::images::validate_attachment(attachment) {
+                    self.notice(e.to_string(), true);
+                    return vec![];
+                }
+                self.image_generation += 1;
+                self.awaiting_image = true;
+                self.notice("Downloading image (read-only)…", false);
+                return vec![Job::AttachmentImage {
+                    generation: self.image_generation,
+                    key: self.detail_key.clone(),
+                    attachment: attachment.clone(),
+                    cache: crate::images::cache_path(
+                        self.cache.directory.as_deref(),
+                        &self.detail_key,
+                        &attachment.id,
+                    ),
+                    size: (
+                        self.ticket_rect.width.saturating_sub(4),
+                        self.ticket_rect.height.saturating_sub(4),
+                    ),
+                    inline: false,
+                    cancel: self.preview_cancel.subscribe(),
+                }];
+            }
+            self.notice("Non-raster attachments open in Jira", false)
         }
         if let Some(key) = target.key {
             if !data::valid_key(&key) {
@@ -2608,7 +2791,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nEpics are included and labeled; / epic searches their type. Status badges are visual only.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nEpics are included and labeled; / epic searches their type. Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, when fully visible.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -2769,6 +2952,65 @@ mod tests {
             assert!(a.dialog.is_none());
             assert!(jobs.is_empty());
         }
+    }
+    #[test]
+    fn inline_images_are_viewport_bounded_cancelled_on_ticket_change_and_stale_results_are_ignored()
+    {
+        let mut a = app();
+        let key = a.detail_key.clone();
+        a.details.get_mut(&key).unwrap().0.fields["attachment"] = serde_json::json!([
+            {"id":"23","filename":"a.png","mimeType":"image/png","size":10},
+            {"id":"24","filename":"b.png","mimeType":"image/png","size":10},
+            {"id":"25","filename":"c.png","mimeType":"image/png","size":10}]);
+        a.ticket_rect = Rect::new(0, 0, 80, 40);
+        a.document(78);
+        assert_eq!(a.inline_slots.len(), 3);
+        a.scroll = a.inline_slots.last().unwrap().row + 10;
+        assert!(a.inline_jobs().is_empty());
+        a.scroll = a.inline_slots[0].row;
+        let jobs = a.inline_jobs();
+        assert_eq!(jobs.len(), 2);
+        assert!(a.inline_jobs().is_empty());
+        let Job::AttachmentImage {
+            generation, cancel, ..
+        } = &jobs[0]
+        else {
+            panic!()
+        };
+        let generation = *generation;
+        let cancel = cancel.clone();
+        a.detail_key = "DEV-103".into();
+        a.document(78);
+        assert!(*cancel.borrow());
+        assert!(a.inline_images.is_empty());
+        a.message(Message::InlineImage {
+            generation,
+            key,
+            id: "23".into(),
+            result: Err(anyhow::anyhow!("stale failure")),
+        });
+        assert!(a.inline_images.is_empty());
+    }
+    #[test]
+    fn image_failures_do_not_hide_tickets_and_no_images_disables_automatic_jobs() {
+        let mut a = app();
+        a.inline_key = a.detail_key.clone();
+        a.inline_images
+            .insert("23".into(), InlineImageState::Pending);
+        let n = a.visible.len();
+        a.message(Message::InlineImage {
+            generation: a.inline_generation,
+            key: a.detail_key.clone(),
+            id: "23".into(),
+            result: Err(anyhow::anyhow!("HTTP 403")),
+        });
+        assert_eq!(a.visible.len(), n);
+        assert!(matches!(a.inline_images["23"], InlineImageState::Failed(_)));
+        a.automatic_images = false;
+        a.doc_dirty = true;
+        a.document(50);
+        assert!(a.inline_slots.is_empty());
+        assert!(a.inline_jobs().is_empty());
     }
     #[test]
     fn palette_cache_keeps_status_colors_identical_after_restart() {

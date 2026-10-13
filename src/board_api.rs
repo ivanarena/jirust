@@ -108,6 +108,131 @@ pub(crate) fn check_environment(credentials: &crate::environment::Credentials) -
     );
     Ok(())
 }
+fn validate_profile(p: &Profile) -> Result<()> {
+    ensure!(
+        !p.cloud_id.is_empty()
+            && p.cloud_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+        "Invalid cloud identifier"
+    );
+    let site = Url::parse(&format!("https://{}", p.site))
+        .map_err(|_| anyhow::anyhow!("Invalid acli site"))?;
+    ensure!(
+        site.host_str()
+            .is_some_and(|h| h.ends_with(".atlassian.net"))
+            && site.username().is_empty()
+            && site.password().is_none()
+            && site.path() == "/"
+            && site.query().is_none()
+            && site.fragment().is_none()
+            && site.port().is_none(),
+        "Expected an Atlassian Cloud site"
+    );
+    Ok(())
+}
+async fn profile_credential(
+    p: &Profile,
+    credentials: Option<&std::sync::Arc<crate::environment::Credentials>>,
+) -> Result<String> {
+    if let Some(c) = credentials {
+        return Ok(c.token.clone());
+    }
+    ensure!(
+        cfg!(target_os = "linux"),
+        "Keyring fallback is Linux-only; configure JIRA_URL, JIRA_EMAIL and JIRA_API_TOKEN in a private local env file on macOS"
+    );
+    let out = timeout(
+        Duration::from_secs(10),
+        Command::new("secret-tool")
+            .args([
+                "lookup",
+                "service",
+                "acli",
+                "username",
+                &p.keyring_username(),
+            ])
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .context("Keyring lookup timed out")?
+    .context("Install secret-tool to reuse the acli Linux keyring")?;
+    ensure!(
+        out.status.success() && !out.stdout.is_empty(),
+        "Cannot access current acli keyring credential"
+    );
+    decode_credential(&out.stdout, p.is_oauth())
+}
+/// Approved read-only attachment-content bridge; never follows content URLs,
+/// redirects, or external image links, and never sends credentials to a CDN.
+pub struct ImageApi {
+    profile: Profile,
+    credentials: Option<std::sync::Arc<crate::environment::Credentials>>,
+    client: Client,
+    slots: Semaphore,
+}
+impl ImageApi {
+    pub fn new(
+        credentials: Option<std::sync::Arc<crate::environment::Credentials>>,
+    ) -> Result<Self> {
+        if let Some(c) = &credentials {
+            check_environment(c)?;
+        }
+        let p = profile()?;
+        validate_profile(&p)?;
+        Ok(Self {
+            profile: p,
+            credentials,
+            client: Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(45))
+                .build()?,
+            slots: Semaphore::new(2),
+        })
+    }
+    pub fn check_identity(&self) -> Result<()> {
+        ensure!(
+            profile()? == self.profile,
+            "Jira account/site/authentication changed; restart jirust before downloading images"
+        );
+        Ok(())
+    }
+    fn url(&self, id: &str) -> Result<Url> {
+        ensure!(crate::images::valid_id(id), "Invalid image attachment ID");
+        let origin = if self.credentials.is_none() && self.profile.is_oauth() {
+            format!(
+                "https://api.atlassian.com/ex/jira/{}",
+                self.profile.cloud_id
+            )
+        } else {
+            format!("https://{}", self.profile.site)
+        };
+        Ok(Url::parse(&format!(
+            "{origin}/rest/api/3/attachment/content/{id}?redirect=false"
+        ))?)
+    }
+    pub async fn download(&self, attachment: &crate::data::Attachment) -> Result<Vec<u8>> {
+        crate::images::validate_attachment(attachment)?;
+        let _permit = self.slots.acquire().await?;
+        self.check_identity()?;
+        let token = profile_credential(&self.profile, self.credentials.as_ref()).await?;
+        let request = self.client.get(self.url(&attachment.id)?).header(
+            "Accept",
+            "image/png,image/jpeg,image/gif,image/webp,application/octet-stream",
+        );
+        let request = if self.credentials.is_none() && self.profile.is_oauth() {
+            request.bearer_auth(token)
+        } else {
+            request.basic_auth(&self.profile.email, Some(token))
+        };
+        let response = request.send().await.map_err(|_| {
+            anyhow::anyhow!("Image download failed or timed out (details redacted)")
+        })?;
+        crate::images::response_bytes(response).await
+    }
+}
 pub struct BoardApi {
     pub id: u64,
     profile: Profile,
@@ -128,25 +253,7 @@ impl BoardApi {
         }
         ensure!(id > 0, "Board ID must be positive");
         let p = profile()?;
-        ensure!(
-            p.cloud_id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-                && !p.cloud_id.is_empty(),
-            "Invalid cloud identifier"
-        );
-        let site = Url::parse(&format!("https://{}", p.site)).context("Invalid acli site")?;
-        ensure!(
-            site.host_str()
-                .is_some_and(|h| h.ends_with(".atlassian.net"))
-                && site.username().is_empty()
-                && site.password().is_none()
-                && site.path() == "/"
-                && site.query().is_none()
-                && site.fragment().is_none()
-                && site.port().is_none(),
-            "Expected an Atlassian Cloud site"
-        );
+        validate_profile(&p)?;
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(45))
@@ -177,30 +284,7 @@ impl BoardApi {
     }
     async fn credential(&self) -> Result<String> {
         self.check_identity()?;
-        if let Some(c) = &self.credentials {
-            return Ok(c.token.clone());
-        }
-        ensure!(
-            cfg!(target_os = "linux"),
-            "Board keyring fallback is Linux-only; configure JIRA_URL, JIRA_EMAIL and JIRA_API_TOKEN in a private local env file on macOS"
-        );
-        let username = self.profile.keyring_username();
-        let out = timeout(
-            Duration::from_secs(10),
-            Command::new("secret-tool")
-                .args(["lookup", "service", "acli", "username", &username])
-                .stdin(Stdio::null())
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .context("Keyring lookup timed out")?
-        .context("Install secret-tool to reuse the acli Linux keyring")?;
-        ensure!(
-            out.status.success() && !out.stdout.is_empty(),
-            "Cannot access current acli keyring credential"
-        );
-        decode_credential(&out.stdout, self.profile.is_oauth())
+        profile_credential(&self.profile, self.credentials.as_ref()).await
     }
     fn url(&self, endpoint: &str) -> Result<Url> {
         let origin = if self.uses_oauth() {
@@ -659,6 +743,39 @@ mod tests {
         let url = api.url("board/17/issue").unwrap();
         assert_eq!(url.host_str(), Some("example.atlassian.net"));
         assert_eq!(url.path(), "/rest/agile/1.0/board/17/issue");
+    }
+    #[test]
+    fn image_urls_are_fixed_pinned_numeric_and_redirect_free() {
+        let p = Profile {
+            site: "synthetic.atlassian.net".into(),
+            cloud_id: "synthetic-cloud".into(),
+            account_id: "alex".into(),
+            email: "alex@example.com".into(),
+            auth_type: "oauth_global".into(),
+        };
+        let credentials = std::sync::Arc::new(crate::environment::Credentials {
+            site: p.site.clone(),
+            email: p.email.clone(),
+            token: "synthetic-token".into(),
+        });
+        let mut api = ImageApi {
+            profile: p,
+            credentials: Some(credentials),
+            client: Client::new(),
+            slots: Semaphore::new(2),
+        };
+        let url = api.url("23").unwrap();
+        assert_eq!(url.host_str(), Some("synthetic.atlassian.net"));
+        assert_eq!(url.path(), "/rest/api/3/attachment/content/23");
+        assert_eq!(url.query(), Some("redirect=false"));
+        assert!(api.url("https://example.invalid/").is_err());
+        api.credentials = None;
+        let url = api.url("23").unwrap();
+        assert_eq!(url.host_str(), Some("api.atlassian.com"));
+        assert!(
+            url.path()
+                .starts_with("/ex/jira/synthetic-cloud/rest/api/3/")
+        );
     }
     #[test]
     fn global_oauth_uses_its_own_keyring_entry_and_bearer_transport() {

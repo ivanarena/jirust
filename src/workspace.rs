@@ -210,7 +210,10 @@ pub fn full_cache_key(key: &str) -> String {
     format!("detail-v2:{key}")
 }
 pub fn valid_items(items: &[Ticket]) -> bool {
-    items.iter().all(|t| data::valid_key(&t.key))
+    let mut keys = HashSet::new();
+    items
+        .iter()
+        .all(|t| data::valid_key(&t.key) && keys.insert(&t.key))
 }
 
 #[cfg(test)]
@@ -312,6 +315,13 @@ mod tests {
         w.reindex();
         assert!(w.matches(&w.items[0], config::BACKLOG, "", "", "checklist separate"));
         assert!(!w.matches(&w.items[0], config::BACKLOG, "", "", "listseparate"));
+    }
+    #[test]
+    fn duplicate_page_keys_are_rejected_instead_of_corrupting_search_positions() {
+        let mut t = data::demo_tickets();
+        assert!(valid_items(&t));
+        t.push(t[0].clone());
+        assert!(!valid_items(&t));
     }
     #[test]
     fn changed_query_preserves_sort() {

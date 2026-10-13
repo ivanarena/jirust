@@ -52,6 +52,8 @@ pub struct Backend {
     slots: Semaphore,
     demo: Mutex<BTreeMap<String, Ticket>>,
     api: std::sync::RwLock<Option<Arc<crate::board_api::BoardApi>>>,
+    image_api: std::sync::RwLock<Option<Arc<crate::board_api::ImageApi>>>,
+    image_slots: Semaphore,
     credentials: std::sync::RwLock<Option<Arc<crate::environment::Credentials>>>,
 }
 impl Backend {
@@ -83,6 +85,8 @@ impl Backend {
             binary,
             slots: Semaphore::new(3),
             api: std::sync::RwLock::new(None),
+            image_api: std::sync::RwLock::new(None),
+            image_slots: Semaphore::new(2),
             credentials: std::sync::RwLock::new(None),
             demo: Mutex::new(
                 data::demo_tickets()
@@ -142,7 +146,41 @@ impl Backend {
             None => None,
         };
         *self.api.write().unwrap() = api;
+        *self.image_api.write().unwrap() = if self.kind == Kind::Acli {
+            crate::board_api::ImageApi::new(self.credentials.read().unwrap().clone())
+                .ok()
+                .map(Arc::new)
+        } else {
+            None
+        };
         Ok(())
+    }
+    pub async fn image_bytes(
+        &self,
+        key: &str,
+        attachment: &data::Attachment,
+        cached: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>> {
+        data::require_key(key)?;
+        crate::images::validate_attachment(attachment)?;
+        let _permit = self.image_slots.acquire().await?;
+        let api=self.image_api.read().unwrap().clone().context("Automatic image downloads require an authenticated acli cloud profile; local images still work")?;
+        api.check_identity()?;
+        if let Some(bytes) = cached {
+            return Ok(bytes);
+        }
+        // CLI remains the authority for the selected ticket's attachment list.
+        let ticket = self.get(key).await?;
+        if ticket.key != key
+            || !ticket.attachments().iter().any(|a| {
+                a.id == attachment.id && a.is_image() && a.size <= crate::images::MAX_BYTES
+            })
+        {
+            bail!("Image attachment is not verified on the selected ticket");
+        }
+        let bytes = api.download(attachment).await?;
+        api.check_identity()?;
+        Ok(bytes)
     }
     pub fn board_identity(&self) -> Option<String> {
         self.api

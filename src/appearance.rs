@@ -110,6 +110,16 @@ fn fallback_style(name: &str) -> Style {
 pub fn status_style(ticket: &Ticket) -> Style {
     fallback_style(&ticket.status())
 }
+/// Compact visual labels only. Raw workflow names remain in filters/actions.
+pub fn status_label(name: &str) -> String {
+    if name.eq_ignore_ascii_case("Done") {
+        "✓".into()
+    } else if name.eq_ignore_ascii_case("Discarded") {
+        "✕".into()
+    } else {
+        name.into()
+    }
+}
 pub fn summary(ticket: &Ticket) -> String {
     if ticket.is_epic() {
         format!("Epic · {}", ticket.summary())
@@ -122,6 +132,16 @@ pub fn summary(ticket: &Ticket) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn completion_icons_are_visual_only_not_status_category_guesses() {
+        assert_eq!(status_label("Done"), "✓");
+        assert_eq!(status_label("discarded"), "✕");
+        assert_eq!(status_label("Finished"), "Finished");
+        let t = crate::data::demo_tickets().remove(0);
+        let before = t.fields.clone();
+        status_label(&t.status());
+        assert_eq!(t.fields, before);
+    }
     #[test]
     fn every_status_has_a_distinct_color_even_within_the_same_category() {
         let items = (0..64)

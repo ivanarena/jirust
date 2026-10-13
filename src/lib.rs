@@ -6,6 +6,7 @@ pub mod config;
 pub mod data;
 pub mod environment;
 pub mod filters;
+pub mod images;
 pub mod input;
 pub mod markdown;
 pub mod movement;
