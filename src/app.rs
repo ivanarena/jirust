@@ -708,11 +708,16 @@ impl App {
     }
     fn load_cached_detail(&mut self, key: &str) {
         if !self.details.contains_key(key)
-            && let Some((t, time)) = self
+            && let Some((mut t, time)) = self
                 .cache
                 .get::<Ticket>(&full_cache_key(key))
                 .or_else(|| self.cache.get(&format!("detail:{key}")))
         {
+            if let Some(row) = self.workspace.as_ref().and_then(|w| w.ticket(key))
+                && !row.estimate_fields.is_empty()
+            {
+                t.update_estimates(row);
+            }
             if self.status_colors.register([&t]) {
                 let _ = self
                     .cache
@@ -973,6 +978,9 @@ impl App {
                                     if let Some(value) = ticket.fields.get(field) {
                                         cached.fields[field] = value.clone();
                                     }
+                                }
+                                if !ticket.estimate_fields.is_empty() {
+                                    cached.update_estimates(ticket);
                                 }
                             }
                         }
@@ -3006,6 +3014,37 @@ mod tests {
             assert!(a.dialog.is_none());
             assert!(jobs.is_empty());
         }
+    }
+    #[test]
+    fn fresh_estimate_metadata_upgrades_old_cached_details_without_waiting_for_cli_warming() {
+        let mut a = app();
+        let key = a.detail_key.clone();
+        a.details.get_mut(&key).unwrap().0.estimate_fields.clear();
+        assert_eq!(a.details[&key].0.points_label(), "—");
+        let mut items = data::demo_tickets();
+        items.iter_mut().find(|t| t.key == key).unwrap().fields["customfield_90123"] =
+            serde_json::json!(5);
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((
+                Workspace {
+                    items,
+                    complete: true,
+                    ..Default::default()
+                },
+                vec![],
+            )),
+        });
+        assert_eq!(a.details[&key].0.points_label(), "5");
+        assert_eq!(
+            a.workspace
+                .as_ref()
+                .unwrap()
+                .ticket(&key)
+                .unwrap()
+                .points_label(),
+            "5"
+        );
     }
     #[test]
     fn inline_images_are_viewport_bounded_cancelled_on_ticket_change_and_stale_results_are_ignored()
