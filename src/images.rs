@@ -406,6 +406,18 @@ mod tests {
             .await
             .is_err()
         );
+        assert!(
+            response_bytes(
+                response(
+                    "200 OK",
+                    "Content-Type: application/json\r\nContent-Length: 2",
+                    b"{}"
+                )
+                .await
+            )
+            .await
+            .is_err()
+        );
         let bytes = png();
         assert_eq!(
             response_bytes(

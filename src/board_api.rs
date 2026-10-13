@@ -213,15 +213,20 @@ impl ImageApi {
             "{origin}/rest/api/3/attachment/content/{id}?redirect=false"
         ))?)
     }
+    fn image_request(&self, id: &str) -> Result<reqwest::RequestBuilder> {
+        // Jira's binary resource can negotiate through a JSON REST layer: a
+        // raster-only Accept list yields 406. Validate MIME/bytes AFTER receipt.
+        Ok(self
+            .client
+            .get(self.url(id)?)
+            .header(reqwest::header::ACCEPT, "*/*"))
+    }
     pub async fn download(&self, attachment: &crate::data::Attachment) -> Result<Vec<u8>> {
         crate::images::validate_attachment(attachment)?;
         let _permit = self.slots.acquire().await?;
         self.check_identity()?;
         let token = profile_credential(&self.profile, self.credentials.as_ref()).await?;
-        let request = self.client.get(self.url(&attachment.id)?).header(
-            "Accept",
-            "image/png,image/jpeg,image/gif,image/webp,application/octet-stream",
-        );
+        let request = self.image_request(&attachment.id)?;
         let request = if self.credentials.is_none() && self.profile.is_oauth() {
             request.bearer_auth(token)
         } else {
@@ -765,6 +770,8 @@ mod tests {
             slots: Semaphore::new(2),
         };
         let url = api.url("23").unwrap();
+        let request = api.image_request("23").unwrap().build().unwrap();
+        assert_eq!(request.headers()[reqwest::header::ACCEPT], "*/*");
         assert_eq!(url.host_str(), Some("synthetic.atlassian.net"));
         assert_eq!(url.path(), "/rest/api/3/attachment/content/23");
         assert_eq!(url.query(), Some("redirect=false"));

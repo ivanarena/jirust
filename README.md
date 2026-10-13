@@ -75,6 +75,8 @@ Only fully visible image blocks load automatically, at most **two requests/decod
 
 Graphics are auto-detected with a Unicode half-block fallback. `--image-protocol kitty` forces Kitty graphics where supported; `--image-protocol halfblocks` works with multiplexers that do not pass graphics through. The image caption identifies the chosen protocol. Live native graphics on every macOS terminal are not guaranteed.
 
+For an explicit no-terminal, no-cache read-only download/decoder diagnostic: `cargo run --release --example image_check -- DEV-123` (replace the synthetic key with your selected live ticket).
+
 Existing manual images still work at `<attachment-dir>/<ticket-key>/<original-filename>`; select the attachment or use I for another local file. `--attachment-dir /path` overrides the account-private default. Manual attachment paths reject traversal and use the same bounded raster decoder.
 
 ## Build and configuration
