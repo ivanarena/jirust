@@ -1,6 +1,6 @@
 [package]
 name = "jirust"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT"
@@ -9,7 +9,7 @@ description = "A fast two-pane Jira terminal client backed by existing CLIs"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-crossterm = "0.29"
+crossterm = { version = "0.29", features = ["osc52"] }
 directories = "6"
 dotenvy = "0.15"
 flate2 = "1"

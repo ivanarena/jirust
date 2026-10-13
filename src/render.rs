@@ -188,7 +188,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Row::new(vec![
                 Cell::from(t.key.clone()),
                 Cell::from(appearance::status_label(&t.status())).style(app.status_colors.style(t)),
-                Cell::from(t.user("assignee").label()),
+                Cell::from(t.user("assignee").display_label()),
                 Cell::from(t.points_label()),
                 Cell::from(appearance::summary(t)),
             ])
@@ -226,11 +226,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                             app.status_colors.style(t),
                         ),
                         Span::styled(
-                            format!(
-                                " · SP:{} · {}",
-                                t.points_label(),
-                                t.user("assignee").label()
-                            ),
+                            format!(" · SP:{}{}", t.points_label(), {
+                                let name = t.user("assignee").display_label();
+                                if name.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" · {name}")
+                                }
+                            }),
                             Style::default().fg(Color::DarkGray),
                         ),
                     ]),
@@ -834,7 +837,7 @@ mod tests {
         assert_eq!(app.assignee_label(), "Me");
         assert_eq!(app.tabs.len(), 4);
         for (view, count, label) in [
-            (config::AVAILABLE, 1, "Unassigned"),
+            (config::AVAILABLE, 1, ""),
             (config::BOARD, 2, "All"),
             (config::BACKLOG, 1, "All"),
             (config::MINE, 1, "Me"),
@@ -914,6 +917,42 @@ mod tests {
                 .map(|c| c.symbol())
                 .collect::<String>();
             assert!(screen.contains("2 selected"));
+        }
+    }
+    #[test]
+    fn unassigned_fields_are_blank_in_wide_and_narrow_lists_and_details() {
+        for width in [60, 210] {
+            let mut app = App::new(
+                Backend::new("demo", None).unwrap(),
+                Cache { directory: None },
+                Settings {
+                    project: "DEV".into(),
+                    last_view: crate::config::AVAILABLE,
+                    ..Default::default()
+                },
+                true,
+                500,
+                std::path::PathBuf::new(),
+            );
+            app.items = data::demo_tickets();
+            app.visible = vec![1];
+            app.detail_key = "DEV-102".into();
+            let mut terminal = Terminal::new(TestBackend::new(width, 28)).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let screen = buffer
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(!screen.contains("Unassigned"));
+            assert!(screen.contains("Assignee:"));
+            assert!(screen.contains("Reporter:"));
+            if app.row_height == 1 {
+                let x = app.tickets_rect.x + 1 + 11 + 1 + 13 + 1;
+                let y = app.tickets_rect.y + 2;
+                assert!((x..x + 14).all(|x| buffer[(x, y)].symbol() == " "));
+            }
         }
     }
     #[test]

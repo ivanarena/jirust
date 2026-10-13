@@ -353,6 +353,11 @@ async fn main() -> Result<()> {
     )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let (tx, mut rx) = mpsc::unbounded_channel();
+    let (clipboard_tx, clipboard_rx) = tokio::sync::watch::channel(None);
+    let clipboard_messages = tx.clone();
+    tokio::spawn(jirust::clipboard::run(clipboard_rx, move |completion| {
+        let _ = clipboard_messages.send(Message::Copied(completion));
+    }));
     let mut app = App::new(
         backend.clone(),
         cache,
@@ -363,7 +368,7 @@ async fn main() -> Result<()> {
     );
     app.automatic_images = !opts.no_images;
     let jobs = app.reload();
-    dispatch(jobs, &backend, &picker, &tx, &app.settings.project);
+    dispatch(jobs, &backend, &picker, &tx, &clipboard_tx);
     let mut dirty = true;
     let mut last_busy = Instant::now();
     while !app.quit {
@@ -374,7 +379,7 @@ async fn main() -> Result<()> {
                 break;
             }
             let jobs = app.event(event::read()?);
-            dispatch(jobs, &backend, &picker, &tx, &app.settings.project);
+            dispatch(jobs, &backend, &picker, &tx, &clipboard_tx);
             dirty = true;
         }
         if app.quit {
@@ -384,14 +389,26 @@ async fn main() -> Result<()> {
             if event::poll(Duration::ZERO)? {
                 break;
             }
-            let Ok(message) = rx.try_recv() else { break };
+            let Ok(mut message) = rx.try_recv() else {
+                break;
+            };
+            if let Message::Copied(completion) = &mut message
+                && completion.request.generation == app.copy_generation
+                && completion
+                    .result
+                    .as_ref()
+                    .is_ok_and(|method| *method == jirust::clipboard::Method::Terminal)
+            {
+                completion.result = jirust::clipboard::terminal(&completion.request.url)
+                    .map(|_| jirust::clipboard::Method::Terminal);
+            }
             let jobs = app.message(message);
-            dispatch(jobs, &backend, &picker, &tx, &app.settings.project);
+            dispatch(jobs, &backend, &picker, &tx, &clipboard_tx);
             dirty = true;
         }
         let jobs = app.advance();
         if !jobs.is_empty() {
-            dispatch(jobs, &backend, &picker, &tx, &app.settings.project);
+            dispatch(jobs, &backend, &picker, &tx, &clipboard_tx);
             dirty = true
         }
         if app.dirty {
@@ -410,7 +427,7 @@ async fn main() -> Result<()> {
         }
         if event::poll(Duration::from_millis(40))? {
             let jobs = app.event(event::read()?);
-            dispatch(jobs, &backend, &picker, &tx, &app.settings.project);
+            dispatch(jobs, &backend, &picker, &tx, &clipboard_tx);
             dirty = true
         }
     }
@@ -423,14 +440,19 @@ fn dispatch(
     backend: &Arc<Backend>,
     picker: &Picker,
     tx: &mpsc::UnboundedSender<Message>,
-    _project: &str,
+    clipboard: &tokio::sync::watch::Sender<Option<jirust::clipboard::Request>>,
 ) {
     for job in jobs {
+        if let Job::CopyLink(request) = &job {
+            clipboard.send_replace(Some(request.clone()));
+            continue;
+        }
         let backend = backend.clone();
         let tx = tx.clone();
         let picker = picker.clone();
         tokio::spawn(async move {
             let message = match job {
+                Job::CopyLink(_) => return,
                 Job::Sync {
                     generation,
                     base,

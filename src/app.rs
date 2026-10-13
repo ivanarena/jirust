@@ -36,6 +36,7 @@ pub enum Job {
     Comments(String),
     Write(Action),
     Browser(String),
+    CopyLink(crate::clipboard::Request),
     AttachmentImage {
         generation: u64,
         key: String,
@@ -73,6 +74,7 @@ pub enum Message {
         result: Result<()>,
     },
     Notice(Result<String>),
+    Copied(crate::clipboard::Completion),
     InlineImage {
         generation: u64,
         key: String,
@@ -228,6 +230,7 @@ pub struct App {
     inline_cancel: tokio::sync::watch::Sender<bool>,
     preview_cancel: tokio::sync::watch::Sender<bool>,
     pub image_generation: u64,
+    pub copy_generation: u64,
     pub awaiting_image: bool,
     pub attachment_dir: PathBuf,
     pub tabs: Vec<(Rect, usize)>,
@@ -324,6 +327,7 @@ impl App {
             inline_cancel: tokio::sync::watch::channel(false).0,
             preview_cancel: tokio::sync::watch::channel(false).0,
             image_generation: 0,
+            copy_generation: 0,
             awaiting_image: false,
             attachment_dir,
             tabs: vec![],
@@ -1137,6 +1141,22 @@ impl App {
                     }
                 }
             }
+            Message::Copied(completion) => {
+                if completion.request.generation != self.copy_generation {
+                    return vec![];
+                }
+                match completion.result {
+                    Ok(crate::clipboard::Method::Native) => {
+                        self.notice("Ticket link copied", false)
+                    }
+                    Ok(crate::clipboard::Method::Terminal) => {
+                        self.notice("Ticket link sent to terminal clipboard (OSC52)", false)
+                    }
+                    Err(_) => {
+                        self.notice("Could not copy ticket link; check clipboard support", true)
+                    }
+                }
+            }
             Message::Notice(result) => match result {
                 Ok(text) => self.notice(text, false),
                 Err(e) => self.notice(e.to_string(), true),
@@ -1774,7 +1794,10 @@ impl App {
                             }
                         }
                         if contains(self.tickets_rect, mouse.column, mouse.row)
+                            && mouse.column > self.tickets_rect.x
+                            && mouse.column < self.tickets_rect.right() - 1
                             && mouse.row > self.tickets_rect.y + 1
+                            && mouse.row < self.tickets_rect.bottom() - 1
                         {
                             let n = self.table.offset()
                                 + ((mouse.row - self.tickets_rect.y - 2) / self.row_height.max(1))
@@ -1786,7 +1809,18 @@ impl App {
                                 self.search_mode = SearchMode::None;
                                 self.search_due = None;
                                 self.lookup_generation += 1;
-                                self.select_current()
+                                self.select_current();
+                                if let Some(url) = self.items[self.visible[n]]
+                                    .web_url()
+                                    .filter(|u| crate::clipboard::validate(u).is_ok())
+                                {
+                                    self.copy_generation += 1;
+                                    return vec![Job::CopyLink(crate::clipboard::Request {
+                                        generation: self.copy_generation,
+                                        url,
+                                    })];
+                                }
+                                self.notice("Ticket has no safe link to copy", true);
                             }
                         };
                         if contains(self.ticket_rect, mouse.column, mouse.row)
@@ -1951,7 +1985,7 @@ impl App {
         }
         match self.assignee_filter_value() {
             "@me" => "Me".into(),
-            "unassigned" => "Unassigned".into(),
+            "unassigned" => String::new(),
             "" => "All".into(),
             value => self
                 .workspace
@@ -2853,7 +2887,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nEpics have purple row/title highlights; / epic searches their type. SP shows story points (— unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Mouse opens detail links. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nEpics have purple row/title highlights; / epic searches their type. SP shows story points (— unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -2892,6 +2926,90 @@ mod tests {
     }
     fn key(c: char, mods: KeyModifiers) -> Event {
         Event::Key(KeyEvent::new(KeyCode::Char(c), mods))
+    }
+    #[test]
+    fn ticket_row_click_copies_the_clicked_link_but_other_navigation_does_not() {
+        use crossterm::event::MouseEvent;
+        for height in [1, 2] {
+            let mut a = app();
+            a.read_only = true;
+            a.tickets_rect = Rect::new(0, 3, 80, 16);
+            a.row_height = height;
+            a.table = TableState::default().with_offset(1);
+            let mouse = |kind, x, y| {
+                Event::Mouse(MouseEvent {
+                    kind,
+                    column: x,
+                    row: y,
+                    modifiers: KeyModifiers::NONE,
+                })
+            };
+            let expected = a.items[a.visible[1]].web_url().unwrap();
+            let jobs = a.event(mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                4,
+                5 + height - 1,
+            ));
+            assert_eq!(a.selected, 1);
+            assert_eq!(jobs.len(), 1);
+            let Job::CopyLink(request) = &jobs[0] else {
+                panic!("Expected link copy")
+            };
+            assert_eq!(request.url, expected);
+            assert_eq!(request.generation, 1);
+            let jobs = a.event(mouse(MouseEventKind::Down(MouseButton::Left), 4, 5));
+            assert!(matches!(&jobs[..], [Job::CopyLink(_)]));
+            assert_eq!(a.copy_generation, 2);
+            for (x, y) in [(4, 4), (0, 5), (79, 5), (4, 18), (4, 16)] {
+                assert!(
+                    !a.event(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+                        .iter()
+                        .any(|j| matches!(j, Job::CopyLink(_)))
+                );
+            }
+            assert!(
+                !a.event(mouse(MouseEventKind::ScrollDown, 4, 5))
+                    .iter()
+                    .any(|j| matches!(j, Job::CopyLink(_)))
+            );
+            assert!(
+                !a.event(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)))
+                    .iter()
+                    .any(|j| matches!(j, Job::CopyLink(_)))
+            );
+            a.filters_dialog();
+            assert!(
+                !a.event(mouse(MouseEventKind::Down(MouseButton::Left), 4, 5))
+                    .iter()
+                    .any(|j| matches!(j, Job::CopyLink(_)))
+            );
+            assert_eq!(a.copy_generation, 2);
+        }
+    }
+    #[test]
+    fn unsafe_ticket_links_are_not_copied_and_old_clipboard_notices_are_ignored() {
+        use crossterm::event::MouseEvent;
+        let mut a = app();
+        a.tickets_rect = Rect::new(0, 3, 80, 16);
+        a.items[a.visible[0]].self_url = "javascript:alert(1)".into();
+        let jobs = a.event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 4,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert!(jobs.is_empty());
+        assert_eq!(a.copy_generation, 0);
+        a.copy_generation = 2;
+        a.status = "unchanged".into();
+        a.message(Message::Copied(crate::clipboard::Completion {
+            request: crate::clipboard::Request {
+                generation: 1,
+                url: "https://example.invalid/browse/DEV-1".into(),
+            },
+            result: Ok(crate::clipboard::Method::Native),
+        }));
+        assert_eq!(a.status, "unchanged");
     }
     #[test]
     fn numbers_search_not_views() {

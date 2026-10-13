@@ -128,6 +128,9 @@ impl Ticket {
         adf_markdown(&self.fields["description"])
     }
     pub fn web_url(&self) -> Option<String> {
+        if !valid_key(&self.key) {
+            return None;
+        }
         let mut url = Url::parse(&self.self_url).ok()?;
         if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
             return None;
@@ -289,6 +292,15 @@ impl User {
         } else {
             "Unassigned".into()
         }
+    }
+    /// Ticket fields are blank when no person is present. Selector/action labels
+    /// keep their explicit Unassigned option; opaque assigned users are not null.
+    pub fn display_label(&self) -> String {
+        [&self.name, &self.email, &self.login, &self.id]
+            .into_iter()
+            .find(|s| !s.is_empty())
+            .cloned()
+            .unwrap_or_default()
     }
     pub fn identity(&self, jira: bool) -> String {
         if jira {
@@ -575,6 +587,30 @@ pub fn demo_tickets() -> Vec<Ticket> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn absent_people_display_as_blank_without_mistaking_opaque_users_for_unassigned() {
+        assert_eq!(User::default().display_label(), "");
+        assert_eq!(User::default().label(), "Unassigned");
+        assert_eq!(
+            User {
+                id: "opaque-id".into(),
+                ..Default::default()
+            }
+            .display_label(),
+            "opaque-id"
+        );
+        assert_eq!(
+            User {
+                name: "Sam".into(),
+                ..Default::default()
+            }
+            .display_label(),
+            "Sam"
+        );
+        let mut t = demo_tickets().remove(0);
+        t.key = "DEV-1\u{1b}]52;bad".into();
+        assert!(t.web_url().is_none());
+    }
     #[test]
     fn story_points_keep_zero_and_fractions_and_never_guess_or_sum_fields() {
         let mut t = demo_tickets().remove(0);
