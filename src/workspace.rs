@@ -335,7 +335,7 @@ mod tests {
         );
         t.fields["customfield_90123"] = serde_json::Value::Null;
         w.update(&t);
-        assert_eq!(w.items[0].points_label(), "—");
+        assert_eq!(w.items[0].points_label(), "");
     }
     #[test]
     fn duplicate_page_keys_are_rejected_instead_of_corrupting_search_positions() {

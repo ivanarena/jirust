@@ -58,9 +58,9 @@ Descriptions/comments render styled Markdown converted from Jira ADF. Tables use
 
 ## Story points
 
-The wide list includes an **SP** column; narrow rows show **SP:value** before the assignee. Ticket metadata includes **Story points**. Zero and fractional estimates remain valid; **—** means unset, unavailable or ambiguous, not zero. Epics show only their own estimate, never a guessed sum of child tickets.
+The wide list includes an **SP** column; narrow rows show **SP:value** before the assignee. Ticket metadata includes **Story points**. Zero and fractional estimates remain visible; unset, unavailable or ambiguous estimates are **blank**, never shown as zero or a dash. Narrow rows omit the SP label when blank. Epics show only their own estimate, never a guessed sum of child tickets.
 
-The approved read-only `GET /rest/api/3/field` lookup identifies numeric story-point fields by Jira's names/schema, not hardcoded custom-field IDs. It is account/site pinned, redirect-free, limited to 2 MiB/10,000 definitions/32 candidates, and runs once per session. Bulk Board/Backlog hydration requests those fields in the existing authorized membership fetch; ordinary full-ticket reads still use the CLI. Without the Board bridge, estimates become available as full details load (or from server name metadata with jira-cli). Populated conflicting candidates, malformed values or a failed lookup show — instead of guesses; restart after fixing field permissions to retry metadata discovery. No story-point editing is introduced.
+The approved read-only `GET /rest/api/3/field` lookup identifies numeric story-point fields by Jira's names/schema, not hardcoded custom-field IDs. It is account/site pinned, redirect-free, limited to 2 MiB/10,000 definitions/32 candidates, and runs once per session. Bulk Board/Backlog hydration requests those fields in the existing authorized membership fetch; ordinary full-ticket reads still use the CLI. Without the Board bridge, estimates become available as full details load (or from server name metadata with jira-cli). Populated conflicting candidates, malformed values or a failed lookup leave the field blank instead of guessing; restart after fixing field permissions to retry metadata discovery. No story-point editing is introduced.
 
 ## Cache-first loading and background sync
 

@@ -100,7 +100,7 @@ impl Ticket {
     pub fn points_label(&self) -> String {
         self.story_points()
             .map(|n| n.to_string())
-            .unwrap_or_else(|| "—".into())
+            .unwrap_or_default()
     }
     pub fn priority(&self) -> String {
         text(&self.fields["priority"]["name"])
@@ -618,22 +618,22 @@ mod tests {
         for (value, expected) in [
             (json!(0), "0"),
             (json!(2.5), "2.5"),
-            (Value::Null, "—"),
-            (json!(-1), "—"),
-            (json!("5"), "—"),
-            (json!(true), "—"),
+            (Value::Null, ""),
+            (json!(-1), ""),
+            (json!("5"), ""),
+            (json!(true), ""),
         ] {
             t.fields["customfield_90123"] = value;
             assert_eq!(t.points_label(), expected);
         }
         t.estimate_fields.clear();
         t.fields["customfield_90123"] = json!(5);
-        assert_eq!(t.points_label(), "—");
+        assert_eq!(t.points_label(), "");
         t.names = json!({"customfield_90123":"Story Points"});
         assert_eq!(t.points_label(), "5");
         t.estimate_fields = vec!["customfield_90234".into()];
         t.fields["customfield_90234"] = json!(8);
-        assert_eq!(t.points_label(), "—");
+        assert_eq!(t.points_label(), "");
         t.fields["customfield_90234"] = Value::Null;
         assert_eq!(t.points_label(), "5");
         let mut row = Ticket {

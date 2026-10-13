@@ -226,14 +226,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                             app.status_colors.style(t),
                         ),
                         Span::styled(
-                            format!(" · SP:{}{}", t.points_label(), {
-                                let name = t.user("assignee").display_label();
-                                if name.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" · {name}")
+                            format!(
+                                "{}{}",
+                                {
+                                    let points = t.points_label();
+                                    if points.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" · SP:{points}")
+                                    }
+                                },
+                                {
+                                    let name = t.user("assignee").display_label();
+                                    if name.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" · {name}")
+                                    }
                                 }
-                            }),
+                            ),
                             Style::default().fg(Color::DarkGray),
                         ),
                     ]),
@@ -917,6 +928,66 @@ mod tests {
                 .map(|c| c.symbol())
                 .collect::<String>();
             assert!(screen.contains("2 selected"));
+        }
+    }
+    #[test]
+    fn missing_points_are_blank_and_narrow_rows_omit_empty_sp_labels_but_keep_zero() {
+        for width in [60, 210] {
+            for (value, label) in [
+                (serde_json::Value::Null, ""),
+                (serde_json::json!(0), "0"),
+                (serde_json::json!(2.5), "2.5"),
+            ] {
+                let mut app = App::new(
+                    Backend::new("demo", None).unwrap(),
+                    Cache { directory: None },
+                    Settings {
+                        project: "DEV".into(),
+                        last_view: crate::config::AVAILABLE,
+                        ..Default::default()
+                    },
+                    true,
+                    500,
+                    std::path::PathBuf::new(),
+                );
+                app.items = data::demo_tickets();
+                app.items[1].fields["customfield_90123"] = value;
+                app.visible = vec![1];
+                app.detail_key = "DEV-102".into();
+                let mut terminal = Terminal::new(TestBackend::new(width, 28)).unwrap();
+                terminal.draw(|f| draw(f, &mut app)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let left = (app.tickets_rect.y + 2..app.tickets_rect.bottom() - 1)
+                    .flat_map(|y| {
+                        (app.tickets_rect.x + 1..app.tickets_rect.right() - 1).map(move |x| (x, y))
+                    })
+                    .map(|p| buffer[p].symbol())
+                    .collect::<String>();
+                if app.row_height == 2 {
+                    assert_eq!(left.contains("SP:"), !label.is_empty());
+                    if !label.is_empty() {
+                        assert!(left.contains(&format!("SP:{label}")));
+                    }
+                } else {
+                    let x = app.tickets_rect.x + 1 + 11 + 1 + 13 + 1 + 14 + 1;
+                    let y = app.tickets_rect.y + 2;
+                    let cell = (x..x + 4)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>();
+                    assert_eq!(cell.trim(), label);
+                }
+                let doc = crate::markdown::ticket_document(&app.items[1], 80);
+                let metadata = doc
+                    .iter()
+                    .find(|r| r.chunks.iter().any(|c| c.text.trim() == "Story points:"))
+                    .unwrap();
+                let text = metadata
+                    .chunks
+                    .iter()
+                    .map(|c| c.text.as_str())
+                    .collect::<String>();
+                assert_eq!(text.trim(), format!("Story points: {label}").trim());
+            }
         }
     }
     #[test]
