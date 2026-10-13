@@ -250,11 +250,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Table::new(data_rows, [Constraint::Length(11), Constraint::Min(20)]).header(header)
     }
     .column_spacing(1)
-    .row_highlight_style(
-        Style::default()
-            .bg(Color::Rgb(215, 232, 248))
-            .add_modifier(Modifier::BOLD),
-    )
+    // Rows already paint the selection background; a final table-wide
+    // background override would erase each selected status badge's color.
+    .row_highlight_style(Style::default().add_modifier(Modifier::BOLD))
     .block(left_block);
     frame.render_stateful_widget(table, panes[0], &mut app.table);
     if app.visible.is_empty() && !app.loading {
@@ -1079,6 +1077,8 @@ mod tests {
                 serde_json::json!({"name":"Done","statusCategory":{"key":"done"}});
             items[1].fields["status"] =
                 serde_json::json!({"name":"Queued","statusCategory":{"key":"new"}});
+            items[2].fields["status"] =
+                serde_json::json!({"name":"Discarded","statusCategory":{"key":"done"}});
             app.message(crate::app::Message::Synced {
                 generation: app.generation,
                 result: Ok((
@@ -1095,14 +1095,14 @@ mod tests {
             let colors = app
                 .items
                 .iter()
-                .map(|t| app.status_colors.style(t).fg.unwrap())
+                .map(|t| app.status_colors.style(t).bg.unwrap())
                 .collect::<Vec<_>>();
             let b = terminal.backend().buffer();
             for color in colors {
                 assert!(
                     (app.tickets_rect.y..app.tickets_rect.bottom())
                         .any(|y| (app.tickets_rect.x..app.tickets_rect.right())
-                            .any(|x| b[(x, y)].fg == color)),
+                            .any(|x| b[(x, y)].bg == color)),
                     "Missing status color on {width}-column terminal"
                 );
             }
