@@ -1144,8 +1144,14 @@ impl App {
                     .remove(&format!("list:{}:{}", self.limit, self.last_query));
                 match result {
                     Ok(()) => {
-                        self.notice(format!("Updated {}", action.key), false);
-                        let mut jobs = self.sync_workspace();
+                        // Every confirmed successful write uses the same full,
+                        // unfiltered shared refresh as F5, not a view/detail-only
+                        // or incremental refresh. This also fences stale reads.
+                        let mut jobs = self.refresh_all();
+                        self.notice(
+                            format!("Updated {} · refreshing all views", action.key),
+                            false,
+                        );
                         jobs.extend(self.detail_job(
                             action.key,
                             if self.lookup_active && self.history.is_empty() {
@@ -2921,7 +2927,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Mouse opens detail links. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Mouse opens detail links. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels. Every successful update automatically fully refreshes all four views, retaining their filters.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -3700,6 +3706,220 @@ mod tests {
                 .flat_map(|l| &l.chunks)
                 .any(|c| c.text.contains("ready locally"))
         );
+    }
+    #[test]
+    fn every_successful_write_fully_refreshes_all_views_and_fences_prewrite_reads() {
+        for kind in [
+            "assign",
+            "status",
+            "summary",
+            "description",
+            "labels",
+            "comment",
+            "link",
+            "board",
+            "backlog",
+        ] {
+            let mut a = app();
+            a.writing = true;
+            a.syncing = true;
+            a.full_sync = true;
+            a.refresh_pending = true;
+            let old_generation = a.generation;
+            let old_revision = *a.detail_revisions.get("DEV-102").unwrap_or(&0);
+            let base = a.last_query.clone();
+            let jobs = a.message(Message::Written {
+                action: Action::new(kind, "DEV-101", "synthetic"),
+                result: Ok(()),
+            });
+            assert!(!a.writing);
+            assert!(a.syncing && a.full_sync);
+            assert!(!a.refresh_pending);
+            assert_eq!(
+                jobs.iter()
+                    .filter(|j| matches!(j, Job::Sync { .. }))
+                    .count(),
+                1
+            );
+            let Job::Sync {
+                generation,
+                base: query,
+                changed,
+                ..
+            } = jobs.iter().find(|j| matches!(j, Job::Sync { .. })).unwrap()
+            else {
+                panic!()
+            };
+            assert!(changed.is_none());
+            assert_eq!(query, &base);
+            assert!(*generation > old_generation);
+            assert_eq!(a.dirty_details.len(), 3);
+            assert!(a.status.contains("refreshing all views"));
+            assert!(a.dialog.is_none());
+            assert!(
+                jobs.iter()
+                    .all(|j| matches!(j, Job::Sync { .. } | Job::Detail { .. }))
+            );
+            let mut stale = data::demo_tickets().remove(1);
+            stale.fields["summary"] = serde_json::json!("stale prewrite response");
+            a.message(Message::Detail {
+                key: "DEV-102".into(),
+                lookup: None,
+                revision: old_revision,
+                background: true,
+                result: Ok(stale),
+            });
+            assert_ne!(a.details["DEV-102"].0.summary(), "stale prewrite response");
+            a.message(Message::Synced {
+                generation: old_generation,
+                result: Err(anyhow::anyhow!("stale sync")),
+            });
+            assert!(a.syncing && a.full_sync);
+        }
+    }
+    #[tokio::test]
+    async fn confirmed_demo_assignment_status_and_movement_refresh_membership_in_every_view() {
+        let mut a = app();
+        a.settings.board_id = Some(1);
+        a.last_query = a.settings.query(config::BACKLOG, "", "", "").unwrap();
+        let mine = a.settings.query(config::MINE, "", "", "").unwrap();
+        let initial = a
+            .backend
+            .workspace(&a.last_query, &mine, None)
+            .await
+            .unwrap();
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok(initial),
+        });
+        for (action, counts) in [
+            (Action::new("assign", "DEV-102", "@me"), [2, 0, 2, 1]),
+            (Action::new("status", "DEV-103", "Done"), [2, 0, 2, 1]),
+            (Action::new("board", "DEV-102", "1"), [2, 0, 3, 0]),
+        ] {
+            assert_eq!(a.backend.kind, crate::backend::Kind::Demo);
+            let result = a.backend.apply(&action).await;
+            a.writing = true;
+            let jobs = a.message(Message::Written { action, result });
+            let Job::Sync {
+                generation,
+                base,
+                mine,
+                changed,
+            } = jobs
+                .into_iter()
+                .find(|j| matches!(j, Job::Sync { .. }))
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert!(changed.is_none());
+            let result = a.backend.workspace(&base, &mine, changed.as_deref()).await;
+            a.message(Message::Synced { generation, result });
+            for (view, count) in counts.into_iter().enumerate() {
+                assert!(a.switch_view(view).is_empty());
+                assert_eq!(
+                    a.visible.len(),
+                    count,
+                    "view {view} must reflect latest write"
+                );
+            }
+        }
+        assert_eq!(
+            a.workspace
+                .as_ref()
+                .unwrap()
+                .ticket("DEV-103")
+                .unwrap()
+                .status(),
+            "Done"
+        );
+        assert_eq!(
+            a.workspace
+                .as_ref()
+                .unwrap()
+                .ticket("DEV-102")
+                .unwrap()
+                .status(),
+            "Refinement"
+        );
+    }
+    #[test]
+    fn automatic_postwrite_refresh_preserves_independent_filters_and_reading_state() {
+        let mut a = app();
+        a.view_filters[config::MINE] = ViewFilters {
+            assignee: "@me".into(),
+            status: "In Progress".into(),
+            text: "terminal".into(),
+        };
+        a.view_filters[config::AVAILABLE] = ViewFilters {
+            assignee: "unassigned".into(),
+            status: "Refinement".into(),
+            text: "digits".into(),
+        };
+        a.status_filter = "Refinement".into();
+        a.local_search = "digits".into();
+        a.remote_search = "digits".into();
+        a.rebuild_visible();
+        a.detail_key = "DEV-102".into();
+        a.scroll = 7;
+        let snapshot = a.workspace.clone().unwrap();
+        a.writing = true;
+        let jobs = a.message(Message::Written {
+            action: Action::new("comment", "DEV-101", "Synthetic note"),
+            result: Ok(()),
+        });
+        let Job::Sync { generation, .. } =
+            jobs.iter().find(|j| matches!(j, Job::Sync { .. })).unwrap()
+        else {
+            panic!()
+        };
+        a.message(Message::Synced {
+            generation: *generation,
+            result: Ok((snapshot, vec![])),
+        });
+        assert_eq!(a.view, config::BACKLOG);
+        assert_eq!(a.detail_key, "DEV-102");
+        assert_eq!(a.scroll, 7);
+        assert_eq!(a.status_filter.single(), "Refinement");
+        assert_eq!(a.remote_search, "digits");
+        assert_eq!(a.view_filters[config::MINE].text, "terminal");
+        assert_eq!(a.view_filters[config::AVAILABLE].text, "digits");
+    }
+    #[test]
+    fn failed_writes_and_failed_postwrite_refreshes_never_retry_a_mutation() {
+        let mut a = app();
+        a.writing = true;
+        let jobs = a.message(Message::Written {
+            action: Action::new("status", "DEV-101", "Done"),
+            result: Err(anyhow::anyhow!("synthetic uncertain outcome")),
+        });
+        assert!(jobs.iter().all(|j| matches!(j, Job::Detail { .. })));
+        assert!(matches!(a.dialog, Some(Dialog::Info { .. })));
+        assert!(a.error.contains("outcome unknown"));
+        let mut a = app();
+        a.writing = true;
+        let before = a.items.iter().map(|t| t.key.clone()).collect::<Vec<_>>();
+        let jobs = a.message(Message::Written {
+            action: Action::new("assign", "DEV-101", "@me"),
+            result: Ok(()),
+        });
+        let Job::Sync { generation, .. } =
+            jobs.iter().find(|j| matches!(j, Job::Sync { .. })).unwrap()
+        else {
+            panic!()
+        };
+        let jobs = a.message(Message::Synced {
+            generation: *generation,
+            result: Err(anyhow::anyhow!("synthetic offline refresh")),
+        });
+        assert!(jobs.is_empty());
+        assert_eq!(
+            a.items.iter().map(|t| t.key.clone()).collect::<Vec<_>>(),
+            before
+        );
+        assert!(a.error.contains("cached tickets retained"));
+        assert!(!a.writing);
     }
     #[test]
     fn full_refresh_shortcuts_bypass_details_and_preserve_the_view() {
