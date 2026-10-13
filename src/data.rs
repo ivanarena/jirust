@@ -33,7 +33,37 @@ where
 {
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParentEpic {
+    pub key: String,
+    pub name: String,
+}
 impl Ticket {
+    /// Use Jira's explicit parent relationship/type, never status, nearby rank,
+    /// linked issues, or guessed custom-field IDs.
+    pub fn parent_epic(&self) -> Option<ParentEpic> {
+        if self.is_epic() {
+            return None;
+        }
+        let parent = &self.fields["parent"];
+        let key = parent["key"].as_str()?.to_owned();
+        if !valid_key(&key) || key.eq_ignore_ascii_case(&self.key) {
+            return None;
+        }
+        let kind = &parent["fields"]["issuetype"];
+        if !text(&kind["name"]).eq_ignore_ascii_case("Epic")
+            && kind["hierarchyLevel"].as_i64() != Some(1)
+        {
+            return None;
+        }
+        let summary = line(&text(&parent["fields"]["summary"]));
+        let name = if summary.is_empty() {
+            key.clone()
+        } else {
+            summary
+        };
+        Some(ParentEpic { key, name })
+    }
     pub fn summary(&self) -> String {
         text(&self.fields["summary"])
     }
@@ -579,7 +609,7 @@ pub fn adf_markdown(v: &Value) -> String {
 pub fn demo_tickets() -> Vec<Ticket> {
     serde_json::from_value(json!([
         {"key":"DEV-101","estimate_fields":["customfield_90123"],"self":"https://example.atlassian.net/rest/api/3/issue/101","fields":{"customfield_90123":3,"summary":"A simpler two-pane terminal workspace","status":{"name":"In Progress","statusCategory":{"key":"indeterminate"}},"assignee":{"displayName":"Alex","accountId":"alex","emailAddress":"alex@example.com"},"reporter":{"displayName":"Sam"},"priority":{"name":"High"},"issuetype":{"name":"Story"},"description":{"type":"doc","content":[{"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"Fast navigation"}]},{"type":"paragraph","content":[{"type":"text","text":"Bold","marks":[{"type":"strong"}]},{"type":"text","text":" descriptions with "},{"type":"text","text":"links","marks":[{"type":"link","attrs":{"href":"https://example.com/docs"}}]}]}]},"issuelinks":[{"type":{"outward":"blocks"},"outwardIssue":{"key":"DEV-102","fields":{"summary":"Improve number lookup"}}}],"comment":{"total":1,"comments":[{"author":{"displayName":"Sam"},"body":"Try **101** to find this ticket."}]}}},
-        {"key":"DEV-102","estimate_fields":["customfield_90123"],"self":"https://example.atlassian.net/rest/api/3/issue/102","fields":{"customfield_90123":0,"summary":"Typing digits finds a ticket automatically","status":{"name":"Refinement","statusCategory":{"key":"new"}},"assignee":null,"reporter":{"displayName":"Alex"},"priority":{"name":"Medium"},"issuetype":{"name":"Task"},"description":"# Ticket search\n\nType `102` anywhere in the main view.\n\n- No Enter required\n- Ctrl+1 switches views instead\n\nRelated: DEV-101"}},
+        {"key":"DEV-102","estimate_fields":["customfield_90123"],"self":"https://example.atlassian.net/rest/api/3/issue/102","fields":{"customfield_90123":0,"summary":"Typing digits finds a ticket automatically","status":{"name":"Refinement","statusCategory":{"key":"new"}},"assignee":null,"reporter":{"displayName":"Alex"},"priority":{"name":"Medium"},"issuetype":{"name":"Task"},"parent":{"key":"DEV-900","fields":{"summary":"Search experience","issuetype":{"name":"Epic","hierarchyLevel":1}}},"description":"# Ticket search\n\nType `102` anywhere in the main view.\n\n- No Enter required\n- Ctrl+1 switches views instead\n\nRelated: DEV-101"}},
         {"key":"DEV-103","self":"https://example.atlassian.net/rest/api/3/issue/103","fields":{"summary":"Make assignment explicit and safe","status":{"name":"To Do","statusCategory":{"key":"new"}},"assignee":{"displayName":"Sam","accountId":"sam","emailAddress":"sam@example.com"},"reporter":{"displayName":"Alex"},"priority":{"name":"Low"},"issuetype":{"name":"Task"},"description":"Choose **Me**, **Unassigned**, a known person, or enter an email/account ID.\n\nUpdates need a separate confirmation."}}
     ])).unwrap()
 }
@@ -587,6 +617,28 @@ pub fn demo_tickets() -> Vec<Ticket> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parent_epic_requires_an_explicit_valid_epic_relationship_not_a_regular_parent_or_link() {
+        let mut t = demo_tickets().remove(0);
+        assert!(t.parent_epic().is_none());
+        t.fields["parent"] = json!({"key":"DEV-900","fields":{"summary":"Roadmap\n\u{1b}[31m","issuetype":{"name":"Epic","hierarchyLevel":1}}});
+        let e = t.parent_epic().unwrap();
+        assert_eq!(e.key, "DEV-900");
+        assert!(!e.name.contains('\u{1b}'));
+        assert!(!e.name.contains('\n'));
+        t.fields["parent"]["fields"]["summary"] = Value::Null;
+        assert_eq!(t.parent_epic().unwrap().name, "DEV-900");
+        t.fields["parent"]["fields"]["issuetype"] = json!({"name":"Story","hierarchyLevel":0});
+        assert!(t.parent_epic().is_none());
+        t.fields["parent"]["fields"]["issuetype"] = json!({"name":"Epic"});
+        t.fields["parent"]["key"] = json!(t.key);
+        assert!(t.parent_epic().is_none());
+        t.fields["parent"]["key"] = json!("DEV-900\u{1b}");
+        assert!(t.parent_epic().is_none());
+        t.fields["parent"]["key"] = json!("DEV-900");
+        t.fields["issuetype"] = json!({"name":"Epic"});
+        assert!(t.parent_epic().is_none());
+    }
     #[test]
     fn absent_people_display_as_blank_without_mistaking_opaque_users_for_unassigned() {
         assert_eq!(User::default().display_label(), "");

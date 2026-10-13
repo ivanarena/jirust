@@ -68,6 +68,12 @@ impl SearchRow {
             ticket.user("reporter").label(),
             ticket.fields["labels"]
         );
+        if let Some(epic) = ticket.parent_epic() {
+            text.push_str(&epic.key);
+            text.push(' ');
+            text.push_str(&epic.name);
+            text.push(' ');
+        }
         description(&ticket.fields["description"], &mut text);
         let assignees = vec![user.id, user.name, user.email, user.login];
         for value in &assignees {
@@ -181,6 +187,7 @@ impl Workspace {
                 "issuetype",
                 "labels",
                 "description",
+                "parent",
             ] {
                 row.fields[field] = ticket.fields[field].clone();
             }
@@ -220,6 +227,34 @@ pub fn valid_items(items: &[Ticket]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parent_epic_labels_update_search_and_clear_without_changing_rank_or_membership() {
+        let items = data::demo_tickets();
+        let mut w = Workspace {
+            items,
+            ..Default::default()
+        };
+        w.reindex();
+        let keys = w.items.iter().map(|t| t.key.clone()).collect::<Vec<_>>();
+        let mut t = w.items[0].clone();
+        t.fields["parent"] = serde_json::json!({"key":"DEV-900","fields":{"summary":"Roadmap","issuetype":{"name":"Epic"}}});
+        w.update(&t);
+        assert_eq!(w.items[0].parent_epic().unwrap().name, "Roadmap");
+        assert!(w.matches(&w.items[0], config::BACKLOG, "", "", "Roadmap"));
+        assert!(w.matches(&w.items[0], config::BACKLOG, "", "", "DEV-900"));
+        assert_eq!(
+            w.items.iter().map(|t| t.key.clone()).collect::<Vec<_>>(),
+            keys
+        );
+        t.fields["parent"] = serde_json::Value::Null;
+        w.update(&t);
+        assert!(w.items[0].parent_epic().is_none());
+        assert!(!w.matches(&w.items[0], config::BACKLOG, "", "", "Roadmap"));
+        assert_eq!(
+            w.items.iter().map(|t| t.key.clone()).collect::<Vec<_>>(),
+            keys
+        );
+    }
     #[test]
     fn epics_are_searchable_and_obey_actual_membership_and_rank() {
         let mut w = Workspace {

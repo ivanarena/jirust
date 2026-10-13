@@ -438,7 +438,8 @@ impl BoardApi {
             "Invalid estimate field metadata"
         );
         let mut fields =
-            "summary,status,assignee,reporter,priority,issuetype,labels,description".to_owned();
+            "summary,status,assignee,reporter,priority,issuetype,labels,description,parent"
+                .to_owned();
         for id in estimate_fields {
             fields.push(',');
             fields.push_str(id);
@@ -462,6 +463,15 @@ impl BoardApi {
             let mut page: Vec<Ticket> = serde_json::from_value(v["issues"].clone())
                 .context("Missing Board API issue page")?;
             for t in &mut page {
+                ensure!(
+                    t.fields.is_object(),
+                    "Board API returned invalid issue fields"
+                );
+                // Requested-but-absent parent means no relationship; explicitly
+                // clear an old cached epic instead of retaining it.
+                if t.fields.get("parent").is_none() {
+                    t.fields["parent"] = Value::Null;
+                }
                 t.estimate_fields = estimate_fields.to_vec();
             }
             ensure!(

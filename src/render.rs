@@ -190,11 +190,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 Cell::from(appearance::status_label(&t.status())).style(app.status_colors.style(t)),
                 Cell::from(t.user("assignee").display_label()),
                 Cell::from(t.points_label()),
-                Cell::from(appearance::summary(t)),
+                Cell::from(appearance::ticket_summary(
+                    t,
+                    inner.width.saturating_sub(46),
+                )),
             ])
-            .style(if t.is_epic() {
-                appearance::epic_style(position == app.selected)
-            } else if position == app.selected {
+            .style(if position == app.selected {
                 selection()
             } else {
                 Style::default()
@@ -219,7 +220,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Row::new(vec![
                 Cell::from(t.key.clone()),
                 Cell::from(Text::from(vec![
-                    Line::from(appearance::summary(t)),
+                    appearance::ticket_summary(t, inner.width.saturating_sub(12)),
                     Line::from(vec![
                         Span::styled(
                             appearance::status_label(&t.status()),
@@ -250,9 +251,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     ]),
                 ])),
             ])
-            .style(if t.is_epic() {
-                appearance::epic_style(position == app.selected)
-            } else if position == app.selected {
+            .style(if position == app.selected {
                 selection()
             } else {
                 Style::default()
@@ -1224,8 +1223,9 @@ mod tests {
         }
     }
     #[test]
-    fn epic_rows_are_purple_on_wide_narrow_and_selected_rows_without_erasing_status_badges() {
-        for width in [60, 140] {
+    fn epic_tickets_are_plain_and_only_assigned_epic_labels_are_colored_with_status_badges_intact()
+    {
+        for width in [60, 210] {
             let mut app = App::new(
                 Backend::new("demo", None).unwrap(),
                 Cache { directory: None },
@@ -1243,6 +1243,7 @@ mod tests {
             items[0].fields["status"] = serde_json::json!({"name":"Done"});
             items[1].fields["issuetype"] = serde_json::json!({"name":"Epic"});
             items[1].fields["status"] = serde_json::json!({"name":"Discarded"});
+            items[2].fields["parent"] = serde_json::json!({"key":"DEV-900","fields":{"summary":"Platform","issuetype":{"name":"Epic"}}});
             app.message(crate::app::Message::Synced {
                 generation: app.generation,
                 result: Ok((
@@ -1257,9 +1258,15 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(width, 26)).unwrap();
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             let b = terminal.backend().buffer();
+            let badge = appearance::epic_label_style().bg.unwrap();
+            for y in app.tickets_rect.y + 2..app.tickets_rect.y + 2 + 2 * app.row_height {
+                assert!(
+                    (app.tickets_rect.x..app.tickets_rect.right()).all(|x| b[(x, y)].bg != badge),
+                    "Epic ticket rows must not be purple"
+                );
+            }
             for bg in [
-                appearance::epic_style(true).bg.unwrap(),
-                appearance::epic_style(false).bg.unwrap(),
+                badge,
                 app.status_colors.style_name("Done").bg.unwrap(),
                 app.status_colors.style_name("Discarded").bg.unwrap(),
             ] {
@@ -1267,13 +1274,26 @@ mod tests {
                     (app.tickets_rect.y..app.tickets_rect.bottom())
                         .any(|y| (app.tickets_rect.x..app.tickets_rect.right())
                             .any(|x| b[(x, y)].bg == bg)),
-                    "Missing epic/status background at {width} columns"
+                    "Missing parent label/status background at {width} columns"
                 );
             }
             let text = b.content.iter().map(|c| c.symbol()).collect::<String>();
             assert!(text.contains("Epic ·"));
             assert!(text.contains("SP"));
             assert!(text.contains("Story points:"));
+            app.selected = 2;
+            app.table.select(Some(2));
+            app.detail_key = "DEV-103".into();
+            app.doc_dirty = true;
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let b = terminal.backend().buffer();
+            let y = app.tickets_rect.y + 2 + 2 * app.row_height;
+            assert!((app.tickets_rect.x..app.tickets_rect.right()).any(|x| b[(x, y)].bg == badge));
+            assert_ne!(
+                b[(app.tickets_rect.x + 1, y)].bg,
+                badge,
+                "Only label, not selected ticket key, should be purple"
+            );
         }
     }
     #[test]

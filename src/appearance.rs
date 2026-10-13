@@ -212,15 +212,42 @@ pub fn status_label(name: &str) -> String {
         name.into()
     }
 }
-pub fn epic_style(selected: bool) -> Style {
+pub fn epic_label_style() -> Style {
     Style::default()
         .fg(Color::Rgb(88, 28, 140))
-        .bg(if selected {
-            Color::Rgb(216, 187, 246)
-        } else {
-            Color::Rgb(241, 229, 255)
-        })
+        .bg(Color::Rgb(241, 229, 255))
         .add_modifier(Modifier::BOLD)
+}
+pub fn ticket_summary(ticket: &Ticket, width: u16) -> ratatui::text::Line<'static> {
+    use ratatui::text::{Line, Span};
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let mut spans = vec![];
+    if let Some(epic) = ticket.parent_epic() {
+        // Keep title space even when an epic has a long or wide Unicode name.
+        let budget = (width / 3).clamp(6, 28).min(width.saturating_sub(8));
+        if budget >= 3 {
+            let limit = (budget - 2) as usize;
+            let mut label = String::new();
+            if epic.name.width() <= limit {
+                label = epic.name;
+            } else {
+                let mut cells = 0;
+                for c in epic.name.chars() {
+                    let n = c.width().unwrap_or(0);
+                    if cells + n > limit.saturating_sub(1) {
+                        break;
+                    }
+                    label.push(c);
+                    cells += n;
+                }
+                label.push('…');
+            }
+            spans.push(Span::styled(format!(" {label} "), epic_label_style()));
+            spans.push(Span::raw(" "));
+        }
+    }
+    spans.push(Span::raw(summary(ticket)));
+    Line::from(spans)
 }
 pub fn summary(ticket: &Ticket) -> String {
     if ticket.is_epic() {
@@ -238,6 +265,25 @@ mod tests {
         let mut t = crate::data::demo_tickets().remove(0);
         t.fields["status"] = json!({"name":name,"statusCategory":{"key":"done"}});
         t
+    }
+    #[test]
+    fn only_parent_labels_are_colored_truncated_by_cells_and_precede_plain_ticket_titles() {
+        use unicode_width::UnicodeWidthStr;
+        let mut t = crate::data::demo_tickets().remove(0);
+        let plain = ticket_summary(&t, 30);
+        assert_eq!(plain.spans.len(), 1);
+        assert!(plain.spans[0].style.bg.is_none());
+        t.fields["parent"] = json!({"key":"DEV-900","fields":{"summary":"界界界界界界界界界界界界界界界界界","issuetype":{"name":"Epic"}}});
+        let line = ticket_summary(&t, 30);
+        assert_eq!(line.spans.len(), 3);
+        assert_eq!(line.spans[0].style, epic_label_style());
+        assert!(line.spans[0].content.width() <= 10);
+        assert_eq!(line.spans[2].content, t.summary());
+        assert!(line.spans[2].style.bg.is_none());
+        t.fields["issuetype"] = json!({"name":"Epic"});
+        let line = ticket_summary(&t, 30);
+        assert_eq!(line.spans.len(), 1);
+        assert!(line.spans[0].style.bg.is_none());
     }
     #[test]
     fn completion_icons_are_visual_only_not_status_category_guesses() {

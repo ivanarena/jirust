@@ -479,12 +479,15 @@ pub fn ticket_document_with_status(t: &Ticket, width: u16, status_style: Style) 
         t.description()
     );
     let mut lines = render(&md, width, t);
-    if t.is_epic() {
-        for row in lines.iter_mut().take_while(|row| !row.chunks.is_empty()) {
-            for chunk in &mut row.chunks {
-                chunk.style = chunk.style.patch(crate::appearance::epic_style(false));
-            }
-        }
+    if let Some(epic) = t.parent_epic() {
+        let badge = DocLine {
+            chunks: vec![Chunk {
+                text: format!(" {} ", epic.name),
+                style: crate::appearance::epic_label_style(),
+                target: Some(Target::ticket(epic.key.clone(), &epic.key)),
+            }],
+        };
+        lines.splice(0..0, wrap(vec![badge], width as usize));
     }
     // Only the metadata status line(s), not matching words in the ticket body.
     if let Some(end) = lines
@@ -744,7 +747,7 @@ pub fn to_adf(md: &str) -> Value {
 mod tests {
     use super::*;
     #[test]
-    fn points_metadata_is_human_readable_and_epic_title_keeps_its_highlight() {
+    fn epic_tickets_have_normal_titles_and_assigned_epic_labels_precede_child_titles() {
         let mut t = data::demo_tickets().remove(1);
         t.fields["issuetype"] = json!({"name":"Epic"});
         let rows = ticket_document(&t, 80);
@@ -755,10 +758,25 @@ mod tests {
             .join("\n");
         assert!(text.contains("Story points: 0"));
         assert!(text.contains("Epic ·"));
+        assert!(
+            rows.iter()
+                .flat_map(|r| &r.chunks)
+                .all(|c| c.style.bg != crate::appearance::epic_label_style().bg)
+        );
+        t.fields["issuetype"] = json!({"name":"Story"});
+        t.fields["parent"] =
+            json!({"key":"DEV-900","fields":{"summary":"Platform","issuetype":{"name":"Epic"}}});
+        let rows = ticket_document(&t, 80);
+        assert_eq!(rows[0].chunks[0].text, " Platform ");
         assert_eq!(
             rows[0].chunks[0].style.bg,
-            crate::appearance::epic_style(false).bg
+            crate::appearance::epic_label_style().bg
         );
+        assert_eq!(
+            rows[0].target_at(1).unwrap().key.as_deref(),
+            Some("DEV-900")
+        );
+        assert!(rows[1].chunks.iter().any(|c| c.text.contains("DEV-102")));
     }
     #[test]
     fn styled_markdown_and_link_hit_test() {
