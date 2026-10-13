@@ -458,6 +458,9 @@ fn wrap(rows: Vec<DocLine>, width: usize) -> Vec<DocLine> {
     out
 }
 pub fn ticket_document(t: &Ticket, width: u16) -> Vec<DocLine> {
+    ticket_document_with_status(t, width, crate::appearance::status_style(t))
+}
+pub fn ticket_document_with_status(t: &Ticket, width: u16, status_style: Style) -> Vec<DocLine> {
     let labels = t.fields["labels"]
         .as_array()
         .map(|a| a.iter().map(data::text).collect::<Vec<_>>().join(", "))
@@ -485,7 +488,7 @@ pub fn ticket_document(t: &Ticket, width: u16) -> Vec<DocLine> {
                 break;
             }
             for chunk in &mut line.chunks {
-                chunk.style = chunk.style.patch(crate::appearance::status_style(t));
+                chunk.style = chunk.style.patch(status_style);
             }
         }
     }

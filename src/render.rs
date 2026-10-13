@@ -104,13 +104,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Min(22),
-            Constraint::Length(23),
             Constraint::Length(22),
+            Constraint::Length(23),
         ])
         .split(rows[1]);
     app.search_rect = controls[0];
-    app.assignee_rect = controls[1];
-    app.status_rect = controls[2];
+    app.status_rect = controls[1];
+    app.assignee_rect = controls[2];
     let search = match app.search_mode {
         SearchMode::Number => format!(" Find {}-{}", app.settings.prefix(), app.search),
         SearchMode::Text => format!(" / {}", app.search),
@@ -138,7 +138,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(
         Paragraph::new(format!(" Assignee: {} ▾", app.assignee_label()))
             .style(Style::default().fg(Color::Blue)),
-        controls[1],
+        app.assignee_rect,
     );
     frame.render_widget(
         Paragraph::new(format!(
@@ -151,8 +151,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 app.status_filter.single().to_owned()
             }
         ))
-        .style(Style::default().fg(Color::Blue)),
-        controls[2],
+        .style(if app.status_filter.len() == 1 {
+            app.status_colors.style_name(app.status_filter.single())
+        } else {
+            Style::default().fg(Color::Blue)
+        }),
+        app.status_rect,
     );
     let panes = Layout::default()
         .direction(Direction::Horizontal)
@@ -189,7 +193,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 } else {
                     Style::default()
                 }),
-                Cell::from(t.status()).style(appearance::status_style(t)),
+                Cell::from(t.status()).style(app.status_colors.style(t)),
                 Cell::from(t.user("assignee").label()),
                 Cell::from(appearance::summary(t)),
             ])
@@ -210,7 +214,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         )
         .header(header)
     } else {
-        let header = Row::new(["Key", "Ticket / Assignee · Status"])
+        let header = Row::new(["Key", "Ticket / Status · Assignee"])
             .style(Style::default().fg(Color::DarkGray));
         let data_rows = app.visible.iter().enumerate().map(|(position, i)| {
             let t = &app.items[*i];
@@ -225,11 +229,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 Cell::from(Text::from(vec![
                     Line::from(appearance::summary(t)),
                     Line::from(vec![
+                        Span::styled(t.status(), app.status_colors.style(t)),
                         Span::styled(
-                            format!("{} · ", t.user("assignee").label()),
+                            format!(" · {}", t.user("assignee").label()),
                             Style::default().fg(Color::DarkGray),
                         ),
-                        Span::styled(t.status(), appearance::status_style(t)),
                     ]),
                 ])),
             ])
@@ -421,7 +425,13 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
             checked,
             custom,
         } => {
-            let b = block(" Filters · lists from the shared ticket cache ", true);
+            let b = block(
+                format!(
+                    " {} filters · Status → Assignee ",
+                    crate::config::VIEW_NAMES[app.view]
+                ),
+                true,
+            );
             let inner = b.inner(rect);
             frame.render_widget(b, rect);
             let columns =
@@ -444,8 +454,8 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
                     ),
                     *active == column,
                 );
-                let list = b.inner(columns[column]);
-                frame.render_widget(b, columns[column]);
+                let list = b.inner(columns[1 - column]);
+                frame.render_widget(b, columns[1 - column]);
                 app.filter_list_rects[column] = list;
                 let start =
                     selected[column].saturating_sub((list.height as usize).saturating_sub(1));
@@ -458,15 +468,23 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
                     .enumerate()
                 {
                     let chosen = index == selected[column];
-                    let style = if chosen && *active == column {
-                        selection()
-                    } else if chosen {
-                        Style::default()
-                            .fg(Color::Blue)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    };
+                    let style =
+                        if column == 1 && !choice.value.is_empty() && choice.value != "__other" {
+                            let badge = app.status_colors.style_name(&choice.value);
+                            if chosen && *active == column {
+                                badge.bg(Color::Rgb(215, 232, 248))
+                            } else {
+                                badge
+                            }
+                        } else if chosen && *active == column {
+                            selection()
+                        } else if chosen {
+                            Style::default()
+                                .fg(Color::Blue)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                        };
                     frame.render_widget(
                         Paragraph::new(format!(
                             "{} [{}] {}",
@@ -865,6 +883,8 @@ mod tests {
             )));
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|f| draw(f, &mut app)).unwrap();
+            assert!(app.status_rect.x < app.assignee_rect.x);
+            assert!(app.filter_list_rects[1].x < app.filter_list_rects[0].x);
             let screen = terminal
                 .backend()
                 .buffer()
@@ -1002,7 +1022,7 @@ mod tests {
             let colors = app
                 .items
                 .iter()
-                .map(|t| appearance::status_style(t).fg.unwrap())
+                .map(|t| app.status_colors.style(t).fg.unwrap())
                 .collect::<Vec<_>>();
             let b = terminal.backend().buffer();
             for color in colors {

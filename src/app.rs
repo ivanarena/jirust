@@ -139,7 +139,15 @@ pub enum Dialog {
         scroll: u16,
     },
 }
+#[derive(Clone, Default)]
+pub struct ViewFilters {
+    assignee: Selection,
+    status: Selection,
+    text: String,
+}
 pub struct App {
+    pub status_colors: crate::appearance::StatusColors,
+    view_filters: [ViewFilters; 4],
     pub backend: Arc<Backend>,
     pub cache: Cache,
     pub settings: Settings,
@@ -219,7 +227,14 @@ impl App {
         attachment_dir: PathBuf,
     ) -> Self {
         let view = settings.last_view.min(config::BACKLOG);
+        let status_colors = cache
+            .get::<crate::appearance::StatusColors>(crate::appearance::STATUS_COLORS_CACHE)
+            .map(|(c, _)| c)
+            .filter(crate::appearance::StatusColors::valid)
+            .unwrap_or_default();
         Self {
+            status_colors,
+            view_filters: std::array::from_fn(|_| ViewFilters::default()),
             backend,
             cache,
             settings,
@@ -354,6 +369,18 @@ impl App {
         let _ = self.cache.put(&self.dirty_key(), &self.dirty_details);
     }
     fn load(&mut self, query: String) -> Vec<Job> {
+        if !self.last_query.is_empty() && self.last_query != query {
+            self.view_filters = std::array::from_fn(|_| ViewFilters::default());
+            self.assignee_filter.clear();
+            self.status_filter.clear();
+            self.search.clear();
+            self.remote_search.clear();
+            self.local_search.clear();
+            self.search_mode = SearchMode::None;
+            self.lookup_active = false;
+            self.lookup_generation += 1;
+            self.search_due = None;
+        }
         self.generation += 1;
         self.last_query = query.clone();
         self.prefetch.clear();
@@ -396,6 +423,11 @@ impl App {
             // Apply the same inventory to older cached snapshots immediately.
             workspace.items.retain(Ticket::backlog_ticket);
             workspace.reindex();
+            if self.status_colors.register(&workspace.items) {
+                let _ = self
+                    .cache
+                    .put(crate::appearance::STATUS_COLORS_CACHE, &self.status_colors);
+            }
         }
         self.apply_local();
         self.sync_workspace()
@@ -638,6 +670,11 @@ impl App {
                 .get::<Ticket>(&full_cache_key(key))
                 .or_else(|| self.cache.get(&format!("detail:{key}")))
         {
+            if self.status_colors.register([&t]) {
+                let _ = self
+                    .cache
+                    .put(crate::appearance::STATUS_COLORS_CACHE, &self.status_colors);
+            }
             self.details.insert(key.into(), (t, time));
             self.trim_details(key);
             self.doc_dirty = true;
@@ -791,6 +828,11 @@ impl App {
                         if workspace.index.is_empty() || count != workspace.items.len() {
                             workspace.reindex();
                         }
+                        if self.status_colors.register(&workspace.items) {
+                            let _ = self
+                                .cache
+                                .put(crate::appearance::STATUS_COLORS_CACHE, &self.status_colors);
+                        }
                         let keys = workspace.keys();
                         if full {
                             self.dirty_details.extend(keys.iter().cloned());
@@ -880,6 +922,11 @@ impl App {
                 };
                 match result {
                     Ok(ticket) => {
+                        if self.status_colors.register([&ticket]) {
+                            let _ = self
+                                .cache
+                                .put(crate::appearance::STATUS_COLORS_CACHE, &self.status_colors);
+                        }
                         let _ = self.cache.put(&full_cache_key(&key), &ticket);
                         self.dirty_details.remove(&key);
                         self.full_ready.insert(key.clone());
@@ -1014,14 +1061,22 @@ impl App {
     pub fn document(&mut self, width: u16) {
         if self.doc_dirty || self.doc_width != width {
             self.document = if let Some((ticket, _)) = self.details.get(&self.detail_key) {
-                markdown::ticket_document(ticket, width)
+                markdown::ticket_document_with_status(
+                    ticket,
+                    width,
+                    self.status_colors.style(ticket),
+                )
             } else if let Some(ticket) = self.items.iter().find(|t| t.key == self.detail_key) {
                 let mut lines = markdown::render(
                     "*Description ready locally · full details syncing in background*",
                     width,
                     ticket,
                 );
-                lines.extend(markdown::ticket_document(ticket, width));
+                lines.extend(markdown::ticket_document_with_status(
+                    ticket,
+                    width,
+                    self.status_colors.style(ticket),
+                ));
                 lines
             } else {
                 vec![]
@@ -1035,19 +1090,29 @@ impl App {
         if index >= self.view_names().len() {
             return vec![];
         };
+        let text = if self.search_mode == SearchMode::Text {
+            self.search.clone()
+        } else {
+            self.remote_search.clone()
+        };
+        self.view_filters[self.view] = ViewFilters {
+            assignee: self.assignee_filter.clone(),
+            status: self.status_filter.clone(),
+            text,
+        };
+        let filters = self.view_filters[index].clone();
         self.view = index;
+        self.assignee_filter = filters.assignee;
+        self.status_filter = filters.status;
+        self.remote_search = filters.text;
         self.selected = 0;
         self.visible.clear();
         self.table.select(None);
         *self.table.offset_mut() = 0;
-        self.assignee_filter.clear();
         self.settings.last_view = index;
         if self.backend.kind != Kind::Demo {
             let _ = self.settings.save();
         };
-        if self.search_mode == SearchMode::Text {
-            self.remote_search = self.search.clone();
-        }
         self.search_mode = SearchMode::None;
         self.lookup_active = false;
         self.search = self.remote_search.clone();
@@ -1717,7 +1782,7 @@ impl App {
             choices,
             selected,
             checked,
-            active: 0,
+            active: 1,
             custom: None,
         });
     }
@@ -1853,6 +1918,9 @@ impl App {
     fn assignee_picker(&mut self, filter: bool) {
         if filter {
             self.filters_dialog();
+            if let Some(Dialog::Filters { active, .. }) = &mut self.dialog {
+                *active = 0;
+            }
             return;
         }
         let choices = self.assignee_choices(filter);
@@ -2246,8 +2314,8 @@ impl App {
                 custom,
             } => match key.code {
                 KeyCode::Tab | KeyCode::BackTab => *active = 1 - *active,
-                KeyCode::Left => *active = 0,
-                KeyCode::Right => *active = 1,
+                KeyCode::Left => *active = 1,
+                KeyCode::Right => *active = 0,
                 KeyCode::Up | KeyCode::Char('k') => {
                     selected[*active] = selected[*active].saturating_sub(1)
                 }
@@ -2540,7 +2608,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nOR within each list, AND between lists and text; the current view stays fixed.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears all filters and search, without changing the view.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nEpics are included and labeled; / epic searches their type. Status badges are visual only.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Mouse selects rows and links.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nEpics are included and labeled; / epic searches their type. Status badges are visual only.\n\nATTACHMENTS\nFiles open in Jira. Downloaded images preview locally; i selects a file.\nKitty graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels.\n--read-only blocks changes. ! shows the full CLI error.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -2703,6 +2771,157 @@ mod tests {
         }
     }
     #[test]
+    fn palette_cache_keeps_status_colors_identical_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        a.cache = Cache {
+            directory: Some(dir.path().into()),
+        };
+        let w = a.workspace.clone().unwrap();
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((w, vec![])),
+        });
+        let restarted = App::new(
+            a.backend.clone(),
+            a.cache.clone(),
+            a.settings.clone(),
+            true,
+            500,
+            PathBuf::new(),
+        );
+        for t in &a.items {
+            assert_eq!(a.status_colors.style(t), restarted.status_colors.style(t));
+        }
+        assert!(restarted.status_colors.valid());
+    }
+    #[test]
+    fn changing_scope_resets_all_views_filters_without_changing_palette() {
+        let mut a = app();
+        a.status_filter = "To Do".into();
+        a.switch_view(config::BOARD);
+        a.assignee_filter = "sam".into();
+        a.remote_search = "words".into();
+        a.settings.project = "OTHER".into();
+        let jobs = a.reload();
+        assert!(matches!(&jobs[..], [Job::Sync { .. }]));
+        assert!(a.assignee_filter.is_empty());
+        assert!(a.remote_search.is_empty());
+        assert!(
+            a.view_filters
+                .iter()
+                .all(|v| v.assignee.is_empty() && v.status.is_empty() && v.text.is_empty())
+        );
+    }
+    #[test]
+    fn assignee_status_and_text_filters_are_independent_for_each_view() {
+        let mut a = app();
+        a.workspace.as_mut().unwrap().board = Some(["DEV-101".into(), "DEV-103".into()].into());
+        a.workspace.as_mut().unwrap().reindex();
+        a.items_are_workspace = false;
+        for (view, assignees, statuses, text, key) in [
+            (
+                config::BACKLOG,
+                vec!["unassigned"],
+                vec!["Refinement"],
+                "Enter",
+                "DEV-102",
+            ),
+            (
+                config::BOARD,
+                vec!["@me", "sam"],
+                vec!["In Progress", "To Do"],
+                "confirmation",
+                "DEV-103",
+            ),
+            (
+                config::AVAILABLE,
+                vec!["unassigned"],
+                vec!["Refinement"],
+                "Enter",
+                "DEV-102",
+            ),
+            (
+                config::MINE,
+                vec!["@me"],
+                vec!["In Progress"],
+                "fast",
+                "DEV-101",
+            ),
+        ] {
+            assert!(a.switch_view(view).is_empty());
+            assert!(a.status_filter.is_empty());
+            assert!(a.assignee_filter.is_empty());
+            assert!(a.remote_search.is_empty());
+            a.assignee_filter = assignees
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+                .into();
+            a.status_filter = statuses
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+                .into();
+            a.remote_search = text.into();
+            a.reload();
+            assert_eq!(a.selected_ticket().unwrap().key, key);
+        }
+        a.switch_view(config::BACKLOG);
+        assert_eq!(a.status_filter, "Refinement");
+        assert_eq!(a.remote_search, "Enter");
+        assert_eq!(a.assignee_filter, "unassigned");
+        assert!(a.clear_filters().is_empty());
+        a.switch_view(config::BOARD);
+        assert_eq!(a.assignee_filter.len(), 2);
+        assert_eq!(a.status_filter.len(), 2);
+        assert_eq!(a.remote_search, "confirmation");
+        let w = a.workspace.clone().unwrap();
+        a.refresh_all();
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((w, vec![])),
+        });
+        assert_eq!(a.status_filter.len(), 2);
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-103");
+        a.switch_view(config::BACKLOG);
+        assert!(a.status_filter.is_empty());
+        assert!(a.remote_search.is_empty());
+        assert!(a.assignee_filter.is_empty());
+        a.switch_view(config::AVAILABLE);
+        assert_eq!(a.status_filter, "Refinement");
+        assert_eq!(a.remote_search, "Enter");
+    }
+    #[test]
+    fn switching_during_text_input_saves_only_that_views_search() {
+        let mut a = app();
+        a.event(key('/', KeyModifiers::NONE));
+        a.event(Event::Paste("staged words".into()));
+        a.switch_view(config::BOARD);
+        assert!(a.remote_search.is_empty());
+        a.switch_view(config::BACKLOG);
+        assert_eq!(a.remote_search, "staged words");
+        a.event(Event::Paste("102".into()));
+        a.switch_view(config::MINE);
+        assert!(!a.lookup_active);
+        a.switch_view(config::BACKLOG);
+        assert_eq!(a.remote_search, "staged words");
+        assert!(!a.lookup_active);
+    }
+    #[test]
+    fn filter_panel_starts_with_status_and_arrow_navigation_matches_visual_order() {
+        let mut a = app();
+        a.filters_dialog();
+        assert!(matches!(a.dialog, Some(Dialog::Filters { active: 1, .. })));
+        a.event(Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(a.dialog, Some(Dialog::Filters { active: 0, .. })));
+        a.event(Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)));
+        assert!(matches!(a.dialog, Some(Dialog::Filters { active: 1, .. })));
+    }
+    #[test]
     fn text_search_stays_in_its_assignment_view() {
         let mut a = app();
         a.view = config::AVAILABLE;
@@ -2723,9 +2942,12 @@ mod tests {
         assert_eq!(a.view, config::AVAILABLE);
         assert!(a.query().unwrap().contains("assignee = \"sam\""));
         a.switch_view(config::MINE);
-        assert_eq!(a.remote_search, "Enter");
+        assert!(a.remote_search.is_empty());
         assert!(a.assignee_filter.is_empty());
         assert!(a.query().unwrap().contains("currentUser()"));
+        a.switch_view(config::AVAILABLE);
+        assert_eq!(a.remote_search, "Enter");
+        assert_eq!(a.assignee_filter, "sam");
     }
     #[test]
     fn arrows_switch_views_without_queries_or_stealing_editor_keys() {
@@ -3308,7 +3530,7 @@ mod tests {
     fn list_filters_stage_both_columns_and_apply_without_jira_writes() {
         let mut a = app();
         a.read_only = true;
-        a.filters_dialog();
+        a.assignee_picker(true);
         for _ in 0..4 {
             a.event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         }
@@ -3380,7 +3602,7 @@ mod tests {
         assert_eq!(*active, 1);
         assert_eq!(choices[1][selected[1]].value, "Blocked");
         assert!(checked[1].contains("Blocked"));
-        a.filters_dialog();
+        a.assignee_picker(true);
         if let Some(Dialog::Filters {
             choices, selected, ..
         }) = &mut a.dialog
@@ -3407,7 +3629,7 @@ mod tests {
     #[test]
     fn open_filter_lists_update_after_sync_without_losing_staged_selections() {
         let mut a = app();
-        a.filters_dialog();
+        a.assignee_picker(true);
         a.event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         let mut workspace = a.workspace.clone().unwrap();
         let mut new = data::demo_tickets().remove(2);
@@ -3501,6 +3723,10 @@ mod tests {
         a.reload();
         assert_eq!(a.visible.len(), 1);
         a.switch_view(config::BACKLOG);
+        assert_eq!(a.visible.len(), 1);
+        assert!(a.status_filter.is_empty());
+        a.status_filter = "In Progress".into();
+        a.reload();
         assert!(a.visible.is_empty());
         assert_eq!(a.workspace.as_ref().unwrap().view_count(config::BACKLOG), 1);
         assert!(a.status.contains("1 in Backlog"));
