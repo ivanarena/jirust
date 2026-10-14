@@ -56,7 +56,8 @@ impl Settings {
         Self::from_value(value)
     }
     fn from_value(value: Value) -> Result<Self> {
-        let mut out: Self = serde_json::from_value(value.clone())?;
+        let mut out: Self = serde_json::from_value(value.clone())
+            .map_err(|_| anyhow::anyhow!("Invalid private settings shape (content suppressed)"))?;
         // Migrate old numeric tabs without reinterpreting Board as Mine or
         // old Backlog-only as Available. All three now share one backlog scope.
         if value["view_layout"].as_u64() == Some(3) {
@@ -486,6 +487,17 @@ mod tests {
                 .unwrap()
                 .contains("assignee = \"sam\"")
         );
+    }
+    #[test]
+    fn invalid_settings_shapes_never_echo_private_values() {
+        for field in ["last_view", "view_layout", "board_id"] {
+            let value = serde_json::json!({field:"SYNTHETIC_SECRET_MARKER"});
+            let error = Settings::from_value(value).unwrap_err().to_string();
+            assert!(
+                !error.contains("SYNTHETIC_SECRET_MARKER"),
+                "{field}: {error}"
+            );
+        }
     }
     #[test]
     fn query_escape() {

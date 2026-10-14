@@ -13,7 +13,7 @@ Select a dotenv file in this order:
 3. `./.env`
 4. `.env` in the platform-native Jirust config directory (see README).
 
-An explicitly selected missing/invalid file fails rather than falling back to another account. `JIRUST_ENV_FILE` is a bootstrap selector from the process environment, not a variable inside another dotenv file. Keep files owned by you, regular, **0600**, no symlinks/hardlinks, and at most **64 KiB**. A normal owned 0755 project directory is supported; its permissions are never changed. The immediate parent must not be writable by other users. Dotenv values are not exported globally or to CLI children. Demo ignores personal environment settings; explicit demo flags still work.
+An explicitly selected missing/invalid file fails rather than falling back to another account. Default-file inspection errors also fail; only an absent default file permits trying the next location. `JIRUST_ENV_FILE` is a bootstrap selector from the process environment, not a variable inside another dotenv file. Keep files owned by you, regular, **0600**, no symlinks/hardlinks, and at most **64 KiB**. A normal owned 0755 project directory is supported; its permissions are never changed. The immediate parent must not be writable by other users. Dotenv values are not exported globally or to CLI children. Demo ignores personal environment settings; explicit demo flags still work.
 
 ```sh
 cp .env.example /private/path/work.env

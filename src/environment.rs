@@ -16,6 +16,15 @@ pub struct Credentials {
     pub(crate) email: String,
     pub(crate) token: String,
 }
+fn file_present(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(anyhow::anyhow!(
+            "Cannot inspect environment file; no fallback profile selected"
+        )),
+    }
+}
 fn selected_file(
     explicit: Option<&Path>,
     profile: Option<PathBuf>,
@@ -25,11 +34,11 @@ fn selected_file(
     if let Some(path) = explicit.map(Path::to_owned).or(profile) {
         return Ok(Some(path));
     }
-    if std::fs::symlink_metadata(local).is_ok() {
+    if file_present(local)? {
         return Ok(Some(local.to_owned()));
     }
     let user = user()?;
-    Ok(std::fs::symlink_metadata(&user).is_ok().then_some(user))
+    Ok(file_present(&user)?.then_some(user))
 }
 impl Environment {
     pub fn load(explicit: Option<&Path>) -> Result<Self> {
@@ -169,6 +178,27 @@ mod tests {
             selected_file(None, None, &d.path().join("missing"), || Ok(user.clone())).unwrap(),
             Some(user)
         );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn failed_default_profile_inspection_never_falls_back_to_another_file() {
+        use std::os::unix::fs::PermissionsExt;
+        if rustix::process::geteuid().as_raw() == 0 {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let local = d.path().join("blocked");
+        fs::create_dir(&local).unwrap();
+        fs::write(local.join(".env"), b"TEST_SECRET=synthetic\n").unwrap();
+        fs::set_permissions(&local, fs::Permissions::from_mode(0o000)).unwrap();
+        let fallback_called = std::cell::Cell::new(false);
+        let result = selected_file(None, None, &local.join(".env"), || {
+            fallback_called.set(true);
+            Ok(d.path().join("other.env"))
+        });
+        fs::set_permissions(&local, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert!(!fallback_called.get());
     }
     #[cfg(unix)]
     #[test]
