@@ -1,0 +1,3 @@
+# Preserve upstream license text verbatim, including its whitespace/CRLF.
+THIRD_PARTY_NOTICES.md linguist-generated=true -whitespace
+THIRD_PARTY_SOURCES.json linguist-generated=true
