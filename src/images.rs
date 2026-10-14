@@ -86,6 +86,7 @@ pub fn insert_rows(
             text: "Images (inline attachments)".into(),
             style: Style::default().fg(Color::Blue),
             target: None,
+            filter: None,
         }],
     }];
     let mut slots = vec![];
@@ -100,6 +101,7 @@ pub fn insert_rows(
                     attachment: Some(a.clone()),
                     ..Default::default()
                 }),
+                filter: None,
             }],
         });
         slots.push(ImageSlot {
@@ -116,6 +118,7 @@ pub fn insert_rows(
                 text: "More images: l opens the attachment list".into(),
                 style: Style::default().fg(Color::DarkGray),
                 target: None,
+                filter: None,
             }],
         });
     }

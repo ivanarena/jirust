@@ -33,7 +33,32 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         height.min(area.height),
     )
 }
+fn cells(text: &str) -> u16 {
+    text.width().min(u16::MAX as usize) as u16
+}
+fn filter_hit(
+    hits: &mut Vec<crate::interaction::FilterHit>,
+    rect: Rect,
+    clip: Rect,
+    source: &str,
+    target: Option<crate::interaction::FilterTarget>,
+    detail: bool,
+) {
+    let rect = rect.intersection(clip);
+    if let Some(target) = target
+        && rect.width > 0
+        && rect.height > 0
+    {
+        hits.push(crate::interaction::FilterHit {
+            rect,
+            source: source.into(),
+            target,
+            detail,
+        });
+    }
+}
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    app.filter_hits.clear();
     let area = frame.area();
     if area.width < 60 || area.height < 16 {
         frame.render_widget(
@@ -166,7 +191,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.ticket_rect = panes[1];
     let left_block = block(
         format!(
-            " Tickets · {}{} · {} ",
+            " Tickets · {}{} · {}{} ",
             app.visible.len(),
             if app.loading {
                 " · loading"
@@ -175,7 +200,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             } else {
                 ""
             },
-            app.sort_order().label()
+            app.sort_order().label(),
+            app.epic_filter
+                .as_ref()
+                .map(|e| format!(" · Epic: {}", data::line(&e.label)))
+                .unwrap_or_default()
         ),
         app.focus == Focus::Tickets,
     );
@@ -272,6 +301,94 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     .row_highlight_style(Style::default().add_modifier(Modifier::BOLD))
     .block(left_block);
     frame.render_stateful_widget(table, panes[0], &mut app.table);
+    // Use the final table offset, Unicode cell widths and exactly the rendered layout.
+    let clip = Rect::new(
+        inner.x,
+        inner.y + 1,
+        inner.width,
+        inner.height.saturating_sub(1),
+    );
+    for (row, index) in app.visible.iter().skip(app.table.offset()).enumerate() {
+        let y = clip
+            .y
+            .saturating_add((row as u16).saturating_mul(app.row_height));
+        if y >= clip.bottom() {
+            break;
+        }
+        let t = &app.items[*index];
+        let summary_x = inner.x + if app.row_height == 1 { 46 } else { 12 };
+        let summary_width = inner.right().saturating_sub(summary_x);
+        let summary =
+            appearance::ticket_summary_with_style(t, summary_width, app.epic_colors.style(t));
+        if summary.spans.first().is_some_and(|s| s.style.bg.is_some()) {
+            filter_hit(
+                &mut app.filter_hits,
+                Rect::new(summary_x, y, cells(&summary.spans[0].content), 1),
+                clip,
+                &t.key,
+                crate::interaction::FilterTarget::epic(t),
+                false,
+            );
+        } else if t.is_epic() {
+            filter_hit(
+                &mut app.filter_hits,
+                Rect::new(summary_x, y, cells("Epic · "), 1),
+                clip,
+                &t.key,
+                crate::interaction::FilterTarget::own_epic(t),
+                false,
+            );
+        }
+        let status = appearance::status_label(&t.status());
+        if app.row_height == 1 {
+            filter_hit(
+                &mut app.filter_hits,
+                Rect::new(inner.x + 12, y, 13, 1),
+                clip,
+                &t.key,
+                Some(crate::interaction::FilterTarget::Status(t.status())),
+                false,
+            );
+            filter_hit(
+                &mut app.filter_hits,
+                Rect::new(inner.x + 26, y, 14, 1),
+                clip,
+                &t.key,
+                crate::interaction::FilterTarget::assignee(t),
+                false,
+            );
+        } else {
+            filter_hit(
+                &mut app.filter_hits,
+                Rect::new(summary_x, y + 1, cells(&status), 1),
+                clip,
+                &t.key,
+                Some(crate::interaction::FilterTarget::Status(t.status())),
+                false,
+            );
+            let name = t.user("assignee").display_label();
+            let points = t.points_label();
+            let points_width = if points.is_empty() {
+                0
+            } else {
+                cells(&format!(" · SP:{points}"))
+            };
+            if !name.is_empty() {
+                let x = summary_x
+                    .saturating_add(cells(&status))
+                    .saturating_add(points_width)
+                    .saturating_add(3);
+                filter_hit(
+                    &mut app.filter_hits,
+                    Rect::new(x, y + 1, cells(&name), 1),
+                    clip,
+                    &t.key,
+                    crate::interaction::FilterTarget::assignee(t),
+                    false,
+                );
+            }
+        }
+    }
     if app.visible.is_empty() && !app.loading {
         let count = app
             .workspace
@@ -388,6 +505,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             }
         }
     }
+    for (row, line) in app
+        .document
+        .iter()
+        .skip(app.scroll)
+        .take(right.height as usize)
+        .enumerate()
+    {
+        let mut x = right.x;
+        for chunk in &line.chunks {
+            let width = cells(&chunk.text);
+            filter_hit(
+                &mut app.filter_hits,
+                Rect::new(x, right.y + row as u16, width, 1),
+                right,
+                &app.detail_key,
+                chunk.filter.clone(),
+                true,
+            );
+            x = x.saturating_add(width);
+        }
+    }
     let mode = if app.read_only {
         "READ ONLY · "
     } else if app.backend.kind == crate::backend::Kind::Demo {
@@ -398,7 +536,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let status = format!(
         " {mode}{}{}",
         if app.writing { "Updating… · " } else { "" },
-        app.status
+        app.refresh_notice().as_deref().unwrap_or(&app.status)
     );
     frame.render_widget(
         Paragraph::new(status).style(Style::default().fg(
@@ -893,6 +1031,213 @@ mod tests {
         assert!(matches!(&jobs[..], [Job::Sync { changed: None, .. }]));
         assert_eq!(app.search, "keep search");
         assert!(matches!(app.search_mode, SearchMode::Text));
+    }
+    fn field_app() -> App {
+        let mut app = App::new(
+            Backend::new("demo", None).unwrap(),
+            Cache { directory: None },
+            Settings {
+                project: "DEV".into(),
+                last_view: crate::config::BACKLOG,
+                ..Default::default()
+            },
+            true,
+            500,
+            Default::default(),
+        );
+        let mut items = crate::data::demo_tickets();
+        let mut other = items[0].clone();
+        other.key = "DEV-104".into();
+        other.fields["assignee"]["accountId"] = serde_json::json!("different-id");
+        items.push(other);
+        let mut other = items[1].clone();
+        other.key = "DEV-105".into();
+        other.fields["parent"]["key"] = serde_json::json!("DEV-901");
+        items.push(other);
+        let mut w = crate::workspace::Workspace {
+            items,
+            board: Some(Default::default()),
+            complete: true,
+            ..Default::default()
+        };
+        w.reindex();
+        app.last_query = app
+            .settings
+            .query(crate::config::BACKLOG, "", "", "")
+            .unwrap();
+        app.message(crate::app::Message::Synced {
+            generation: app.generation,
+            result: Ok((w, vec![])),
+        });
+        app
+    }
+    fn field_click(rect: Rect) -> crossterm::event::Event {
+        use crossterm::event::*;
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+    #[test]
+    fn double_click_fields_use_rendered_cells_and_exact_ids_in_wide_and_narrow_rows() {
+        use crate::interaction::FilterTarget;
+        for width in [120, 180] {
+            for field in [0, 1, 2] {
+                let mut app = field_app();
+                let mut terminal = Terminal::new(TestBackend::new(width, 28)).unwrap();
+                terminal.draw(|f| draw(f, &mut app)).unwrap();
+                let source = if field == 2 { "DEV-102" } else { "DEV-101" };
+                let hit = app
+                    .filter_hits
+                    .iter()
+                    .find(|h| {
+                        !h.detail
+                            && h.source == source
+                            && matches!(
+                                (&h.target, field),
+                                (FilterTarget::Assignee { .. }, 0)
+                                    | (FilterTarget::Status(_), 1)
+                                    | (FilterTarget::Epic(_), 2)
+                            )
+                    })
+                    .unwrap()
+                    .clone();
+                let first = app.event(field_click(hit.rect));
+                assert!(matches!(&first[..], [crate::app::Job::CopyLink(_)]));
+                assert!(app.event(field_click(hit.rect)).is_empty());
+                let keys: Vec<_> = app
+                    .visible
+                    .iter()
+                    .map(|i| app.items[*i].key.as_str())
+                    .collect();
+                match field {
+                    0 => {
+                        assert_eq!(app.assignee_filter.single(), "@id:alex");
+                        assert_eq!(keys, ["DEV-101"]);
+                        assert_eq!(app.assignee_label(), "Alex");
+                    }
+                    1 => {
+                        assert_eq!(
+                            app.status_filter.single(),
+                            crate::data::demo_tickets()[0].status()
+                        );
+                        assert!(keys.iter().all(|k| *k == "DEV-101" || *k == "DEV-104"));
+                    }
+                    _ => {
+                        assert_eq!(app.epic_filter.as_ref().unwrap().key, "DEV-900");
+                        assert_eq!(keys, ["DEV-102"]);
+                    }
+                }
+                assert_eq!(app.copy_generation, 1);
+                terminal.draw(|f| draw(f, &mut app)).unwrap();
+                assert!(!app.writing);
+                assert!(app.dialog.is_none());
+            }
+        }
+    }
+    #[test]
+    fn detail_metadata_double_click_filters_but_description_words_do_not() {
+        use crate::interaction::FilterTarget;
+        for field in [0, 1] {
+            let mut app = field_app();
+            let mut terminal = Terminal::new(TestBackend::new(150, 30)).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let hit = app
+                .filter_hits
+                .iter()
+                .find(|h| {
+                    h.detail
+                        && matches!(
+                            (&h.target, field),
+                            (FilterTarget::Assignee { .. }, 0) | (FilterTarget::Status(_), 1)
+                        )
+                })
+                .unwrap()
+                .clone();
+            assert!(app.event(field_click(hit.rect)).is_empty());
+            assert!(app.event(field_click(hit.rect)).is_empty());
+            assert_eq!(app.copy_generation, 0);
+            if field == 0 {
+                assert_eq!(app.assignee_filter.single(), "@id:alex");
+            } else {
+                assert_eq!(
+                    app.status_filter.single(),
+                    crate::data::demo_tickets()[0].status()
+                );
+            }
+        }
+        let mut t = crate::data::demo_tickets()[0].clone();
+        t.fields["description"] = serde_json::json!("**Assignee:** fake\n\n**Status:** fake");
+        let doc = crate::markdown::ticket_document(&t, 50);
+        let text = doc
+            .iter()
+            .position(|l| l.chunks.iter().any(|c| c.text.contains("fake")))
+            .unwrap();
+        assert!(
+            doc[text..]
+                .iter()
+                .flat_map(|l| &l.chunks)
+                .all(|c| c.filter.is_none())
+        );
+    }
+    #[test]
+    fn parent_epic_detail_links_wait_for_double_click_and_double_click_filters_instead_of_opening()
+    {
+        let mut app = field_app();
+        let mut terminal = Terminal::new(TestBackend::new(150, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let row = app
+            .filter_hits
+            .iter()
+            .find(|h| !h.detail && h.source == "DEV-102")
+            .unwrap()
+            .rect;
+        app.event(field_click(row));
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let hit = app
+            .filter_hits
+            .iter()
+            .find(|h| {
+                h.detail
+                    && h.source == "DEV-102"
+                    && matches!(h.target, crate::interaction::FilterTarget::Epic(_))
+            })
+            .unwrap()
+            .clone();
+        assert!(app.event(field_click(hit.rect)).is_empty());
+        assert_eq!(app.detail_key, "DEV-102");
+        assert!(app.event(field_click(hit.rect)).is_empty());
+        assert_eq!(app.detail_key, "DEV-102");
+        assert_eq!(app.epic_filter.as_ref().unwrap().key, "DEV-900");
+        assert!(app.history.is_empty());
+    }
+    #[test]
+    fn unicode_epic_badges_and_scroll_offsets_hit_the_displayed_ticket_not_the_hidden_first_row() {
+        let mut app = field_app();
+        let w = app.workspace.as_mut().unwrap();
+        w.items[1].fields["parent"]["fields"]["summary"] = serde_json::json!("日本語 🚀 Roadmap");
+        w.reindex();
+        app.items = w.items.clone();
+        app.selected = 1;
+        app.table.select(Some(1));
+        *app.table.offset_mut() = 1;
+        let mut terminal = Terminal::new(TestBackend::new(120, 18)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let hit = app
+            .filter_hits
+            .iter()
+            .find(|h| {
+                !h.detail
+                    && h.source == "DEV-102"
+                    && matches!(h.target, crate::interaction::FilterTarget::Epic(_))
+            })
+            .unwrap()
+            .clone();
+        app.event(field_click(hit.rect));
+        app.event(field_click(hit.rect));
+        assert_eq!(app.epic_filter.as_ref().unwrap().key, "DEV-900");
     }
     #[tokio::test]
     async fn narrow_footer_exposes_clickable_epic_sort_and_s_status() {

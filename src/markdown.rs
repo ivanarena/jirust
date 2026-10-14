@@ -12,6 +12,7 @@ pub struct Chunk {
     pub text: String,
     pub style: Style,
     pub target: Option<Target>,
+    pub filter: Option<crate::interaction::FilterTarget>,
 }
 #[derive(Clone, Debug, Default)]
 pub struct DocLine {
@@ -82,6 +83,7 @@ fn append(rows: &mut Vec<DocLine>, text: &str, fmt: &Format, ticket: &Ticket) {
                 text: part.into(),
                 style,
                 target: Some(target.clone()),
+                filter: None,
             });
             continue;
         }
@@ -116,12 +118,14 @@ fn append(rows: &mut Vec<DocLine>, text: &str, fmt: &Format, ticket: &Ticket) {
                     text: part[start..begin].into(),
                     style,
                     target: None,
+                    filter: None,
                 })
             }
             rows.last_mut().unwrap().chunks.push(Chunk {
                 text: part[begin..end].into(),
                 style: style.fg(Color::Blue).add_modifier(Modifier::UNDERLINED),
                 target: Some(target),
+                filter: None,
             });
             start = end;
         }
@@ -130,6 +134,7 @@ fn append(rows: &mut Vec<DocLine>, text: &str, fmt: &Format, ticket: &Ticket) {
                 text: part[start..].into(),
                 style,
                 target: None,
+                filter: None,
             })
         }
     }
@@ -161,6 +166,7 @@ fn table_lines(table: MarkdownTable, width: usize) -> Vec<DocLine> {
         text,
         style: Style::default().fg(Color::DarkGray),
         target: None,
+        filter: None,
     };
     let budget = width.saturating_sub(3 * count + 1);
     if budget < 2 * count {
@@ -398,12 +404,20 @@ pub fn render(md: &str, width: u16, ticket: &Ticket) -> Vec<DocLine> {
     wrap(rows, width.max(1) as usize)
 }
 fn wrap(rows: Vec<DocLine>, width: usize) -> Vec<DocLine> {
-    fn line(cells: &[(char, Style, Option<Target>)]) -> DocLine {
+    fn line(
+        cells: &[(
+            char,
+            Style,
+            Option<Target>,
+            Option<crate::interaction::FilterTarget>,
+        )],
+    ) -> DocLine {
         let mut out = DocLine::default();
-        for (c, s, t) in cells {
+        for (c, s, t, f) in cells {
             if let Some(last) = out.chunks.last_mut()
                 && last.style == *s
                 && last.target == *t
+                && last.filter == *f
             {
                 last.text.push(*c);
                 continue;
@@ -412,6 +426,7 @@ fn wrap(rows: Vec<DocLine>, width: usize) -> Vec<DocLine> {
                 text: c.to_string(),
                 style: *s,
                 target: t.clone(),
+                filter: f.clone(),
             })
         }
         out
@@ -424,7 +439,7 @@ fn wrap(rows: Vec<DocLine>, width: usize) -> Vec<DocLine> {
             .flat_map(|c| {
                 c.text
                     .chars()
-                    .map(|ch| (ch, c.style, c.target.clone()))
+                    .map(|ch| (ch, c.style, c.target.clone(), c.filter.clone()))
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -437,13 +452,21 @@ fn wrap(rows: Vec<DocLine>, width: usize) -> Vec<DocLine> {
         for cell in cells {
             let cw = cell.0.width().unwrap_or(0);
             while used + cw > width && !buffer.is_empty() {
-                let split = buffer
-                    .iter()
-                    .rposition(|(c, _, _): &(char, Style, Option<Target>)| c.is_whitespace());
+                let split = buffer.iter().rposition(
+                    |(c, _, _, _): &(
+                        char,
+                        Style,
+                        Option<Target>,
+                        Option<crate::interaction::FilterTarget>,
+                    )| c.is_whitespace(),
+                );
                 if let Some(n) = split {
                     out.push(line(&buffer[..n]));
                     buffer = buffer[n + 1..].to_vec();
-                    used = buffer.iter().map(|(c, _, _)| c.width().unwrap_or(0)).sum()
+                    used = buffer
+                        .iter()
+                        .map(|(c, _, _, _)| c.width().unwrap_or(0))
+                        .sum()
                 } else {
                     out.push(line(&buffer));
                     buffer.clear();
@@ -477,43 +500,79 @@ pub fn ticket_document_with_styles(
         .as_array()
         .map(|a| a.iter().map(data::text).collect::<Vec<_>>().join(", "))
         .unwrap_or_default();
-    let md = format!(
-        "# {} — {}\n\n**Status:** {}  \n**Assignee:** {}  \n**Reporter:** {}  \n**Type:** {} · **Priority:** {}  \n**Story points:** {}  \n**Labels:** {}\n\n---\n\n{}\n",
-        t.key,
-        crate::appearance::summary(t),
-        crate::appearance::status_label(&t.status()),
-        t.user("assignee").display_label(),
-        t.user("reporter").display_label(),
-        t.kind(),
-        t.priority(),
-        t.points_label(),
-        labels,
-        t.description()
+    use crate::interaction::FilterTarget;
+    let mut lines = render(
+        &format!("# {} — {}\n\n", t.key, crate::appearance::summary(t)),
+        width,
+        t,
     );
-    let mut lines = render(&md, width, t);
+    if let Some(target) = FilterTarget::own_epic(t) {
+        for line in &mut lines {
+            for chunk in &mut line.chunks {
+                if chunk.target.is_none() && !chunk.text.trim().is_empty() {
+                    chunk.filter = Some(target.clone());
+                }
+            }
+        }
+    }
+    // Render metadata as literal typed chunks, not parsed user-controlled Markdown.
+    for (label, value, style, filter) in [
+        (
+            "Status:",
+            crate::appearance::status_label(&t.status()),
+            status_style,
+            Some(FilterTarget::Status(t.status())),
+        ),
+        (
+            "Assignee:",
+            t.user("assignee").display_label(),
+            Style::default(),
+            FilterTarget::assignee(t),
+        ),
+        (
+            "Reporter:",
+            t.user("reporter").display_label(),
+            Style::default(),
+            None,
+        ),
+        (
+            "Type:",
+            format!("{} · Priority: {}", t.kind(), t.priority()),
+            Style::default(),
+            None,
+        ),
+        ("Story points:", t.points_label(), Style::default(), None),
+        ("Labels:", labels, Style::default(), None),
+    ] {
+        let row = DocLine {
+            chunks: vec![
+                Chunk {
+                    text: format!("{label} "),
+                    style: style.add_modifier(Modifier::BOLD),
+                    target: None,
+                    filter: filter.clone(),
+                },
+                Chunk {
+                    text: data::line(&value),
+                    style,
+                    target: None,
+                    filter,
+                },
+            ],
+        };
+        lines.extend(wrap(vec![row], width as usize));
+    }
+    lines.extend(render(&format!("\n---\n\n{}\n", t.description()), width, t));
     if let Some(epic) = t.parent_epic() {
         let badge = DocLine {
             chunks: vec![Chunk {
                 text: format!(" {} ", epic.name),
                 style: epic_style,
                 target: Some(Target::ticket(epic.key.clone(), &epic.key)),
+                filter: FilterTarget::epic(t),
             }],
         };
         lines.splice(0..0, wrap(vec![badge], width as usize));
-    }
-    // Only the metadata status line(s), not matching words in the ticket body.
-    if let Some(end) = lines
-        .iter()
-        .position(|l| l.chunks.iter().any(|c| c.text.trim() == "Assignee:"))
-        && let Some(start) = (0..end)
-            .rev()
-            .find(|i| lines[*i].chunks.iter().any(|c| c.text.trim() == "Status:"))
-    {
-        for line in &mut lines[start..end] {
-            for chunk in &mut line.chunks {
-                chunk.style = chunk.style.patch(status_style);
-            }
-        }
     }
     let targets = t.targets();
     if !targets.is_empty() {
@@ -529,6 +588,7 @@ pub fn ticket_document_with_styles(
                             .fg(Color::Blue)
                             .add_modifier(Modifier::UNDERLINED),
                         target: Some(target),
+                        filter: None,
                     }],
                 }],
                 width as usize,

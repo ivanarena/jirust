@@ -32,6 +32,7 @@ pub enum Job {
         lookup: Option<u64>,
         revision: u64,
         background: bool,
+        cancel: Option<tokio::sync::watch::Receiver<bool>>,
     },
     Comments(String),
     Write(Action),
@@ -58,6 +59,10 @@ pub enum Job {
     },
 }
 pub enum Message {
+    SyncProgress {
+        generation: u64,
+        stage: crate::refresh::Stage,
+    },
     Synced {
         generation: u64,
         result: Result<(Workspace, Vec<String>)>,
@@ -168,6 +173,7 @@ pub enum InlineImageState {
 }
 #[derive(Clone, Default)]
 pub struct ViewFilters {
+    epic: Option<crate::interaction::EpicFilter>,
     assignee: Selection,
     status: Selection,
     text: String,
@@ -180,6 +186,10 @@ pub struct App {
     epic_order: Option<Vec<usize>>,
     pub backend: Arc<Backend>,
     pub cache: Cache,
+    pub cache_writer: crate::cache_writer::CacheWriter,
+    pub refresh_started: Option<Instant>,
+    pub refresh_stage: crate::refresh::Stage,
+    background_cancel: tokio::sync::watch::Sender<bool>,
     pub settings: Settings,
     pub read_only: bool,
     pub limit: usize,
@@ -214,6 +224,10 @@ pub struct App {
     pub local_search: String,
     pub assignee_filter: Selection,
     pub status_filter: Selection,
+    pub epic_filter: Option<crate::interaction::EpicFilter>,
+    pub filter_hits: Vec<crate::interaction::FilterHit>,
+    last_click: Option<crate::interaction::Click>,
+    pending_target: Option<(Instant, String, Target)>,
     pub search_due: Option<Instant>,
     pub selection_due: Option<Instant>,
     pub generation: u64,
@@ -278,6 +292,7 @@ impl App {
             .map(|(c, _)| c)
             .filter(crate::appearance::EpicColors::valid)
             .unwrap_or_default();
+        let cache_writer = crate::cache_writer::CacheWriter::new(cache.clone());
         Self {
             status_colors,
             epic_colors,
@@ -286,6 +301,10 @@ impl App {
             epic_order: None,
             backend,
             cache,
+            cache_writer,
+            refresh_started: None,
+            refresh_stage: crate::refresh::Stage::Starting,
+            background_cancel: tokio::sync::watch::channel(false).0,
             settings,
             read_only,
             limit,
@@ -320,6 +339,10 @@ impl App {
             local_search: String::new(),
             assignee_filter: Selection::default(),
             status_filter: Selection::default(),
+            epic_filter: None,
+            filter_hits: Vec::new(),
+            last_click: None,
+            pending_target: None,
             search_due: None,
             selection_due: None,
             generation: 0,
@@ -376,10 +399,23 @@ impl App {
         config::VIEW_NAMES.iter().map(|s| s.to_string()).collect()
     }
     pub fn query(&self) -> Result<String> {
+        // The exact local identity tag must never be mistaken for a Jira account ID.
+        let assignee: Selection = self
+            .assignee_filter
+            .values()
+            .iter()
+            .map(|v| {
+                v.split_once(':')
+                    .filter(|(tag, _)| matches!(*tag, "@id" | "@email" | "@login" | "@name"))
+                    .map_or(v.as_str(), |(_, id)| id)
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .into();
         self.settings.query_selected(
             self.view,
             &self.remote_search,
-            &self.assignee_filter,
+            &assignee,
             &self.status_filter,
         )
     }
@@ -426,14 +462,17 @@ impl App {
         }
     }
     fn save_dirty(&self) {
-        let _ = self.cache.put(&self.dirty_key(), &self.dirty_details);
+        self.cache_writer
+            .metadata(self.dirty_key(), self.dirty_details.clone());
     }
     fn load(&mut self, query: String) -> Vec<Job> {
+        self.cancel_background_reads();
         if !self.last_query.is_empty() && self.last_query != query {
             self.view_filters = std::array::from_fn(|_| ViewFilters::default());
             self.view_orders = [crate::sorting::Order::Rank; 4];
             self.assignee_filter.clear();
             self.status_filter.clear();
+            self.epic_filter = None;
             self.search.clear();
             self.remote_search.clear();
             self.local_search.clear();
@@ -485,14 +524,16 @@ impl App {
             workspace.items.retain(Ticket::backlog_ticket);
             workspace.reindex();
             if self.status_colors.register(&workspace.items) {
-                let _ = self
-                    .cache
-                    .put(crate::appearance::STATUS_COLORS_CACHE, &self.status_colors);
+                self.cache_writer.put(
+                    crate::appearance::STATUS_COLORS_CACHE.into(),
+                    self.status_colors.clone(),
+                );
             }
             if self.epic_colors.register(&workspace.items) {
-                let _ = self
-                    .cache
-                    .put(crate::appearance::EPIC_COLORS_CACHE, &self.epic_colors);
+                self.cache_writer.put(
+                    crate::appearance::EPIC_COLORS_CACHE.into(),
+                    self.epic_colors.clone(),
+                );
             }
         }
         self.apply_local();
@@ -540,6 +581,7 @@ impl App {
                 },
                 if !self.assignee_filter.is_empty()
                     || !self.status_filter.is_empty()
+                    || self.epic_filter.is_some()
                     || !self.local_search.is_empty()
                     || !self.remote_search.is_empty()
                 {
@@ -550,8 +592,14 @@ impl App {
             ),
             false,
         );
+        if let Some(epic) = &self.epic_filter {
+            self.status
+                .push_str(&format!(" · Epic: {} (v clears)", data::line(&epic.label)));
+        }
     }
     pub fn clear_filters(&mut self) -> Vec<Job> {
+        self.reset_click();
+        self.epic_filter = None;
         self.assignee_filter.clear();
         self.status_filter.clear();
         self.remote_search.clear();
@@ -610,6 +658,7 @@ impl App {
             self.pending.remove(&key);
             self.dirty_details.insert(key);
         }
+        self.cancel_background_reads();
         self.save_dirty();
         let jobs = self.sync_workspace_mode(true);
         self.notice(
@@ -639,6 +688,8 @@ impl App {
             })
         };
         self.full_sync = full;
+        self.refresh_started = Some(Instant::now());
+        self.refresh_stage = crate::refresh::Stage::Starting;
         self.syncing = true;
         self.loading = self.workspace.is_none();
         self.next_sync = Some(Instant::now() + Duration::from_secs(60));
@@ -740,7 +791,13 @@ impl App {
                         || self
                             .workspace
                             .as_ref()
-                            .map(|w| w.matches_words(t, self.view, &assignee, &status, &words))
+                            .map(|w| {
+                                w.matches_words(t, self.view, &assignee, &status, &words)
+                                    && w.matches_epic(
+                                        t,
+                                        self.epic_filter.as_ref().map(|e| e.key.as_str()),
+                                    )
+                            })
                             .unwrap_or_else(|| {
                                 q.is_empty() || t.summary().to_lowercase().contains(&q)
                             })
@@ -762,10 +819,7 @@ impl App {
             self.scroll = 0;
             self.doc_dirty = true;
             self.selection_due = Some(Instant::now() + Duration::from_millis(80));
-            for index in self.visible.iter().skip(self.selected + 1).take(8).rev() {
-                let key = self.items[*index].key.clone();
-                self.prefetch.push_front(key);
-            }
+            self.queue_nearby_details();
         } else {
             self.detail_key.clear();
             self.doc_dirty = true
@@ -787,14 +841,16 @@ impl App {
                 }
             }
             if self.status_colors.register([&t]) {
-                let _ = self
-                    .cache
-                    .put(crate::appearance::STATUS_COLORS_CACHE, &self.status_colors);
+                self.cache_writer.put(
+                    crate::appearance::STATUS_COLORS_CACHE.into(),
+                    self.status_colors.clone(),
+                );
             }
             if self.epic_colors.register([&t]) {
-                let _ = self
-                    .cache
-                    .put(crate::appearance::EPIC_COLORS_CACHE, &self.epic_colors);
+                self.cache_writer.put(
+                    crate::appearance::EPIC_COLORS_CACHE.into(),
+                    self.epic_colors.clone(),
+                );
             }
             self.details.insert(key.into(), (t, time));
             self.trim_details(key);
@@ -847,11 +903,60 @@ impl App {
             lookup,
             revision,
             background: false,
+            cancel: None,
         }]
+    }
+    fn cancel_background_reads(&mut self) {
+        self.background_cancel.send_replace(true);
+        self.background_cancel = tokio::sync::watch::channel(false).0;
+        for (key, revision) in self.background.drain() {
+            let current = self.detail_revisions.entry(key.clone()).or_default();
+            if *current == revision {
+                *current += 1;
+                self.pending.remove(&key);
+            }
+        }
+        self.prefetch.clear();
+    }
+    fn queue_nearby_details(&mut self) {
+        self.prefetch = self
+            .visible
+            .iter()
+            .skip(self.selected.saturating_sub(2))
+            .take(7)
+            .filter_map(|i| {
+                let key = &self.items[*i].key;
+                (key != &self.detail_key).then(|| key.clone())
+            })
+            .take(6)
+            .collect();
+    }
+    pub fn refresh_notice(&self) -> Option<String> {
+        self.refresh_started.filter(|_| self.syncing).map(|start| {
+            format!(
+                "Refreshing · {} · {:.1}s · cached tickets visible",
+                self.refresh_stage.label(),
+                start.elapsed().as_secs_f64()
+            )
+        })
     }
     pub fn advance(&mut self) -> Vec<Job> {
         let now = Instant::now();
         let mut jobs = Vec::new();
+        if self
+            .pending_target
+            .as_ref()
+            .is_some_and(|(at, _, _)| now.duration_since(*at) >= Duration::from_millis(350))
+        {
+            if let Some((_, source, target)) = self.pending_target.take()
+                && source == self.detail_key
+                && self.dialog.is_none()
+                && self.preview.is_none()
+            {
+                jobs.extend(self.open_target(target));
+            }
+            self.last_click = None;
+        }
         if self.search_due.is_some_and(|d| now >= d) {
             self.search_due = None;
             self.dirty = true;
@@ -914,6 +1019,7 @@ impl App {
                     key,
                     lookup: None,
                     background: true,
+                    cancel: Some(self.background_cancel.subscribe()),
                 });
             }
         }
@@ -985,14 +1091,26 @@ impl App {
     }
     pub fn message(&mut self, message: Message) -> Vec<Job> {
         match message {
+            Message::SyncProgress { generation, stage } => {
+                if self.syncing && generation == self.generation {
+                    self.refresh_stage = stage;
+                    self.dirty = true;
+                }
+            }
             Message::Synced { generation, result } => {
                 if generation != self.generation {
                     return vec![];
                 }
                 self.syncing = false;
+                let elapsed = self
+                    .refresh_started
+                    .take()
+                    .map(|start| start.elapsed().as_secs_f64());
                 let full = self.full_sync;
                 self.full_sync = false;
                 self.loading = false;
+                self.reset_click();
+                self.filter_hits.clear();
                 match result {
                     Ok((mut workspace, changed)) => {
                         let count = workspace.items.len();
@@ -1001,14 +1119,16 @@ impl App {
                             workspace.reindex();
                         }
                         if self.status_colors.register(&workspace.items) {
-                            let _ = self
-                                .cache
-                                .put(crate::appearance::STATUS_COLORS_CACHE, &self.status_colors);
+                            self.cache_writer.put(
+                                crate::appearance::STATUS_COLORS_CACHE.into(),
+                                self.status_colors.clone(),
+                            );
                         }
                         if self.epic_colors.register(&workspace.items) {
-                            let _ = self
-                                .cache
-                                .put(crate::appearance::EPIC_COLORS_CACHE, &self.epic_colors);
+                            self.cache_writer.put(
+                                crate::appearance::EPIC_COLORS_CACHE.into(),
+                                self.epic_colors.clone(),
+                            );
                         }
                         let keys = workspace.keys();
                         if full {
@@ -1018,9 +1138,7 @@ impl App {
                         if let Some(old) = &self.workspace {
                             for ticket in &workspace.items {
                                 if old
-                                    .items
-                                    .iter()
-                                    .find(|t| t.key == ticket.key)
+                                    .ticket(&ticket.key)
                                     .is_none_or(|t| t.fields != ticket.fields)
                                 {
                                     self.dirty_details.insert(ticket.key.clone());
@@ -1040,8 +1158,10 @@ impl App {
                             self.selection_due = Some(Instant::now());
                         }
                         self.save_dirty();
-                        let _ = self.cache.put(&self.workspace_key(), &workspace);
-                        self.prefetch = workspace.items.iter().map(|t| t.key.clone()).collect();
+                        if self.cache_writer.enabled() {
+                            self.cache_writer
+                                .put(self.workspace_key(), workspace.cache_snapshot());
+                        }
                         for ticket in &workspace.items {
                             if let Some((cached, _)) = self.details.get_mut(&ticket.key) {
                                 for field in [
@@ -1067,8 +1187,13 @@ impl App {
                         self.workspace = Some(workspace);
                         self.items_are_workspace = false;
                         self.apply_local();
+                        self.queue_nearby_details();
                         self.refresh_filter_lists();
                         self.doc_dirty = true;
+                        if let Some(elapsed) = elapsed {
+                            self.status
+                                .push_str(&format!(" · refreshed in {elapsed:.1}s"));
+                        }
                     }
                     Err(e) => {
                         self.prefetch.clear();
@@ -1103,18 +1228,30 @@ impl App {
                 };
                 match result {
                     Ok(ticket) => {
+                        if self
+                            .last_click
+                            .as_ref()
+                            .is_some_and(|c| c.hit.source == key)
+                        {
+                            self.reset_click();
+                        }
+                        self.filter_hits.clear();
                         let selected_key = self.selected_ticket().map(|t| t.key.clone());
                         if self.status_colors.register([&ticket]) {
-                            let _ = self
-                                .cache
-                                .put(crate::appearance::STATUS_COLORS_CACHE, &self.status_colors);
+                            self.cache_writer.put(
+                                crate::appearance::STATUS_COLORS_CACHE.into(),
+                                self.status_colors.clone(),
+                            );
                         }
                         if self.epic_colors.register([&ticket]) {
-                            let _ = self
-                                .cache
-                                .put(crate::appearance::EPIC_COLORS_CACHE, &self.epic_colors);
+                            self.cache_writer.put(
+                                crate::appearance::EPIC_COLORS_CACHE.into(),
+                                self.epic_colors.clone(),
+                            );
                         }
-                        let _ = self.cache.put(&full_cache_key(&key), &ticket);
+                        if self.cache_writer.enabled() {
+                            self.cache_writer.put(full_cache_key(&key), ticket.clone());
+                        }
                         self.dirty_details.remove(&key);
                         self.full_ready.insert(key.clone());
                         self.save_dirty();
@@ -1178,7 +1315,7 @@ impl App {
                             ticket.fields["comment"] =
                                 serde_json::json!({"total":comments.len(),"comments":comments});
                             *time = config::now();
-                            let _ = self.cache.put(&full_cache_key(&key), ticket);
+                            self.cache_writer.put(full_cache_key(&key), ticket.clone());
                             self.doc_dirty = true
                         }
                         self.notice("All comments loaded", false)
@@ -1190,8 +1327,8 @@ impl App {
                 self.writing = false;
                 self.details.remove(&action.key);
                 self.doc_dirty = true;
-                self.cache.remove(&format!("detail:{}", action.key));
-                self.cache.remove(&full_cache_key(&action.key));
+                self.cache_writer.remove(format!("detail:{}", action.key));
+                self.cache_writer.remove(full_cache_key(&action.key));
                 *self.detail_revisions.entry(action.key.clone()).or_default() += 1;
                 self.pending.remove(&action.key);
                 self.full_ready.remove(&action.key);
@@ -1199,8 +1336,8 @@ impl App {
                 self.save_dirty();
                 self.generation += 1;
                 self.syncing = false;
-                self.cache
-                    .remove(&format!("list:{}:{}", self.limit, self.last_query));
+                self.cache_writer
+                    .remove(format!("list:{}:{}", self.limit, self.last_query));
                 match result {
                     Ok(()) => {
                         // Every confirmed successful write uses the same full,
@@ -1425,7 +1562,10 @@ impl App {
         } else {
             self.remote_search.clone()
         };
+        self.reset_click();
+        self.cancel_background_reads();
         self.view_filters[self.view] = ViewFilters {
+            epic: self.epic_filter.clone(),
             assignee: self.assignee_filter.clone(),
             status: self.status_filter.clone(),
             text,
@@ -1434,6 +1574,7 @@ impl App {
         self.view = index;
         self.assignee_filter = filters.assignee;
         self.status_filter = filters.status;
+        self.epic_filter = filters.epic;
         self.remote_search = filters.text;
         self.selected = 0;
         self.visible.clear();
@@ -1510,7 +1651,42 @@ impl App {
             self.search_due = Some(Instant::now() + Duration::from_millis(300));
         }
     }
+    fn reset_click(&mut self) {
+        self.last_click = None;
+        self.pending_target = None;
+    }
+    fn apply_field_filter(&mut self, target: crate::interaction::FilterTarget, source: String) {
+        use crate::interaction::FilterTarget;
+        if self.search_mode == SearchMode::Text {
+            self.remote_search = self.search.clone();
+        }
+        if self.lookup_active {
+            self.lookup_active = false;
+            self.items_are_workspace = false;
+            self.search = self.remote_search.clone();
+            self.local_search = self.remote_search.clone();
+        }
+        self.search_mode = SearchMode::None;
+        self.search_due = None;
+        self.lookup_generation += 1;
+        match target {
+            FilterTarget::Assignee { value, .. } => self.assignee_filter = value.into(),
+            FilterTarget::Status(value) => self.status_filter = value.into(),
+            FilterTarget::Epic(epic) => self.epic_filter = Some(epic),
+        }
+        self.focus = Focus::Tickets;
+        self.apply_local();
+        self.restore_sort_selection(Some(source));
+        self.select_current();
+        self.queue_nearby_details();
+        self.filter_hits.clear();
+    }
     pub fn event(&mut self, event: Event) -> Vec<Job> {
+        if matches!(&event, Event::Key(_) | Event::Paste(_) | Event::Resize(..))
+            || matches!(&event,Event::Mouse(m) if matches!(m.kind,MouseEventKind::ScrollUp|MouseEventKind::ScrollDown|MouseEventKind::Down(MouseButton::Right)|MouseEventKind::Down(MouseButton::Middle)))
+        {
+            self.reset_click();
+        }
         match event {
             Event::Paste(text) => {
                 let text = data::safe(&text);
@@ -1618,6 +1794,17 @@ impl App {
                 }
                 match key.code {
                     KeyCode::Char('x') => return self.clear_filters(),
+                    KeyCode::Char('v')
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
+                        let key = self.selected_ticket().map(|t| t.key.clone());
+                        self.epic_filter = None;
+                        self.apply_local();
+                        self.restore_sort_selection(key);
+                        self.select_current();
+                    }
                     KeyCode::Char('q') => {
                         if self.writing {
                             self.notice("Wait for the in-flight update before quitting", true)
@@ -1871,6 +2058,54 @@ impl App {
                 }
                 match mouse.kind {
                     MouseEventKind::Down(MouseButton::Left) => {
+                        let hit = self
+                            .filter_hits
+                            .iter()
+                            .find(|h| contains(h.rect, mouse.column, mouse.row))
+                            .cloned()
+                            .filter(|h| {
+                                if h.detail {
+                                    h.source == self.detail_key && !self.doc_dirty
+                                } else {
+                                    let row = self.table.offset()
+                                        + ((mouse.row.saturating_sub(self.tickets_rect.y + 2))
+                                            / self.row_height.max(1))
+                                            as usize;
+                                    self.visible
+                                        .get(row)
+                                        .is_some_and(|i| self.items[*i].key == h.source)
+                                }
+                            });
+                        if let Some(hit) = hit {
+                            if self.last_click.as_ref().is_some_and(|click| {
+                                click.follows(&hit, self.view, mouse.column, mouse.row)
+                            }) {
+                                self.reset_click();
+                                self.apply_field_filter(hit.target, hit.source);
+                                return vec![];
+                            }
+                            self.reset_click();
+                            self.last_click = Some(crate::interaction::Click {
+                                at: Instant::now(),
+                                view: self.view,
+                                position: (mouse.column, mouse.row),
+                                hit: hit.clone(),
+                            });
+                            if hit.detail {
+                                self.focus = Focus::Ticket;
+                                let row =
+                                    self.scroll + (mouse.row - self.ticket_rect.y - 1) as usize;
+                                if let Some(target) = self.document.get(row).and_then(|r| {
+                                    r.target_at(mouse.column - self.ticket_rect.x - 1)
+                                }) {
+                                    self.pending_target =
+                                        Some((Instant::now(), hit.source, target));
+                                    return vec![];
+                                }
+                            }
+                        } else {
+                            self.reset_click();
+                        }
                         for (rect, index) in self.tabs.clone() {
                             if contains(rect, mouse.column, mouse.row) {
                                 return self.switch_view(index);
@@ -1923,6 +2158,9 @@ impl App {
                                 self.selected = n;
                                 self.table.select(Some(n));
                                 self.focus = Focus::Tickets;
+                                if self.search_mode == SearchMode::Text {
+                                    self.remote_search = self.search.clone();
+                                }
                                 self.search_mode = SearchMode::None;
                                 self.search_due = None;
                                 self.lookup_generation += 1;
@@ -2114,10 +2352,14 @@ impl App {
                 .unwrap_or(&self.items)
                 .iter()
                 .map(|t| t.user("assignee"))
-                .find(|u| {
-                    [&u.id, &u.email, &u.login]
+                .find(|u| match value.split_once(':') {
+                    Some(("@id", v)) => u.id.eq_ignore_ascii_case(v),
+                    Some(("@email", v)) => u.email.eq_ignore_ascii_case(v),
+                    Some(("@login", v)) => u.login.eq_ignore_ascii_case(v),
+                    Some(("@name", v)) => u.name.eq_ignore_ascii_case(v),
+                    _ => [&u.id, &u.email, &u.login]
                         .iter()
-                        .any(|s| s.eq_ignore_ascii_case(value))
+                        .any(|s| s.eq_ignore_ascii_case(value)),
                 })
                 .map(|u| u.label())
                 .unwrap_or_else(|| value.into()),
@@ -2265,7 +2507,20 @@ impl App {
                         u.label(),
                         if u.email.is_empty() { &id } else { &u.email }
                     ),
-                    value: id,
+                    value: if filter {
+                        crate::interaction::FilterTarget::assignee(t)
+                            .and_then(|target| match target {
+                                crate::interaction::FilterTarget::Assignee { value, .. }
+                                    if self.assignee_filter.contains(&value) =>
+                                {
+                                    Some(value)
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or(id)
+                    } else {
+                        id
+                    },
                     target: None,
                 })
             }
@@ -3015,7 +3270,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Mouse opens detail links. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each by default. E toggles local Rank/Epic sorting for this view: parent epic alphabetically, no epic last, Rank within groups. Sort is cached, never rebuilt per search keystroke; changing scope resets it.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · s status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / S or dropdowns open the same popup (T remains an alias). Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels. Every successful update automatically fully refreshes all four views, retaining their filters.\n--read-only blocks changes. ! shows safe error details; raw CLI output is suppressed.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Double-click an assignee/status/epic label in rows or ticket metadata to filter that field only (other filters remain). Exact IDs/epic keys, current view only. v clears Epic; F6 clears all current filters. Single detail-epic links wait 350 ms for a double-click. Mouse opens other detail links immediately. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each by default. E toggles local Rank/Epic sorting for this view: parent epic alphabetically, no epic last, Rank within groups. Sort is cached, never rebuilt per search keystroke; changing scope resets it.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · s status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / S or dropdowns open the same popup (T remains an alias). Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels. Every successful update automatically fully refreshes all four views, retaining their filters.\n--read-only blocks changes. ! shows safe error details; raw CLI output is suppressed.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Phase and elapsed time are shown. Details warm only near selection with bounded concurrency; obsolete background reads are cancelled. Cache writes run off the UI thread. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -3242,6 +3497,151 @@ mod tests {
         a.event(key('s', KeyModifiers::NONE));
         assert_eq!(a.search, "s");
         assert!(a.dialog.is_none());
+    }
+    #[test]
+    fn field_filters_intersect_other_fields_are_per_view_and_clear_without_changing_scope_or_sort()
+    {
+        use crate::interaction::{EpicFilter, FilterTarget};
+        let mut a = epic_sort_app();
+        a.event(key('E', KeyModifiers::SHIFT));
+        a.status_filter = "To Do".into();
+        a.remote_search = "synthetic".into();
+        let base = a.last_query.clone();
+        a.apply_field_filter(
+            FilterTarget::Epic(EpicFilter {
+                key: "DEV-900".into(),
+                label: "Alpha".into(),
+            }),
+            "DEV-9".into(),
+        );
+        assert_eq!(a.status_filter.single(), "To Do");
+        assert_eq!(a.remote_search, "synthetic");
+        assert_eq!(a.sort_order(), crate::sorting::Order::Epic);
+        assert_eq!(a.last_query, base);
+        a.switch_view(config::BOARD);
+        assert!(a.epic_filter.is_none());
+        a.switch_view(config::AVAILABLE);
+        assert_eq!(a.epic_filter.as_ref().unwrap().key, "DEV-900");
+        a.clear_filters();
+        assert!(a.epic_filter.is_none());
+        assert!(a.status_filter.is_empty());
+        assert_eq!(a.sort_order(), crate::sorting::Order::Epic);
+    }
+    #[test]
+    fn refresh_progress_is_generation_fenced_and_details_are_warmed_only_near_selection() {
+        let mut a = app();
+        let mut w = a.workspace.clone().unwrap();
+        let base = w.items[0].clone();
+        w.items = (0..300)
+            .map(|i| {
+                let mut t = base.clone();
+                t.key = format!("DEV-{}", 1000 + i);
+                t
+            })
+            .collect();
+        w.board = None;
+        w.reindex();
+        let jobs = a.refresh_all();
+        let Job::Sync { generation, .. } = jobs[0] else {
+            panic!()
+        };
+        a.message(Message::SyncProgress {
+            generation: generation - 1,
+            stage: crate::refresh::Stage::Tickets,
+        });
+        assert_eq!(a.refresh_stage, crate::refresh::Stage::Starting);
+        a.message(Message::SyncProgress {
+            generation,
+            stage: crate::refresh::Stage::Membership,
+        });
+        assert!(a.refresh_notice().unwrap().contains("board membership"));
+        a.message(Message::Synced {
+            generation,
+            result: Ok((w, vec![])),
+        });
+        assert!(a.refresh_notice().is_none());
+        assert!(a.status.contains("refreshed in"));
+        assert!(a.prefetch.len() <= 6);
+        for _ in 0..8 {
+            for job in a.advance() {
+                if let Job::Detail {
+                    key,
+                    lookup,
+                    revision,
+                    background,
+                    ..
+                } = job
+                {
+                    let t = a.workspace.as_ref().unwrap().ticket(&key).unwrap().clone();
+                    a.message(Message::Detail {
+                        key,
+                        lookup,
+                        revision,
+                        background,
+                        result: Ok(t),
+                    });
+                }
+            }
+        }
+        assert!(a.full_ready.len() < 12);
+        assert!(a.dirty_details.len() > 280);
+    }
+    #[test]
+    fn full_refresh_cancels_obsolete_background_reads_and_late_completions_cannot_damage_new_jobs()
+    {
+        let mut a = app();
+        a.dirty_details = a.workspace.as_ref().unwrap().keys();
+        a.prefetch = VecDeque::from(["DEV-103".into()]);
+        a.selection_due = None;
+        let jobs = a.advance();
+        let Job::Detail {
+            key,
+            revision,
+            cancel: Some(cancel),
+            ..
+        } = &jobs[0]
+        else {
+            panic!()
+        };
+        let (key, revision) = (key.clone(), *revision);
+        assert!(!*cancel.borrow());
+        a.refresh_all();
+        assert!(*cancel.borrow());
+        assert!(a.background.is_empty());
+        assert!(!a.pending.contains(&key));
+        a.pending.insert(key.clone());
+        a.message(Message::Detail {
+            key: key.clone(),
+            lookup: None,
+            revision,
+            background: true,
+            result: Err(anyhow::anyhow!("cancelled")),
+        });
+        assert!(a.pending.contains(&key));
+    }
+    #[test]
+    fn delayed_epic_link_is_cancelled_by_a_second_click_other_input_or_navigation() {
+        let mut a = app();
+        let source = a.detail_key.clone();
+        a.pending_target = Some((
+            Instant::now() - Duration::from_millis(400),
+            source,
+            Target::ticket("Epic", "DEV-900"),
+        ));
+        let jobs = a.advance();
+        assert_eq!(a.detail_key, "DEV-900");
+        assert!(
+            jobs.iter()
+                .any(|j| matches!(j,Job::Detail{key,..} if key=="DEV-900"))
+        );
+        a.pending_target = Some((
+            Instant::now() - Duration::from_millis(400),
+            a.detail_key.clone(),
+            Target::ticket("Other", "DEV-901"),
+        ));
+        a.event(key('j', KeyModifiers::NONE));
+        a.advance();
+        assert_ne!(a.detail_key, "DEV-901");
     }
     #[test]
     fn copy_on_click_opt_out_retains_selection_and_does_not_touch_clipboard() {
@@ -3600,6 +4000,7 @@ mod tests {
         a.cache = Cache {
             directory: Some(dir.path().to_owned()),
         };
+        a.cache_writer = crate::cache_writer::CacheWriter::new(a.cache.clone());
         let items = data::demo_tickets();
         a.message(Message::Synced {
             generation: a.generation,
@@ -3618,6 +4019,7 @@ mod tests {
         let list = crate::appearance::ticket_summary_with_style(t, 80, color);
         let detail = markdown::ticket_document_with_styles(t, 80, a.status_colors.style(t), color);
         assert_eq!(list.spans[0].style.bg, detail[0].chunks[0].style.bg);
+        a.cache_writer.flush();
         let restarted = App::new(
             a.backend.clone(),
             a.cache.clone(),
@@ -3650,11 +4052,13 @@ mod tests {
         a.cache = Cache {
             directory: Some(dir.path().into()),
         };
+        a.cache_writer = crate::cache_writer::CacheWriter::new(a.cache.clone());
         let w = a.workspace.clone().unwrap();
         a.message(Message::Synced {
             generation: a.generation,
             result: Ok((w, vec![])),
         });
+        a.cache_writer.flush();
         let restarted = App::new(
             a.backend.clone(),
             a.cache.clone(),
@@ -4139,11 +4543,13 @@ mod tests {
     fn automatic_postwrite_refresh_preserves_independent_filters_and_reading_state() {
         let mut a = app();
         a.view_filters[config::MINE] = ViewFilters {
+            epic: None,
             assignee: "@me".into(),
             status: "In Progress".into(),
             text: "terminal".into(),
         };
         a.view_filters[config::AVAILABLE] = ViewFilters {
+            epic: None,
             assignee: "unassigned".into(),
             status: "Refinement".into(),
             text: "digits".into(),
@@ -4225,6 +4631,7 @@ mod tests {
             a.cache = Cache {
                 directory: Some(dir.path().into()),
             };
+            a.cache_writer = crate::cache_writer::CacheWriter::new(a.cache.clone());
             let snapshot = a.workspace.clone().unwrap();
             for t in &snapshot.items {
                 a.cache.put(&full_cache_key(&t.key), t).unwrap();
@@ -4251,6 +4658,7 @@ mod tests {
             assert!(a.full_sync);
             assert_eq!(a.dirty_details.len(), 3);
             assert!(a.cache.exists(&full_cache_key("DEV-101")));
+            a.cache_writer.flush();
             assert_eq!(
                 a.cache
                     .get::<HashSet<String>>(&a.dirty_key())
@@ -4277,6 +4685,7 @@ mod tests {
                     lookup,
                     revision,
                     background,
+                    ..
                 } = job
                 else {
                     panic!("refresh must not write")

@@ -388,13 +388,29 @@ impl Backend {
         mine: &str,
         changed: Option<&str>,
     ) -> Result<(crate::workspace::Workspace, Vec<String>)> {
+        self.workspace_progress(base, mine, changed, |_| {}).await
+    }
+    pub async fn workspace_progress(
+        &self,
+        base: &str,
+        mine: &str,
+        changed: Option<&str>,
+        report: impl Fn(crate::refresh::Stage) + Send + Sync,
+    ) -> Result<(crate::workspace::Workspace, Vec<String>)> {
+        use crate::refresh::Stage;
         let api = self.api.read().unwrap().clone();
         if let Some(api) = api {
-            // Let acli refresh its own OAuth token before reading the keyring.
-            self.boards("").await?;
+            // Only OAuth needs acli to refresh its token. API-token requests
+            // still validate the pinned profile/account/site on every operation.
+            if api.uses_oauth() {
+                report(Stage::Authentication);
+                self.boards("").await?;
+            }
+            report(Stage::Fields);
             let fields = self.estimate_fields().await;
+            report(Stage::Membership);
             let (mut workspace, mine, changes) = tokio::try_join!(
-                api.workspace(base, &fields),
+                api.workspace_progress(base, &fields, &report),
                 self.dataset(mine, true),
                 async {
                     match changed {
@@ -406,11 +422,13 @@ impl Backend {
             if !crate::workspace::valid_items(&mine) || !crate::workspace::valid_items(&changes) {
                 bail!("CLI returned invalid keys")
             }
+            report(Stage::Indexing);
             workspace.mine = mine.into_iter().map(|t| t.key).collect();
             workspace.encoded_bytes =
                 crate::limits::size(&workspace, crate::limits::WORKSPACE_BYTES)?;
             return Ok((workspace, changes.into_iter().map(|t| t.key).collect()));
         }
+        report(Stage::Tickets);
         let (items, mine, changes) =
             tokio::try_join!(self.dataset(base, false), self.dataset(mine, true), async {
                 match changed {
@@ -459,6 +477,7 @@ impl Backend {
             synced_at: crate::config::now(),
             ..Default::default()
         };
+        report(Stage::Indexing);
         crate::limits::size(&workspace, crate::limits::WORKSPACE_BYTES)?;
         workspace.reindex();
         Ok((workspace, changes.into_iter().map(|t| t.key).collect()))

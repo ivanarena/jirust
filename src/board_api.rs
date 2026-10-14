@@ -353,7 +353,7 @@ impl BoardApi {
             self.profile.cloud_id, self.profile.account_id, self.id
         )
     }
-    fn uses_oauth(&self) -> bool {
+    pub(crate) fn uses_oauth(&self) -> bool {
         self.credentials.is_none() && self.profile.is_oauth()
     }
     async fn credential(&self) -> Result<String> {
@@ -529,6 +529,15 @@ impl BoardApi {
         Ok(all)
     }
     pub async fn workspace(&self, scope: &str, estimate_fields: &[String]) -> Result<Workspace> {
+        self.workspace_progress(scope, estimate_fields, &|_| {})
+            .await
+    }
+    pub async fn workspace_progress(
+        &self,
+        scope: &str,
+        estimate_fields: &[String],
+        report: &(impl Fn(crate::refresh::Stage) + Send + Sync),
+    ) -> Result<Workspace> {
         let (base, _) = crate::config::split_order(scope);
         let jql = format!("({base}) ORDER BY Rank ASC");
         // The public /board/issue resource is the whole saved-filter scope,
@@ -557,6 +566,7 @@ impl BoardApi {
         let board_query = membership_query(&model, &plan, base)?;
         let board_endpoint = format!("board/{}/issue", self.id);
         let backlog_endpoint = format!("board/{}/backlog", self.id);
+        report(crate::refresh::Stage::Tickets);
         let (board, backlog) = tokio::try_join!(
             async {
                 match board_query {

@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "928e5906de43cd507c9bbc3019c8a43115222ca8c4cc08748c6fcf2de0a61ea3",
+  "cargo_lock_sha256": "8fd497a651d4a02fc8c73dbdc98c0ba7eccc7664537db90ae1106290bcbcbdb5",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",

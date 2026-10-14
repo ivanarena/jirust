@@ -26,6 +26,7 @@ pub(crate) struct SearchRow {
     pub position: usize,
     encoded_bytes: usize,
     status: String,
+    epic: Option<String>,
     assignees: Vec<String>,
     unassigned: bool,
     backlog_ticket: bool,
@@ -88,6 +89,11 @@ impl SearchRow {
             encoded_bytes: crate::limits::size(ticket, crate::limits::WORKSPACE_BYTES)
                 .unwrap_or(crate::limits::WORKSPACE_BYTES + 1),
             status: ticket.status().to_lowercase(),
+            epic: if ticket.is_epic() {
+                Some(ticket.key.to_lowercase())
+            } else {
+                ticket.parent_epic().map(|p| p.key.to_lowercase())
+            },
             assignees: assignees.into_iter().map(|s| s.to_lowercase()).collect(),
             unassigned: ticket.fields["assignee"].is_null(),
             backlog_ticket: ticket.backlog_ticket(),
@@ -112,7 +118,21 @@ impl SearchRow {
             && !assignee.iter().any(|value| match value.as_str() {
                 "@me" => mine,
                 "unassigned" => self.unassigned,
-                value => self.assignees.iter().any(|s| s == value),
+                value => {
+                    if let Some((tag, value)) = value.split_once(':') {
+                        let index = match tag {
+                            "@id" => Some(0),
+                            "@name" => Some(1),
+                            "@email" => Some(2),
+                            "@login" => Some(3),
+                            _ => None,
+                        };
+                        if let Some(index) = index {
+                            return !value.is_empty() && self.assignees[index] == value;
+                        }
+                    }
+                    self.assignees.iter().any(|s| s == value)
+                }
             })
         {
             return false;
@@ -122,6 +142,17 @@ impl SearchRow {
     }
 }
 impl Workspace {
+    /// Copy only persisted fields, not the large derived search index.
+    pub fn cache_snapshot(&self) -> Self {
+        Self {
+            items: self.items.clone(),
+            mine: self.mine.clone(),
+            board: self.board.clone(),
+            complete: self.complete,
+            synced_at: self.synced_at,
+            ..Default::default()
+        }
+    }
     pub fn reindex(&mut self) {
         self.index = self
             .items
@@ -137,6 +168,14 @@ impl Workspace {
             .get(key)
             .and_then(|row| self.items.get(row.position))
             .or_else(|| self.items.iter().find(|t| t.key == key))
+    }
+    pub fn matches_epic(&self, t: &Ticket, key: Option<&str>) -> bool {
+        key.is_none_or(|key| {
+            self.index
+                .get(&t.key)
+                .and_then(|r| r.epic.as_deref())
+                .is_some_and(|epic| epic.eq_ignore_ascii_case(key))
+        })
     }
     pub fn matches_words(
         &self,

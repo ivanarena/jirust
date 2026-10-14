@@ -435,6 +435,8 @@ async fn main() -> Result<()> {
     }
     drop(terminal);
     drop(guard);
+    let cache_writer = app.cache_writer.clone();
+    let _ = tokio::task::spawn_blocking(move || cache_writer.flush()).await;
     Ok(())
 }
 fn attachment_root(kind: Kind, scope: &str, explicit: Option<PathBuf>) -> Result<PathBuf> {
@@ -470,7 +472,11 @@ fn dispatch(
                     changed,
                 } => Message::Synced {
                     generation,
-                    result: backend.workspace(&base, &mine, changed.as_deref()).await,
+                    result: backend
+                        .workspace_progress(&base, &mine, changed.as_deref(), |stage| {
+                            let _ = tx.send(Message::SyncProgress { generation, stage });
+                        })
+                        .await,
                 },
 
                 Job::Detail {
@@ -478,12 +484,13 @@ fn dispatch(
                     lookup,
                     revision,
                     background,
+                    cancel,
                 } => Message::Detail {
                     key: key.clone(),
                     lookup,
                     revision,
                     background,
-                    result: backend.get(&key).await,
+                    result: detail_read(&backend, &key, cancel).await,
                 },
                 Job::Comments(key) => Message::Comments {
                     key: key.clone(),
@@ -603,6 +610,18 @@ fn dispatch(
             };
             let _ = tx.send(message);
         });
+    }
+}
+async fn detail_read(
+    backend: &Backend,
+    key: &str,
+    cancel: Option<tokio::sync::watch::Receiver<bool>>,
+) -> Result<data::Ticket> {
+    if let Some(mut cancel) = cancel {
+        anyhow::ensure!(!*cancel.borrow(), "Background read cancelled");
+        tokio::select! { result=backend.get(key)=>result, _=cancel.changed()=>Err(anyhow::anyhow!("Background read cancelled")) }
+    } else {
+        backend.get(key).await
     }
 }
 static IMAGE_DECODERS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
@@ -730,6 +749,40 @@ mod tests {
             Options::command()
                 .try_get_matches_from(["jirust", "move", "DEV-102", "DEV-103", "--to", "board"])
                 .is_err()
+        );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_background_detail_releases_the_cli_slot_and_foreground_reads_still_complete()
+     {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("fake-acli");
+        std::fs::write(&p,"#!/bin/sh\nif [ \"$4\" = DEV-101 ]; then exec /bin/sleep 10; fi\nprintf '%s' '{\"key\":\"DEV-103\",\"fields\":{\"summary\":\"Synthetic\"}}'\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let backend = Backend::new("acli", Some(p)).unwrap();
+        let (cancel, rx) = tokio::sync::watch::channel(false);
+        let worker = backend.clone();
+        let read = tokio::spawn(async move { detail_read(&worker, "DEV-101", Some(rx)).await });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        cancel.send_replace(true);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), read)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                detail_read(&backend, "DEV-103", None)
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .key,
+            "DEV-103"
         );
     }
     #[test]
