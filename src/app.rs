@@ -201,6 +201,8 @@ pub struct App {
     pub full_sync: bool,
     pub refresh_pending: bool,
     pub next_sync: Option<Instant>,
+    pub refresh_interval: Duration,
+    pub refresh_retry: Duration,
     pub dirty: bool,
     pub prefetch: VecDeque<String>,
     pub background: HashSet<(String, u64)>,
@@ -316,6 +318,8 @@ impl App {
             full_sync: false,
             refresh_pending: false,
             next_sync: None,
+            refresh_interval: Duration::from_secs(60),
+            refresh_retry: Duration::from_secs(120),
             dirty: false,
             prefetch: VecDeque::new(),
             background: HashSet::new(),
@@ -523,6 +527,7 @@ impl App {
             // Apply the same inventory to older cached snapshots immediately.
             workspace.items.retain(Ticket::backlog_ticket);
             workspace.reindex();
+            self.backend.decorate_workspace(workspace);
             if self.status_colors.register(&workspace.items) {
                 self.cache_writer.put(
                     crate::appearance::STATUS_COLORS_CACHE.into(),
@@ -692,7 +697,7 @@ impl App {
         self.refresh_stage = crate::refresh::Stage::Starting;
         self.syncing = true;
         self.loading = self.workspace.is_none();
-        self.next_sync = Some(Instant::now() + Duration::from_secs(60));
+        self.next_sync = Some(Instant::now() + self.refresh_interval);
         vec![Job::Sync {
             generation: self.generation,
             base: self.last_query.clone(),
@@ -840,6 +845,7 @@ impl App {
                     t.fields["parent"] = parent.clone();
                 }
             }
+            self.backend.decorate_ticket(&mut t);
             if self.status_colors.register([&t]) {
                 self.cache_writer.put(
                     crate::appearance::STATUS_COLORS_CACHE.into(),
@@ -1113,6 +1119,7 @@ impl App {
                 self.filter_hits.clear();
                 match result {
                     Ok((mut workspace, changed)) => {
+                        self.backend.decorate_workspace(&mut workspace);
                         let count = workspace.items.len();
                         workspace.items.retain(Ticket::backlog_ticket);
                         if workspace.index.is_empty() || count != workspace.items.len() {
@@ -1201,7 +1208,7 @@ impl App {
                             format!("Background sync failed; cached tickets retained: {e}"),
                             true,
                         );
-                        self.next_sync = Some(Instant::now() + Duration::from_secs(120));
+                        self.next_sync = Some(Instant::now() + self.refresh_retry);
                     }
                 }
                 if self.refresh_pending {
@@ -1227,7 +1234,8 @@ impl App {
                     self.loading = false
                 };
                 match result {
-                    Ok(ticket) => {
+                    Ok(mut ticket) => {
+                        self.backend.decorate_ticket(&mut ticket);
                         if self
                             .last_click
                             .as_ref()
@@ -3526,6 +3534,23 @@ mod tests {
         assert!(a.epic_filter.is_none());
         assert!(a.status_filter.is_empty());
         assert_eq!(a.sort_order(), crate::sorting::Order::Epic);
+    }
+    #[test]
+    fn configured_polling_intervals_are_used_for_normal_refresh_and_failure_retry() {
+        let mut a = app();
+        a.refresh_interval = Duration::from_secs(300);
+        a.refresh_retry = Duration::from_secs(600);
+        let before = Instant::now();
+        let jobs = a.refresh_all();
+        let Job::Sync { generation, .. } = jobs[0] else {
+            panic!("sync required")
+        };
+        assert!(a.next_sync.unwrap() >= before + Duration::from_secs(300));
+        a.message(Message::Synced {
+            generation,
+            result: Err(anyhow::anyhow!("Synthetic offline")),
+        });
+        assert!(a.next_sync.unwrap() >= before + Duration::from_secs(600));
     }
     #[test]
     fn refresh_progress_is_generation_fenced_and_details_are_warmed_only_near_selection() {

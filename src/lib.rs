@@ -13,6 +13,7 @@ pub mod images;
 pub mod input;
 pub mod interaction;
 pub mod limits;
+pub mod links;
 pub mod markdown;
 pub mod movement;
 mod private_fs;

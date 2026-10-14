@@ -17,6 +17,9 @@ pub struct Ticket {
     pub key: String,
     #[serde(default, rename = "self", deserialize_with = "null_default")]
     pub self_url: String,
+    /// Session-only browser link base. Never persisted or used by HTTP/auth code.
+    #[serde(skip)]
+    pub browse_base: Option<std::sync::Arc<crate::links::BrowseBase>>,
     #[serde(default)]
     pub fields: Value,
     #[serde(default)]
@@ -161,16 +164,11 @@ impl Ticket {
         if !valid_key(&self.key) {
             return None;
         }
-        let mut url = Url::parse(&self.self_url).ok()?;
-        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-            return None;
+        if let Some(base) = &self.browse_base {
+            base.ticket(&self.key)
+        } else {
+            crate::links::BrowseBase::from_issue_self(&self.self_url)?.ticket(&self.key)
         }
-        let _ = url.set_username("");
-        let _ = url.set_password(None);
-        url.set_path(&format!("/browse/{}", self.key));
-        url.set_query(None);
-        url.set_fragment(None);
-        Some(url.to_string())
     }
     pub fn attachments(&self) -> Vec<Attachment> {
         self.fields["attachment"]
@@ -281,15 +279,14 @@ impl Ticket {
         out
     }
     pub fn url_target(&self, label: &str, url: &str) -> Target {
-        if let (Ok(u), Ok(site)) = (Url::parse(url), Url::parse(&self.self_url))
-            && u.host_str() == site.host_str()
-            && u.port_or_known_default() == site.port_or_known_default()
-            && let Some(key) = u.path().strip_prefix("/browse/")
+        let inferred = crate::links::BrowseBase::from_issue_self(&self.self_url);
+        if let Some(key) = self
+            .browse_base
+            .as_deref()
+            .and_then(|base| base.issue_key(url))
+            .or_else(|| inferred.as_ref().and_then(|base| base.issue_key(url)))
         {
-            let key = key.trim_end_matches('/');
-            if valid_key(key) {
-                return Target::ticket(label, key);
-            }
+            return Target::ticket(label, &key);
         }
         Target {
             label: safe(label),

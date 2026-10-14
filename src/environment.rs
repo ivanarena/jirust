@@ -2,7 +2,6 @@
 use anyhow::{Context, Result, ensure};
 use std::{
     collections::BTreeMap,
-    fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -17,32 +16,34 @@ pub struct Credentials {
     pub(crate) email: String,
     pub(crate) token: String,
 }
+fn selected_file(
+    explicit: Option<&Path>,
+    profile: Option<PathBuf>,
+    local: &Path,
+    user: impl FnOnce() -> Result<PathBuf>,
+) -> Result<Option<PathBuf>> {
+    if let Some(path) = explicit.map(Path::to_owned).or(profile) {
+        return Ok(Some(path));
+    }
+    if std::fs::symlink_metadata(local).is_ok() {
+        return Ok(Some(local.to_owned()));
+    }
+    let user = user()?;
+    Ok(std::fs::symlink_metadata(&user).is_ok().then_some(user))
+}
 impl Environment {
     pub fn load(explicit: Option<&Path>) -> Result<Self> {
-        let path = match explicit {
-            Some(path) => Some(path.to_owned()),
-            None if Path::new(".env").exists() => Some(PathBuf::from(".env")),
-            None => Some(crate::config::config_directory()?.join(".env")).filter(|p| p.exists()),
-        };
+        let profile = std::env::var_os("JIRUST_ENV_FILE")
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+        // Do not even resolve/migrate the personal config directory for an explicit profile.
+        let path = selected_file(explicit, profile, Path::new(".env"), || {
+            Ok(crate::config::config_directory()?.join(".env"))
+        })?;
         let Some(path) = path else {
             return Ok(Self::default());
         };
-        let metadata = fs::symlink_metadata(&path).context("Cannot read local environment file")?;
-        ensure!(
-            metadata.is_file() && !metadata.file_type().is_symlink(),
-            "Environment file must be a regular file, not a symlink"
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            ensure!(
-                metadata.permissions().mode() & 0o077 == 0,
-                "Environment file must be private; run chmod 600 on it"
-            );
-        }
-        ensure!(metadata.len() <= 65536, "Environment file exceeds 64 KiB");
-        let bytes = fs::read(&path).context("Cannot read local environment file")?;
-        ensure!(bytes.len() <= 65536, "Environment file exceeds 64 KiB");
+        let bytes=crate::private_fs::read_environment(&path,65536).context("Cannot read private environment file; require an owned regular 0600 file, no symlink/hardlink, at most 64 KiB")?;
         let values = dotenvy::from_read_iter(bytes.as_slice())
             .collect::<std::result::Result<BTreeMap<_, _>, _>>()
             .map_err(|_| anyhow::anyhow!("Invalid environment file syntax (values redacted)"))?;
@@ -124,6 +125,7 @@ fn cloud_site(value: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     fn env(values: &[(&str, &str)]) -> Environment {
         Environment {
             values: values
@@ -131,6 +133,59 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
         }
+    }
+    #[test]
+    fn profile_selection_is_explicit_then_exported_then_local_then_user() {
+        let d = tempfile::tempdir().unwrap();
+        let local = d.path().join(".env");
+        let user = d.path().join("user.env");
+        let profile = d.path().join("profile.env");
+        let explicit = d.path().join("explicit.env");
+        fs::write(&local, b"").unwrap();
+        fs::write(&user, b"").unwrap();
+        assert_eq!(
+            selected_file(Some(&explicit), Some(profile.clone()), &local, || panic!(
+                "must not resolve personal configuration"
+            ))
+            .unwrap(),
+            Some(explicit)
+        );
+        assert_eq!(
+            selected_file(None, Some(profile.clone()), &local, || panic!(
+                "must not resolve personal configuration"
+            ))
+            .unwrap(),
+            Some(profile)
+        );
+        assert_eq!(
+            selected_file(None, None, &local, || panic!(
+                "must not resolve personal configuration"
+            ))
+            .unwrap(),
+            Some(local.clone())
+        );
+        fs::remove_file(local).unwrap();
+        assert_eq!(
+            selected_file(None, None, &d.path().join("missing"), || Ok(user.clone())).unwrap(),
+            Some(user)
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn environment_reader_rejects_symlinks_hardlinks_and_oversized_files() {
+        use std::io::Write;
+        let d = tempfile::tempdir().unwrap();
+        let mut f = tempfile::NamedTempFile::new_in(d.path()).unwrap();
+        writeln!(f, "TEST_SECRET=synthetic").unwrap();
+        let link = f.path().with_extension("link");
+        std::os::unix::fs::symlink(f.path(), &link).unwrap();
+        assert!(Environment::load(Some(&link)).is_err());
+        fs::remove_file(&link).unwrap();
+        fs::hard_link(f.path(), &link).unwrap();
+        assert!(Environment::load(Some(f.path())).is_err());
+        fs::remove_file(&link).unwrap();
+        f.as_file_mut().set_len(65537).unwrap();
+        assert!(Environment::load(Some(f.path())).is_err());
     }
     #[test]
     fn local_credentials_validate_origin_and_never_debug_values() {
@@ -187,7 +242,14 @@ mod tests {
     #[test]
     fn private_file_loads_without_changing_process_environment() {
         use std::io::Write;
-        let mut f = tempfile::NamedTempFile::new().unwrap();
+        let d = tempfile::tempdir().unwrap();
+        // A private file in a normal public-readable project directory is valid.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(d.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut f = tempfile::NamedTempFile::new_in(d.path()).unwrap();
         writeln!(
             f,
             "TEST_JIRA_TUI_LOCAL_ONLY=synthetic\nTEST_QUOTED='a value'"
@@ -206,7 +268,8 @@ mod tests {
     #[test]
     fn malformed_file_does_not_include_secret_line_in_error() {
         use std::io::Write;
-        let mut f = tempfile::NamedTempFile::new().unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let mut f = tempfile::NamedTempFile::new_in(d.path()).unwrap();
         writeln!(f, "TEST_SECRET='TOP_SECRET").unwrap();
         let error = Environment::load(Some(f.path())).err().unwrap().to_string();
         assert!(!error.contains("TOP_SECRET"));

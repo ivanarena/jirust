@@ -95,6 +95,44 @@ pub(crate) fn read(path: &Path, limit: usize) -> Result<Vec<u8>> {
         drop(dir);
         bail!("Private storage unsupported")
     };
+    bounded_read(file, limit)
+}
+/// Dotenv files may live in an ordinary project directory (e.g. 0755).
+/// Require an owned, non-writable-by-others parent and a private no-follow file;
+/// never chmod the project directory or relax cache/config directory checks.
+pub(crate) fn read_environment(path: &Path, limit: usize) -> Result<Vec<u8>> {
+    #[cfg(unix)]
+    {
+        let absolute = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        let dir: File = rustix::fs::open(
+            absolute.parent().context("Missing environment parent")?,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .context("Cannot open environment parent")?
+        .into();
+        owned(&dir, false, true)?;
+        bounded_read(
+            entry(
+                &dir,
+                absolute
+                    .file_name()
+                    .context("Missing environment filename")?,
+            )?,
+            limit,
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, limit);
+        bail!("Private storage unsupported")
+    }
+}
+fn bounded_read(file: File, limit: usize) -> Result<Vec<u8>> {
     ensure!(
         file.metadata()?.len() <= limit as u64,
         "Private file exceeds size limit"

@@ -2,7 +2,7 @@
 
 An **experimental**, lightweight **Rust + Ratatui** Jira terminal client. Two panes, no browser engine. Ordinary operations use your existing **acli** or **jira-cli**. The optional Board/Backlog integration and read-only raster attachment downloads/field metadata lookup reuse the pinned acli account's authentication.
 
-See the [support matrix](docs/SUPPORT.md), [security policy](SECURITY.md) and [release checklist](docs/RELEASING.md). Native macOS CI is not live Jira/terminal validation; exact membership is not supported for every Jira board strategy.
+See the [configuration reference](docs/CONFIGURATION.md), [support matrix](docs/SUPPORT.md), [security policy](SECURITY.md) and [release checklist](docs/RELEASING.md). Native macOS CI is not live Jira/terminal validation; exact membership is not supported for every Jira board strategy.
 
 ```text
 jirust · scope       ^1 Mine     ^2 Available     ^3 Board     ^4 Backlog
@@ -143,9 +143,9 @@ When upgrading from the old app name, **quit the old process first**, then start
 
 ### Local environment configuration
 
-Copy the synthetic `.env.example` to **`.env` in the project directory**, or to **`.env` in the platform-specific config directory above**, and set permissions to **0600**. Put the company HTTPS URL, email, API token without scopes, project/prefix, Board ID and optional settings there. The real file is plaintext: protect it and never commit/share it. The tracked template contains no credentials. Alternatively use a private `./.env`, or select an explicit file with `--env-file /path/to/.env`.
+Copy the synthetic `.env.example` to **`.env` in the project directory**, or to **`.env` in the platform-specific config directory above**, and set permissions to **0600**. Set your own project/prefix, optional Board ID and settings there. Leave the three authentication variables empty to reuse your CLI login, or supply your own HTTPS Cloud URL, email and API token without scopes together. The real file is plaintext: protect it and never commit/share it. The tracked template contains no credentials. Alternatively use a private `./.env`, or select an explicit file with `--env-file /path/to/.env`.
 
-Precedence: explicit CLI flags → exported environment variables → selected dotenv file → saved/default settings. File discovery: explicit `--env-file`, otherwise `./.env`, otherwise the user config dotenv file. File values are not exported into the process or child environments. Demo ignores local/company configuration entirely. A new explicit project does not inherit another project's environment Board/prefix/JQL.
+Precedence: explicit CLI flags → exported environment variables → selected dotenv file → saved/default settings. File discovery: explicit `--env-file`, otherwise exported `JIRUST_ENV_FILE`, otherwise `./.env`, otherwise the user config dotenv file. Explicit missing/invalid profiles fail instead of falling back to another account. File values are not exported into the process or child environments. Demo ignores local/company configuration entirely. A new explicit project does not inherit another project's environment Board/prefix/JQL.
 
 ```sh
 jirust auth                            # token piped privately to acli stdin
@@ -155,7 +155,7 @@ jirust                                # start the TUI
 
 `JIRA_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN` must be supplied together. Only HTTPS Atlassian Cloud origins are accepted; credential-bearing URLs, redirects and arbitrary hosts are rejected. The Board bridge uses the local token directly; ordinary operations still use acli authentication. `auth` explicitly updates acli's own keyring/profile from that token; startup never silently switches CLI accounts. A mismatched site/email fails closed and asks you to authenticate explicitly. Restart after editing authentication variables.
 
-Other variables: `JIRA_PROJECT`, `JIRA_PREFIX`, `JIRA_BOARD_ID`, `JIRA_JQL`, `JIRA_BACKEND`, `JIRA_CLI_BIN`, `JIRA_READ_ONLY`, `JIRA_NO_CACHE`, `JIRA_LIMIT`, `JIRA_ATTACHMENT_DIR`, `JIRA_IMAGE_PROTOCOL`. Boolean values are `true` / `false` (also `1` / `0`). Tokens are never placed in command arguments, debug output, settings JSON or caches; dotenv/auth errors redact values. Do not combine `--check` with a subcommand.
+Configure scope with `JIRA_PROJECT`, `JIRA_PREFIX`, `JIRA_BOARD_ID`, `JIRA_JQL`, `JIRA_SCOPE_NAME` and `JIRA_VIEW`. Optional `JIRA_BROWSE_URL` controls generated browser/clipboard links, including context paths, **never authenticated API requests**. Periodic reads use `JIRA_REFRESH_SECONDS` (default 60) and `JIRA_REFRESH_RETRY_SECONDS` (default 120), each 15..86400 seconds; confirmed successful writes still trigger an immediate full refresh. `JIRA_NO_IMAGES` and `JIRA_NO_COPY_ON_CLICK` control side effects; explicit `--images` / `--copy-on-click` can re-enable them. Backend/path/cache/image settings remain configurable too. See the [complete variable/flag reference and profile examples](docs/CONFIGURATION.md). Boolean values are `true` / `false` (also `1` / `0`). Tokens are never placed in command arguments, debug output, settings JSON or caches; dotenv/auth errors redact values. Do not combine `--check` with a subcommand.
 
 ### macOS setup (Intel or Apple Silicon)
 

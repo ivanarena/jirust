@@ -58,6 +58,8 @@ pub struct Backend {
     image_slots: Semaphore,
     estimate_fields: tokio::sync::OnceCell<Vec<String>>,
     credentials: std::sync::RwLock<Option<Arc<crate::environment::Credentials>>>,
+    browse_override: std::sync::RwLock<Option<Arc<crate::links::BrowseBase>>>,
+    browse_base: std::sync::RwLock<Option<Arc<crate::links::BrowseBase>>>,
 }
 impl Backend {
     pub fn new(kind: &str, binary: Option<PathBuf>) -> Result<Arc<Self>> {
@@ -94,6 +96,8 @@ impl Backend {
             image_slots: Semaphore::new(2),
             estimate_fields: tokio::sync::OnceCell::new(),
             credentials: std::sync::RwLock::new(None),
+            browse_override: std::sync::RwLock::new(None),
+            browse_base: std::sync::RwLock::new(None),
             demo: Mutex::new(
                 data::demo_tickets()
                     .into_iter()
@@ -135,6 +139,20 @@ impl Backend {
             Ok(())
         }).await.context("acli authentication timed out")?
     }
+    pub fn configure_links(&self, base: Option<crate::links::BrowseBase>) {
+        let base = base.map(Arc::new);
+        *self.browse_override.write().unwrap() = base;
+        self.resolve_browse_base();
+    }
+    pub fn decorate_ticket(&self, ticket: &mut Ticket) {
+        ticket.browse_base = self.browse_base.read().unwrap().clone();
+    }
+    pub fn decorate_workspace(&self, workspace: &mut crate::workspace::Workspace) {
+        let base = self.browse_base.read().unwrap().clone();
+        for ticket in &mut workspace.items {
+            ticket.browse_base = base.clone();
+        }
+    }
     pub fn configure_board(&self, id: Option<u64>) -> Result<()> {
         if self.kind == Kind::Demo {
             return Ok(());
@@ -159,7 +177,32 @@ impl Backend {
         } else {
             None
         };
+        self.resolve_browse_base();
         Ok(())
+    }
+    fn resolve_browse_base(&self) {
+        let base = self
+            .browse_override
+            .read()
+            .unwrap()
+            .clone()
+            .or_else(|| {
+                self.api
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|api| api.browse_base())
+                    .map(Arc::new)
+            })
+            .or_else(|| {
+                self.image_api
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|api| api.browse_base())
+                    .map(Arc::new)
+            });
+        *self.browse_base.write().unwrap() = base;
     }
     pub async fn image_bytes(
         &self,
@@ -316,6 +359,9 @@ impl Backend {
                 tickets.retain(|t| t.user("assignee").id == "alex")
             }
             tickets.truncate(limit);
+            for ticket in &mut tickets {
+                self.decorate_ticket(ticket);
+            }
             return Ok(tickets);
         }
         let args = if self.kind == Kind::Acli {
@@ -343,7 +389,11 @@ impl Backend {
                 &limit.min(100).to_string(),
             ])
         };
-        collection(&self.run(&args).await?, &["issues", "values"])
+        let mut tickets: Vec<Ticket> = collection(&self.run(&args).await?, &["issues", "values"])?;
+        for ticket in &mut tickets {
+            self.decorate_ticket(ticket);
+        }
+        Ok(tickets)
     }
     async fn dataset(&self, query: &str, keys_only: bool) -> Result<Vec<Ticket>> {
         if self.kind != Kind::Acli {
@@ -426,6 +476,7 @@ impl Backend {
             workspace.mine = mine.into_iter().map(|t| t.key).collect();
             workspace.encoded_bytes =
                 crate::limits::size(&workspace, crate::limits::WORKSPACE_BYTES)?;
+            self.decorate_workspace(&mut workspace);
             return Ok((workspace, changes.into_iter().map(|t| t.key).collect()));
         }
         report(Stage::Tickets);
@@ -480,18 +531,21 @@ impl Backend {
         report(Stage::Indexing);
         crate::limits::size(&workspace, crate::limits::WORKSPACE_BYTES)?;
         workspace.reindex();
+        self.decorate_workspace(&mut workspace);
         Ok((workspace, changes.into_iter().map(|t| t.key).collect()))
     }
     pub async fn get(&self, key: &str) -> Result<Ticket> {
         data::require_key(key)?;
         if self.kind == Kind::Demo {
-            return self
+            let mut ticket = self
                 .demo
                 .lock()
                 .await
                 .get(key)
                 .cloned()
-                .context("Demo ticket not found");
+                .context("Demo ticket not found")?;
+            self.decorate_ticket(&mut ticket);
+            return Ok(ticket);
         }
         let args = if self.kind == Kind::Acli {
             strings(&[
@@ -504,6 +558,7 @@ impl Backend {
             anyhow::anyhow!("CLI returned an unsupported ticket JSON shape (content suppressed)")
         })?;
         ticket.estimate_fields = self.estimate_fields().await;
+        self.decorate_ticket(&mut ticket);
         Ok(ticket)
     }
     pub async fn comments(&self, key: &str) -> Result<Vec<Value>> {
@@ -833,6 +888,72 @@ fn receipt(bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn browser_overrides_apply_to_all_ticket_sources_without_changing_source_identity_or_cache_bytes()
+     {
+        let backend = Backend::new("demo", None).unwrap();
+        let original = backend.get("DEV-101").await.unwrap();
+        let scope = backend.scope().await;
+        backend.configure_links(Some(
+            crate::links::BrowseBase::parse("https://portal.example.org/jira").unwrap(),
+        ));
+        backend.configure_board(Some(1)).unwrap();
+        let detail = backend.get("DEV-101").await.unwrap();
+        assert_eq!(detail.self_url, original.self_url);
+        assert_eq!(
+            serde_json::to_value(&detail).unwrap(),
+            serde_json::to_value(&original).unwrap()
+        );
+        assert_eq!(backend.scope().await, scope);
+        assert_eq!(
+            detail.web_url().unwrap(),
+            "https://portal.example.org/jira/browse/DEV-101"
+        );
+        assert_eq!(
+            detail
+                .url_target("own", "https://portal.example.org/jira/browse/ALT-1")
+                .key
+                .as_deref(),
+            Some("ALT-1")
+        );
+        assert!(
+            detail
+                .url_target(
+                    "external",
+                    "https://elsewhere.example.org/jira/browse/ALT-1"
+                )
+                .key
+                .is_none()
+        );
+        let search = backend.search("project = DEV", 500).await.unwrap();
+        assert!(search.iter().all(|t| {
+            t.web_url()
+                .unwrap()
+                .starts_with("https://portal.example.org/jira/browse/")
+        }));
+        let (workspace, _) = backend
+            .workspace("project = DEV", "assignee = currentUser()", None)
+            .await
+            .unwrap();
+        assert!(workspace.items.iter().all(|t| {
+            t.web_url()
+                .unwrap()
+                .starts_with("https://portal.example.org/jira/browse/")
+        }));
+        let bytes = serde_json::to_vec(&workspace.cache_snapshot()).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("portal.example.org"));
+        let mut cached: crate::workspace::Workspace = serde_json::from_slice(&bytes).unwrap();
+        assert!(cached.items.iter().all(|t| t.browse_base.is_none()));
+        backend.decorate_workspace(&mut cached);
+        assert!(cached.items.iter().all(|t| t.browse_base.is_some()));
+        assert!(
+            detail
+                .targets()
+                .iter()
+                .filter_map(|target| target.url.as_ref())
+                .any(|u| u == "https://portal.example.org/jira/browse/DEV-101")
+        );
+    }
     #[cfg(unix)]
     #[tokio::test]
     async fn authentication_uses_stdin_not_arguments_and_redacts_cli_output() {

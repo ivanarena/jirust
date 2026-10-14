@@ -28,9 +28,7 @@ pub fn validate(url: &str) -> Result<()> {
             && u.password().is_none()
             && u.query().is_none()
             && u.fragment().is_none()
-            && u.path()
-                .strip_prefix("/browse/")
-                .is_some_and(crate::data::valid_key),
+            && crate::links::browse_key(u.path()).is_some(),
         "Ticket has no safe clipboard link"
     );
     Ok(())

@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, parser::ValueSource};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum, parser::ValueSource};
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -38,7 +38,7 @@ use tokio::{process::Command, sync::mpsc};
 struct Options {
     #[arg(long, default_value = "auto", global = true)]
     backend: String,
-    /// Private local dotenv file (default: ./.env, then user config directory).
+    /// Private dotenv file (default: JIRUST_ENV_FILE, ./.env, then user config).
     #[arg(long, global = true)]
     env_file: Option<PathBuf>,
     #[command(subcommand)]
@@ -60,6 +60,20 @@ struct Options {
     prefix: Option<String>,
     #[arg(long)]
     jql: Option<String>,
+    /// Optional display label for this scope (does not change membership/JQL).
+    #[arg(long)]
+    scope_name: Option<String>,
+    /// Initial view; otherwise restore the saved view.
+    #[arg(long, value_enum)]
+    view: Option<StartView>,
+    /// Browser/clipboard-only Jira base URL, optionally with a context path.
+    /// Never used for authenticated requests. Default: pinned site/ticket metadata.
+    #[arg(long)]
+    browse_url: Option<String>,
+    #[arg(long,default_value_t=60,value_parser=clap::value_parser!(u64).range(15..=86400))]
+    refresh_seconds: u64,
+    #[arg(long,default_value_t=120,value_parser=clap::value_parser!(u64).range(15..=86400))]
+    refresh_retry_seconds: u64,
     #[arg(long,default_value_t=500,value_parser=clap::value_parser!(u16).range(1..=2000))]
     limit: u16,
     #[arg(long)]
@@ -68,11 +82,38 @@ struct Options {
     attachment_dir: Option<PathBuf>,
     #[arg(long,default_value="auto",value_parser=["auto","kitty","halfblocks"])]
     image_protocol: String,
-    #[arg(long = "no-inline-images", alias = "no-images")]
+    #[arg(
+        long = "no-inline-images",
+        alias = "no-images",
+        conflicts_with = "images"
+    )]
     no_images: bool,
-    /// Select rows normally without writing to the clipboard.
+    /// Enable automatic images even when disabled in the environment.
     #[arg(long)]
+    images: bool,
+    /// Select rows normally without writing to the clipboard.
+    #[arg(long, conflicts_with = "copy_on_click")]
     no_copy_on_click: bool,
+    /// Enable row-click copies even when disabled in the environment.
+    #[arg(long)]
+    copy_on_click: bool,
+}
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum StartView {
+    Mine,
+    Available,
+    Board,
+    Backlog,
+}
+impl StartView {
+    fn index(self) -> usize {
+        match self {
+            Self::Mine => jirust::config::MINE,
+            Self::Available => jirust::config::AVAILABLE,
+            Self::Board => jirust::config::BOARD,
+            Self::Backlog => jirust::config::BACKLOG,
+        }
+    }
 }
 #[derive(Subcommand)]
 enum CliCommand {
@@ -117,6 +158,7 @@ impl Options {
             ("project", "JIRA_PROJECT", &mut self.project),
             ("prefix", "JIRA_PREFIX", &mut self.prefix),
             ("jql", "JIRA_JQL", &mut self.jql),
+            ("scope_name", "JIRA_SCOPE_NAME", &mut self.scope_name),
         ] {
             if !supplied(name)
                 && !(project_changed && name != "project")
@@ -124,6 +166,47 @@ impl Options {
             {
                 *field = Some(v);
             }
+        }
+        if !supplied("browse_url") {
+            self.browse_url = env.value("JIRA_BROWSE_URL");
+        }
+        if !supplied("view")
+            && let Some(v) = env.value("JIRA_VIEW")
+        {
+            self.view = Some(StartView::from_str(&v, true).map_err(|_| {
+                anyhow::anyhow!("Invalid JIRA_VIEW; use mine, available, board or backlog")
+            })?);
+        }
+        for (flag, key, seconds) in [
+            (
+                "refresh_seconds",
+                "JIRA_REFRESH_SECONDS",
+                &mut self.refresh_seconds,
+            ),
+            (
+                "refresh_retry_seconds",
+                "JIRA_REFRESH_RETRY_SECONDS",
+                &mut self.refresh_retry_seconds,
+            ),
+        ] {
+            if !supplied(flag)
+                && let Some(v) = env.number(key, 86400)?
+            {
+                anyhow::ensure!(v >= 15, "Invalid {key}; use 15..86400 seconds");
+                *seconds = v;
+            }
+        }
+        if !supplied("no_images")
+            && !supplied("images")
+            && let Some(v) = env.boolean("JIRA_NO_IMAGES")?
+        {
+            self.no_images = v;
+        }
+        if !supplied("no_copy_on_click")
+            && !supplied("copy_on_click")
+            && let Some(v) = env.boolean("JIRA_NO_COPY_ON_CLICK")?
+        {
+            self.no_copy_on_click = v;
         }
         if !supplied("cli_bin")
             && let Some(v) = env.value("JIRA_CLI_BIN")
@@ -166,6 +249,66 @@ impl Options {
         }
         Ok(())
     }
+    fn validate(&self) -> Result<()> {
+        if let Some(p) = &self.prefix {
+            anyhow::ensure!(
+                p.is_empty()
+                    || (p.len() <= 64
+                        && p.as_bytes()[0].is_ascii_alphabetic()
+                        && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')),
+                "Invalid ticket prefix (value redacted); use a Jira project key"
+            );
+        }
+        if let Some(label) = &self.scope_name {
+            anyhow::ensure!(
+                label.len() <= 128 && !label.chars().any(char::is_control),
+                "Invalid scope name (value redacted); use at most 128 bytes without control characters"
+            );
+        }
+        if let Some(base) = &self.browse_url {
+            jirust::links::BrowseBase::parse(base)?;
+        }
+        Ok(())
+    }
+    fn apply_scope(&self, settings: &mut Settings) -> bool {
+        let changed = self.project.is_some()
+            || self.prefix.is_some()
+            || self.jql.is_some()
+            || self.board.is_some()
+            || self.scope_name.is_some()
+            || self.view.is_some();
+        if let Some(project) = &self.project {
+            let project = project.to_uppercase();
+            if settings.project != project {
+                settings.board_id = None;
+            }
+            settings.project = project;
+            if self.prefix.is_none() {
+                settings.prefix.clear();
+            }
+            if self.jql.is_none() {
+                settings.scope_jql.clear();
+            }
+            settings.scope_name.clear();
+        }
+        if let Some(prefix) = &self.prefix {
+            settings.prefix = prefix.to_uppercase();
+        }
+        if let Some(jql) = &self.jql {
+            settings.scope_jql = jql.clone();
+            settings.scope_name.clear();
+        }
+        if let Some(id) = self.board {
+            settings.board_id = Some(id);
+        }
+        if let Some(label) = &self.scope_name {
+            settings.scope_name = label.clone();
+        }
+        if let Some(view) = self.view {
+            settings.last_view = view.index();
+        }
+        changed
+    }
 }
 struct TerminalGuard;
 impl Drop for TerminalGuard {
@@ -190,10 +333,14 @@ async fn main() -> Result<()> {
         Environment::load(opts.env_file.as_deref())?
     };
     opts.apply_environment(&env, &matches)?;
+    opts.validate()?;
     if opts.check && opts.command.is_some() {
         bail!("--check cannot be combined with a command; no operation performed");
     }
-    let backend = Backend::new(if opts.demo { "demo" } else { &opts.backend }, opts.cli_bin)?;
+    let backend = Backend::new(
+        if opts.demo { "demo" } else { &opts.backend },
+        opts.cli_bin.clone(),
+    )?;
     let credentials = if backend.kind == Kind::Demo {
         None
     } else {
@@ -208,6 +355,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     backend.configure_environment(credentials)?;
+    backend.configure_links(
+        opts.browse_url
+            .as_deref()
+            .map(jirust::links::BrowseBase::parse)
+            .transpose()?,
+    );
     let mut settings = if backend.kind == Kind::Demo {
         Settings {
             project: "DEV".into(),
@@ -218,32 +371,7 @@ async fn main() -> Result<()> {
     } else {
         Settings::load()?
     };
-    let scope_override = opts.project.is_some()
-        || opts.prefix.is_some()
-        || opts.jql.is_some()
-        || opts.board.is_some();
-    if let Some(project) = opts.project {
-        let project = project.to_uppercase();
-        if settings.project != project {
-            settings.board_id = None;
-        }
-        settings.project = project;
-        if opts.prefix.is_none() {
-            settings.prefix.clear();
-        }
-        if opts.jql.is_none() {
-            settings.scope_jql.clear();
-        }
-    };
-    if let Some(prefix) = opts.prefix {
-        settings.prefix = prefix.to_uppercase()
-    };
-    if let Some(jql) = opts.jql {
-        settings.scope_jql = jql
-    };
-    if let Some(id) = opts.board {
-        settings.board_id = Some(id)
-    };
+    let scope_override = opts.apply_scope(&mut settings);
     backend.configure_board(settings.board_id)?;
     let limit = if backend.kind == Kind::Jira {
         usize::from(opts.limit).min(100)
@@ -319,11 +447,11 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
-    if scope_override && backend.kind != Kind::Demo {
-        settings.save()?;
-    }
     if !io::stdin().is_terminal() {
         bail!("Run jirust in a terminal, or use --check")
+    }
+    if scope_override && backend.kind != Kind::Demo {
+        settings.save()?;
     }
     let scope = backend.scope().await;
     let cache = Cache::new(&scope, opts.no_cache || backend.kind == Kind::Demo)?;
@@ -369,6 +497,8 @@ async fn main() -> Result<()> {
     );
     app.automatic_images = !opts.no_images;
     app.copy_on_click = !opts.no_copy_on_click;
+    app.refresh_interval = Duration::from_secs(opts.refresh_seconds);
+    app.refresh_retry = Duration::from_secs(opts.refresh_retry_seconds);
     let jobs = app.reload();
     dispatch(jobs, &backend, &picker, &tx, &clipboard_tx);
     let mut dirty = true;
@@ -688,7 +818,8 @@ mod tests {
         (Options::from_arg_matches(&matches).unwrap(), matches)
     }
     fn env(text: &str) -> Environment {
-        let mut f = tempfile::NamedTempFile::new().unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let mut f = tempfile::NamedTempFile::new_in(d.path()).unwrap();
         f.write_all(text.as_bytes()).unwrap();
         Environment::load(Some(f.path())).unwrap()
     }
@@ -726,6 +857,90 @@ mod tests {
             attachment_root(Kind::Demo, "demo", Some(d.path().into())).unwrap(),
             d.path()
         );
+    }
+    #[test]
+    fn generalized_environment_settings_obey_flags_and_saved_scope_defaults() {
+        let e = env(
+            "JIRA_PROJECT=DEV\nJIRA_PREFIX=ALT\nJIRA_SCOPE_NAME='Demo scope'\nJIRA_VIEW=backlog\nJIRA_BROWSE_URL=https://jira.example.org/jira\nJIRA_REFRESH_SECONDS=90\nJIRA_REFRESH_RETRY_SECONDS=180\nJIRA_NO_IMAGES=true\nJIRA_NO_COPY_ON_CLICK=true\n",
+        );
+        let (mut o, m) = options(&["jirust"]);
+        o.apply_environment(&e, &m).unwrap();
+        o.validate().unwrap();
+        let mut s = Settings::default();
+        o.apply_scope(&mut s);
+        assert_eq!(s.prefix(), "ALT");
+        assert_eq!(s.scope_name, "Demo scope");
+        assert_eq!(s.last_view, jirust::config::BACKLOG);
+        assert_eq!((o.refresh_seconds, o.refresh_retry_seconds), (90, 180));
+        assert!(o.no_images && o.no_copy_on_click);
+        let (mut o, m) = options(&[
+            "jirust",
+            "--project",
+            "NEW",
+            "--prefix",
+            "NEW",
+            "--scope-name",
+            "New scope",
+            "--view",
+            "board",
+            "--browse-url",
+            "https://other.example.org",
+            "--refresh-seconds",
+            "300",
+            "--refresh-retry-seconds",
+            "600",
+            "--images",
+            "--copy-on-click",
+        ]);
+        o.apply_environment(&e, &m).unwrap();
+        o.validate().unwrap();
+        o.apply_scope(&mut s);
+        assert_eq!(s.prefix(), "NEW");
+        assert_eq!(s.scope_name, "New scope");
+        assert_eq!(s.last_view, jirust::config::BOARD);
+        assert!(!o.no_images && !o.no_copy_on_click);
+        assert_eq!((o.refresh_seconds, o.refresh_retry_seconds), (300, 600));
+        assert_eq!(o.browse_url.as_deref(), Some("https://other.example.org"));
+        let (mut o, m) = options(&["jirust", "--project", "NEW"]);
+        o.apply_environment(&e, &m).unwrap();
+        o.apply_scope(&mut s);
+        assert_eq!(s.prefix(), "NEW");
+        assert!(s.scope_name.is_empty());
+    }
+    #[test]
+    fn unsafe_configuration_is_redacted_and_demo_ignores_personal_environment() {
+        for text in [
+            "JIRA_VIEW=TOP_SECRET",
+            "JIRA_REFRESH_SECONDS=TOP_SECRET",
+            "JIRA_REFRESH_SECONDS=1",
+            "JIRA_REFRESH_RETRY_SECONDS=86401",
+            "JIRA_NO_IMAGES=TOP_SECRET",
+            "JIRA_NO_COPY_ON_CLICK=TOP_SECRET",
+            "JIRA_BROWSE_URL=https://alex:TOP_SECRET@example.org",
+            "JIRA_PREFIX='TOP_SECRET!'",
+            "JIRA_SCOPE_NAME=\"a\\nb\"",
+        ] {
+            let e = env(text);
+            let (mut o, m) = options(&["jirust"]);
+            let result = o.apply_environment(&e, &m).and_then(|_| o.validate());
+            assert!(result.is_err(), "{text}");
+            assert!(!result.unwrap_err().to_string().contains("TOP_SECRET"));
+        }
+        let e = env(
+            "JIRA_VIEW=TOP_SECRET\nJIRA_REFRESH_SECONDS=1\nJIRA_BROWSE_URL=https://alex:TOP_SECRET@example.org\nJIRA_NO_IMAGES=true\nJIRA_NO_COPY_ON_CLICK=true",
+        );
+        let (mut o, m) = options(&["jirust", "--demo"]);
+        o.apply_environment(&e, &m).unwrap();
+        o.validate().unwrap();
+        assert_eq!(o.refresh_seconds, 60);
+        assert!(!o.no_images && !o.no_copy_on_click && o.browse_url.is_none());
+        for flag in ["--refresh-seconds", "--refresh-retry-seconds"] {
+            assert!(
+                Options::command()
+                    .try_get_matches_from(["jirust", flag, "0"])
+                    .is_err()
+            );
+        }
     }
     #[test]
     fn move_parses_one_key_destination_and_global_read_only() {

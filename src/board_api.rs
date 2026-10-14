@@ -290,6 +290,9 @@ impl ImageApi {
             .get(self.url(id)?)
             .header(reqwest::header::ACCEPT, "*/*"))
     }
+    pub fn browse_base(&self) -> Option<crate::links::BrowseBase> {
+        crate::links::BrowseBase::parse(&format!("https://{}", self.profile.site)).ok()
+    }
     pub async fn download(&self, attachment: &crate::data::Attachment) -> Result<Vec<u8>> {
         crate::images::validate_attachment(attachment)?;
         let _permit = self.slots.acquire().await?;
@@ -346,6 +349,9 @@ impl BoardApi {
             "Jira account/site/authentication changed; restart jirust"
         );
         Ok(())
+    }
+    pub fn browse_base(&self) -> Option<crate::links::BrowseBase> {
+        crate::links::BrowseBase::parse(&format!("https://{}", self.profile.site)).ok()
     }
     pub fn cache_identity(&self) -> String {
         format!(
