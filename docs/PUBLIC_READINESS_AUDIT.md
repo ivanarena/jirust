@@ -21,7 +21,9 @@ Local evidence: `make check` (**161 library + 5 binary = 166 tests**), repeated 
 
 The final code review also addressed async-buffer stack growth, short fork/exec lock-inheritance windows, aggregate-budget drift after Mine hydration, and demo attachment defaults that could otherwise touch personal cache directories. Cache persistence remains best-effort under quota/lock/full-disk failures, and encoded-data budgets are not an exact RSS guarantee. Configured parent directories and same-user CLI/terminal processes remain trusted, not sandboxed.
 
-**Remaining external evidence:** another authorized live Jira site/board and live macOS terminal/clipboard/image behavior. These were not available and are not marked passed. Native/minimum-version/security CI and the local release-bundle verification must pass for the exact committed candidate before calling release gates complete. Repository visibility is unchanged; no real Jira mutations were performed.
+Committed-runtime CI **38534972414** passed for **`ad74e7f36cf978e23cf1ef0cc4e4f3aef2938b9b`**: Linux stable, macOS stable, Rust 1.90 and the credential-free secret/dependency/notices job. A local bundle from **`c2f7618c683c8769efce161325b0a55106937427`** (same runtime plus notice-format attributes) passed archive checksum, binary identity, exact committed source, MPL archive checksum, organization-marker and Gitleaks archive checks. No bundle was uploaded. Full-history Gitleaks and Git integrity checks also passed after the runtime commit.
+
+**Remaining external evidence:** another authorized live Jira site/board and live macOS terminal/clipboard/image behavior. These were not available and are not marked passed. Recheck all gates for any later source changes; public private-reporting activation and publication still require the owner's explicit decision. Repository visibility is unchanged; no real Jira mutations were performed.
 
 **Assessment:** locally fixed and ready for a narrowly documented experimental-beta preparation, not a universal compatibility or independent penetration-test sign-off. See [SUPPORT.md](SUPPORT.md), [SECURITY.md](../SECURITY.md) and [RELEASING.md](RELEASING.md).
 
