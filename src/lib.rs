@@ -16,4 +16,5 @@ pub mod movement;
 mod private_fs;
 mod process;
 pub mod render;
+pub mod sorting;
 pub mod workspace;

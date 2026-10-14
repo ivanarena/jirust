@@ -1,4 +1,4 @@
-//! Synthetic-only end-to-end search benchmark: cargo run --release --example search_bench
+//! Synthetic-only search benchmark: cargo run --release --example search_bench -- [--epic]
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use jirust::{
     app::{App, Message},
@@ -11,6 +11,7 @@ use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
 use std::{path::PathBuf, time::Instant};
 fn main() {
+    let epic = std::env::args().any(|arg| arg == "--epic");
     let count = 1000;
     let mut workspace = Workspace::default();
     workspace.complete = true;
@@ -24,6 +25,10 @@ fn main() {
             i,
             if i % 20 == 0 { "needle" } else { "ordinary" }
         ));
+        if epic && i % 4 != 0 {
+            let group = i % 17;
+            ticket.fields["parent"] = json!({"key":format!("DEV-{}",900+group),"fields":{"summary":format!("Synthetic epic {group:02}"),"issuetype":{"name":"Epic"}}});
+        }
         workspace.items.push(ticket);
     }
     let start = Instant::now();
@@ -54,6 +59,12 @@ fn main() {
         generation: app.generation,
         result: Ok((workspace, vec![])),
     });
+    if epic {
+        app.event(Event::Key(KeyEvent::new(
+            KeyCode::Char('E'),
+            KeyModifiers::SHIFT,
+        )));
+    }
     let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
     terminal.draw(|f| render::draw(f, &mut app)).unwrap();
     let mut filters = Vec::new();
@@ -96,7 +107,10 @@ fn main() {
     }
     filters.sort();
     frames.sort();
-    println!("{count} synthetic tickets × 32 ADF paragraphs");
+    println!(
+        "{count} synthetic tickets × 32 ADF paragraphs · sort {}",
+        app.sort_order().label()
+    );
     println!(
         "Old formatting scan: {:.2} ms",
         old_scan.as_secs_f64() * 1000.0

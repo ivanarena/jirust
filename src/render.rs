@@ -166,7 +166,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.ticket_rect = panes[1];
     let left_block = block(
         format!(
-            " Tickets · {}{} ",
+            " Tickets · {}{} · {} ",
             app.visible.len(),
             if app.loading {
                 " · loading"
@@ -174,7 +174,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 " · refreshing"
             } else {
                 ""
-            }
+            },
+            app.sort_order().label()
         ),
         app.focus == Focus::Tickets,
     );
@@ -413,8 +414,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let buttons = [
         ('r', "Refresh"),
         ('x', "Clear filters"),
+        (
+            'E',
+            if app.sort_order() == crate::sorting::Order::Epic {
+                "Sort: Epic"
+            } else {
+                "Sort: Rank"
+            },
+        ),
+        ('s', "Status"),
         ('a', "Assign"),
-        ('t', "Status"),
         ('e', "Edit"),
         ('c', "Comment"),
         ('i', "Images"),
@@ -884,6 +893,69 @@ mod tests {
         assert!(matches!(&jobs[..], [Job::Sync { changed: None, .. }]));
         assert_eq!(app.search, "keep search");
         assert!(matches!(app.search_mode, SearchMode::Text));
+    }
+    #[tokio::test]
+    async fn narrow_footer_exposes_clickable_epic_sort_and_s_status() {
+        use crate::app::{Job, Message, Purpose};
+        use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let b = Backend::new("demo", None).unwrap();
+        let mut app = App::new(
+            b.clone(),
+            Cache { directory: None },
+            Settings {
+                project: "DEV".into(),
+                ..Default::default()
+            },
+            false,
+            500,
+            Default::default(),
+        );
+        let Job::Sync {
+            generation,
+            base,
+            mine,
+            ..
+        } = app.reload().remove(0)
+        else {
+            panic!()
+        };
+        app.message(Message::Synced {
+            generation,
+            result: b.workspace(&base, &mine, None).await,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let click = |rect: Rect| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: rect.x + 1,
+                row: rect.y,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        let sort = app
+            .footer_buttons
+            .iter()
+            .find(|(_, k)| *k == 'E')
+            .unwrap()
+            .0;
+        assert!(app.event(click(sort)).is_empty());
+        assert_eq!(app.sort_order(), crate::sorting::Order::Epic);
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let status = app
+            .footer_buttons
+            .iter()
+            .find(|(_, k)| *k == 's')
+            .unwrap()
+            .0;
+        assert!(app.event(click(status)).is_empty());
+        assert!(matches!(
+            app.dialog,
+            Some(Dialog::Picker {
+                purpose: Purpose::Status,
+                ..
+            })
+        ));
     }
     #[test]
     fn multiple_checked_values_are_visible_and_toolbar_shows_selection_counts() {

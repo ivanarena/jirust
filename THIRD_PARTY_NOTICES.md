@@ -111,7 +111,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | is_terminal_polyfill | 1.70.2 | MIT OR Apache-2.0 |
 | itertools | 0.14.0 | MIT OR Apache-2.0 |
 | itoa | 1.0.18 | MIT OR Apache-2.0 |
-| jirust | 0.14.0 | MIT |
+| jirust | 0.15.0 | MIT |
 | js-sys | 0.3.106 | MIT OR Apache-2.0 |
 | kasuari | 0.4.12 | MIT OR Apache-2.0 |
 | libc | 0.2.190 | MIT OR Apache-2.0 |
@@ -5065,7 +5065,7 @@ SOFTWARE.
 ### MIT License
 
 Used by:
-- jirust 0.14.0
+- jirust 0.15.0
 
 ```text
 MIT License

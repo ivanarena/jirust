@@ -176,6 +176,8 @@ pub struct App {
     pub status_colors: crate::appearance::StatusColors,
     pub epic_colors: crate::appearance::EpicColors,
     view_filters: [ViewFilters; 4],
+    view_orders: [crate::sorting::Order; 4],
+    epic_order: Option<Vec<usize>>,
     pub backend: Arc<Backend>,
     pub cache: Cache,
     pub settings: Settings,
@@ -280,6 +282,8 @@ impl App {
             status_colors,
             epic_colors,
             view_filters: std::array::from_fn(|_| ViewFilters::default()),
+            view_orders: [crate::sorting::Order::Rank; 4],
+            epic_order: None,
             backend,
             cache,
             settings,
@@ -427,6 +431,7 @@ impl App {
     fn load(&mut self, query: String) -> Vec<Job> {
         if !self.last_query.is_empty() && self.last_query != query {
             self.view_filters = std::array::from_fn(|_| ViewFilters::default());
+            self.view_orders = [crate::sorting::Order::Rank; 4];
             self.assignee_filter.clear();
             self.status_filter.clear();
             self.search.clear();
@@ -647,6 +652,7 @@ impl App {
     fn set_items(&mut self, items: Vec<Ticket>) {
         let key = self.selected_ticket().map(|t| t.key.clone());
         self.items = items;
+        self.epic_order = None;
         self.rebuild_visible();
         if let Some(key) = key
             && let Some(n) = self.visible.iter().position(|n| self.items[*n].key == key)
@@ -674,7 +680,39 @@ impl App {
             self.selected_ticket()
         }
     }
+    pub fn sort_order(&self) -> crate::sorting::Order {
+        self.view_orders[self.view]
+    }
+    fn toggle_sort(&mut self) {
+        let key = self.selected_ticket().map(|t| t.key.clone());
+        self.view_orders[self.view] = self.sort_order().toggled();
+        self.rebuild_visible();
+        self.restore_sort_selection(key);
+        self.notice(
+            format!(
+                "Sort: {} · E toggles Rank/Epic · local only",
+                self.sort_order().label()
+            ),
+            false,
+        );
+    }
+    fn restore_sort_selection(&mut self, key: Option<String>) {
+        if let Some(key) = key
+            && let Some(n) = self.visible.iter().position(|n| self.items[*n].key == key)
+        {
+            self.selected = n;
+        }
+        self.table
+            .select((!self.visible.is_empty()).then_some(self.selected));
+    }
     fn rebuild_visible(&mut self) {
+        let epic = self.sort_order() == crate::sorting::Order::Epic;
+        if epic && self.epic_order.is_none() {
+            self.epic_order = Some(crate::sorting::epic_order(
+                &self.items,
+                self.workspace.as_ref().and_then(|w| w.board.as_ref()),
+            ));
+        }
         let q = if self.search_mode == SearchMode::Text || self.search_mode == SearchMode::Number {
             self.local_search.as_str()
         } else {
@@ -686,11 +724,16 @@ impl App {
         let status = self.status_filter.normalized();
         let prefix = format!("{}-{q}", self.settings.prefix()).to_lowercase();
         self.visible = self
-            .items
-            .iter()
-            .enumerate()
-            .filter_map(|(n, t)| {
-                let matches = if self.search_mode == SearchMode::Number {
+            .epic_order
+            .as_ref()
+            .filter(|_| epic)
+            .into_iter()
+            .flatten()
+            .copied()
+            .chain(0..if epic { 0 } else { self.items.len() })
+            .filter(|n| {
+                let t = &self.items[*n];
+                if self.search_mode == SearchMode::Number {
                     t.key.to_lowercase().starts_with(&prefix)
                 } else {
                     self.lookup_active
@@ -701,8 +744,7 @@ impl App {
                             .unwrap_or_else(|| {
                                 q.is_empty() || t.summary().to_lowercase().contains(&q)
                             })
-                };
-                matches.then_some(n)
+                }
             })
             .collect();
         self.selected = self.selected.min(self.visible.len().saturating_sub(1));
@@ -927,6 +969,7 @@ impl App {
     fn show_lookup(&mut self, ticket: Ticket) {
         let key = ticket.key.clone();
         self.items = vec![ticket];
+        self.epic_order = None;
         self.items_are_workspace = false;
         self.local_search.clear();
         self.visible = vec![0];
@@ -1060,6 +1103,7 @@ impl App {
                 };
                 match result {
                     Ok(ticket) => {
+                        let selected_key = self.selected_ticket().map(|t| t.key.clone());
                         if self.status_colors.register([&ticket]) {
                             let _ = self
                                 .cache
@@ -1101,12 +1145,16 @@ impl App {
                                 item.update_estimates(&ticket);
                             }
                         }
+                        self.epic_order = None;
                         self.trim_details(&key);
                         if lookup.is_some() {
                             self.show_lookup(ticket);
                         }
                         if !self.lookup_active {
                             self.rebuild_visible();
+                            if self.sort_order() == crate::sorting::Order::Epic {
+                                self.restore_sort_selection(selected_key);
+                            }
                         }
                         if self.detail_key == key {
                             self.doc_dirty = true
@@ -1453,6 +1501,7 @@ impl App {
                     .as_ref()
                     .map(|w| w.items.clone())
                     .unwrap_or_default();
+                self.epic_order = None;
                 self.items_are_workspace = true;
             }
             self.rebuild_visible();
@@ -1655,7 +1704,20 @@ impl App {
                     }
                     KeyCode::Char('g') => self.scope_dialog(),
                     KeyCode::Char('A') => self.assignee_picker(true),
-                    KeyCode::Char('T') => self.status_picker(true),
+                    KeyCode::Char('S' | 'T')
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
+                        self.status_picker(true)
+                    }
+                    KeyCode::Char('E')
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
+                        self.toggle_sort()
+                    }
                     KeyCode::Char('f') => self.filters_dialog(),
                     KeyCode::Char(':') => {
                         self.dialog = Some(Dialog::Form {
@@ -1680,7 +1742,11 @@ impl App {
                             return vec![Job::Comments(key)];
                         }
                     }
-                    KeyCode::Char('a' | 't' | 'e' | 'c' | 'L' | 'm') => {
+                    KeyCode::Char('a' | 's' | 't' | 'e' | 'c' | 'L' | 'm')
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
                         if let KeyCode::Char(c) = key.code {
                             self.action_dialog(c)
                         }
@@ -2402,7 +2468,7 @@ impl App {
                 self.confirm(Action::new(kind, &ticket.key, &id.to_string()));
             }
             'a' => self.assignee_picker(false),
-            't' => self.status_picker(false),
+            's' | 't' => self.status_picker(false),
             'e' => {
                 self.dialog = Some(Dialog::Picker {
                     title: format!("Edit {}", ticket.key),
@@ -2949,7 +3015,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Mouse opens detail links. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · t status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / T or dropdowns open the same popup. Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels. Every successful update automatically fully refreshes all four views, retaining their filters.\n--read-only blocks changes. ! shows safe error details; raw CLI output is suppressed.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Mouse opens detail links. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each by default. E toggles local Rank/Epic sorting for this view: parent epic alphabetically, no epic last, Rank within groups. Sort is cached, never rebuilt per search keystroke; changing scope resets it.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · s status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / S or dropdowns open the same popup (T remains an alias). Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels. Every successful update automatically fully refreshes all four views, retaining their filters.\n--read-only blocks changes. ! shows safe error details; raw CLI output is suppressed.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Details warm with bounded concurrency. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -2988,6 +3054,194 @@ mod tests {
     }
     fn key(c: char, mods: KeyModifiers) -> Event {
         Event::Key(KeyEvent::new(KeyCode::Char(c), mods))
+    }
+    fn epic_sort_app() -> App {
+        let mut a = app();
+        let mut items = Vec::new();
+        for (key, epic) in [
+            ("DEV-3", Some(("DEV-901", "Zulu"))),
+            ("DEV-8", None),
+            ("DEV-9", Some(("DEV-900", "Alpha"))),
+            ("DEV-1", Some(("DEV-900", "Alpha"))),
+            ("DEV-2", Some(("DEV-900", "Alpha"))),
+            ("DEV-4", None),
+        ] {
+            let mut t = data::demo_tickets()[0].clone();
+            t.key = key.into();
+            t.fields["assignee"] = serde_json::Value::Null;
+            t.fields["parent"] = epic.map(|(key, name)| serde_json::json!({"key":key,"fields":{"summary":name,"issuetype":{"name":"Epic"}}})).unwrap_or_default();
+            items.push(t);
+        }
+        let mut w = Workspace {
+            items,
+            board: Some(
+                ["DEV-3", "DEV-8", "DEV-9", "DEV-1"]
+                    .map(String::from)
+                    .into(),
+            ),
+            complete: true,
+            ..Default::default()
+        };
+        w.reindex();
+        a.workspace = Some(w);
+        a.items_are_workspace = false;
+        a.switch_view(config::AVAILABLE);
+        a
+    }
+    fn visible_keys(a: &App) -> Vec<&str> {
+        a.visible.iter().map(|i| a.items[*i].key.as_str()).collect()
+    }
+    #[test]
+    fn epic_sort_is_local_per_view_cached_during_search_and_preserves_selection_and_rank() {
+        use crate::sorting::Order;
+        let mut a = epic_sort_app();
+        a.read_only = true;
+        let original: Vec<_> = visible_keys(&a).into_iter().map(String::from).collect();
+        a.selected = 1;
+        a.select_current();
+        a.scroll = 9;
+        assert!(a.event(key('E', KeyModifiers::SHIFT)).is_empty());
+        assert_eq!(a.sort_order(), Order::Epic);
+        assert_eq!(
+            visible_keys(&a),
+            ["DEV-9", "DEV-1", "DEV-3", "DEV-8", "DEV-2", "DEV-4"]
+        );
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-8");
+        assert_eq!(a.scroll, 9);
+        let cached = a.epic_order.as_ref().unwrap().as_ptr();
+        a.event(key('/', KeyModifiers::NONE));
+        for c in "DEV".chars() {
+            assert!(a.event(key(c, KeyModifiers::NONE)).is_empty());
+        }
+        assert_eq!(a.epic_order.as_ref().unwrap().as_ptr(), cached);
+        a.switch_view(config::BOARD);
+        assert_eq!(a.sort_order(), Order::Rank);
+        a.event(key('E', KeyModifiers::SHIFT));
+        assert_eq!(a.sort_order(), Order::Epic);
+        a.switch_view(config::AVAILABLE);
+        assert_eq!(a.sort_order(), Order::Epic);
+        assert_eq!(a.remote_search, "DEV");
+        a.clear_filters();
+        assert_eq!(a.sort_order(), Order::Epic);
+        a.event(key('E', KeyModifiers::SHIFT));
+        assert_eq!(visible_keys(&a), original);
+        assert_eq!(
+            a.workspace
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .map(|t| t.key.clone())
+                .collect::<Vec<_>>(),
+            original
+        );
+        a.event(key('E', KeyModifiers::SHIFT));
+        a.settings.project = "OTHER".into();
+        a.reload();
+        assert_eq!(a.view_orders, [Order::Rank; 4]);
+    }
+    #[test]
+    fn epic_sort_survives_refresh_and_detail_relationship_changes_without_losing_selected_key() {
+        let mut a = epic_sort_app();
+        a.event(key('E', KeyModifiers::SHIFT));
+        a.selected = 1;
+        a.select_current();
+        a.scroll = 7;
+        let mut ticket = a.selected_ticket().unwrap().clone();
+        ticket.fields["parent"] = serde_json::Value::Null;
+        a.message(Message::Detail {
+            key: ticket.key.clone(),
+            lookup: None,
+            revision: 0,
+            background: false,
+            result: Ok(ticket),
+        });
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-1");
+        assert_eq!(a.selected, 3);
+        assert_eq!(a.scroll, 7);
+        assert_eq!(
+            visible_keys(&a),
+            ["DEV-9", "DEV-3", "DEV-8", "DEV-1", "DEV-2", "DEV-4"]
+        );
+        let w = a.workspace.clone().unwrap();
+        let jobs = a.refresh_all();
+        let Job::Sync { generation, .. } = jobs[0] else {
+            panic!()
+        };
+        a.message(Message::Synced {
+            generation,
+            result: Ok((w, vec![])),
+        });
+        assert_eq!(a.sort_order(), crate::sorting::Order::Epic);
+        assert_eq!(a.selected_ticket().unwrap().key, "DEV-1");
+        assert_eq!(
+            visible_keys(&a),
+            ["DEV-9", "DEV-3", "DEV-8", "DEV-1", "DEV-2", "DEV-4"]
+        );
+    }
+    #[test]
+    fn epic_sort_also_orders_unknown_numeric_prefixes_without_rebuilding_the_cached_order() {
+        let mut a = epic_sort_app();
+        let w = a.workspace.as_mut().unwrap();
+        for (old, new) in [
+            ("DEV-3", "DEV-31"),
+            ("DEV-8", "DEV-33"),
+            ("DEV-9", "DEV-32"),
+        ] {
+            w.items.iter_mut().find(|t| t.key == old).unwrap().key = new.into();
+            let board = w.board.as_mut().unwrap();
+            board.remove(old);
+            board.insert(new.into());
+        }
+        w.reindex();
+        a.items_are_workspace = false;
+        a.apply_local();
+        a.event(key('E', KeyModifiers::SHIFT));
+        let order = a.epic_order.as_ref().unwrap().as_ptr();
+        assert!(a.event(key('3', KeyModifiers::NONE)).is_empty());
+        assert_eq!(visible_keys(&a), ["DEV-32", "DEV-31", "DEV-33"]);
+        assert_eq!(a.epic_order.as_ref().unwrap().as_ptr(), order);
+        assert!(a.search_due.is_some());
+    }
+    #[test]
+    fn s_status_and_shift_s_filter_do_not_steal_editor_search_or_ctrl_s() {
+        let mut a = app();
+        assert!(a.event(key('s', KeyModifiers::NONE)).is_empty());
+        assert!(matches!(
+            a.dialog,
+            Some(Dialog::Picker {
+                purpose: Purpose::Status,
+                ..
+            })
+        ));
+        a.dialog = None;
+        a.event(key('s', KeyModifiers::CONTROL));
+        assert!(a.dialog.is_none());
+        a.event(key('S', KeyModifiers::SHIFT));
+        assert!(matches!(a.dialog, Some(Dialog::Filters { active: 1, .. })));
+        a.dialog = None;
+        a.read_only = true;
+        a.event(key('s', KeyModifiers::NONE));
+        assert!(a.dialog.is_none());
+        a.read_only = false;
+        a.dialog = Some(Dialog::Editor {
+            title: "Edit".into(),
+            value: String::new(),
+            cursor: 0,
+            kind: "description".into(),
+            key: "DEV-101".into(),
+        });
+        a.event(key('s', KeyModifiers::NONE));
+        a.event(key('E', KeyModifiers::SHIFT));
+        assert!(matches!(&a.dialog, Some(Dialog::Editor { value, .. }) if value == "sE"));
+        assert_eq!(a.sort_order(), crate::sorting::Order::Rank);
+        a.event(key('s', KeyModifiers::CONTROL));
+        assert!(matches!(a.dialog, Some(Dialog::Confirm(_))));
+        a.dialog = None;
+        a.event(key('/', KeyModifiers::NONE));
+        a.event(key('s', KeyModifiers::NONE));
+        assert_eq!(a.search, "s");
+        assert!(a.dialog.is_none());
     }
     #[test]
     fn copy_on_click_opt_out_retains_selection_and_does_not_touch_clipboard() {
