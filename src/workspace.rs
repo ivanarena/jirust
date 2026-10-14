@@ -18,10 +18,13 @@ pub struct Workspace {
     /// Derived once on load/sync, never serialized or rebuilt per keystroke.
     #[serde(skip)]
     pub(crate) index: HashMap<String, SearchRow>,
+    #[serde(skip)]
+    pub(crate) encoded_bytes: usize,
 }
 #[derive(Clone)]
 pub(crate) struct SearchRow {
     pub position: usize,
+    encoded_bytes: usize,
     status: String,
     assignees: Vec<String>,
     unassigned: bool,
@@ -82,6 +85,8 @@ impl SearchRow {
         }
         Self {
             position,
+            encoded_bytes: crate::limits::size(ticket, crate::limits::WORKSPACE_BYTES)
+                .unwrap_or(crate::limits::WORKSPACE_BYTES + 1),
             status: ticket.status().to_lowercase(),
             assignees: assignees.into_iter().map(|s| s.to_lowercase()).collect(),
             unassigned: ticket.fields["assignee"].is_null(),
@@ -124,6 +129,8 @@ impl Workspace {
             .enumerate()
             .map(|(position, t)| (t.key.clone(), SearchRow::new(t, position)))
             .collect();
+        self.encoded_bytes = crate::limits::size(self, crate::limits::WORKSPACE_BYTES)
+            .unwrap_or(crate::limits::WORKSPACE_BYTES + 1);
     }
     pub fn ticket(&self, key: &str) -> Option<&Ticket> {
         self.index
@@ -170,14 +177,21 @@ impl Workspace {
             &words,
         )
     }
-    pub fn update(&mut self, ticket: &Ticket) {
+    /// Reject budget-expanding detail updates without mutating the useful snapshot.
+    pub fn update(&mut self, ticket: &Ticket) -> bool {
+        self.update_with_limit(ticket, crate::limits::WORKSPACE_BYTES)
+    }
+    fn update_with_limit(&mut self, ticket: &Ticket, limit: usize) -> bool {
+        if self.index.len() != self.items.len() || self.encoded_bytes == 0 {
+            self.reindex();
+        }
         if let Some(position) = self
             .index
             .get(&ticket.key)
             .map(|row| row.position)
             .or_else(|| self.items.iter().position(|t| t.key == ticket.key))
         {
-            let row = &mut self.items[position];
+            let mut row = self.items[position].clone();
             for field in [
                 "summary",
                 "status",
@@ -192,9 +206,23 @@ impl Workspace {
                 row.fields[field] = ticket.fields[field].clone();
             }
             row.update_estimates(ticket);
+            let Ok(size) = crate::limits::size(&row, limit) else {
+                return false;
+            };
+            let previous = self.index.get(&ticket.key).map_or(0, |r| r.encoded_bytes);
+            let used = self
+                .encoded_bytes
+                .saturating_sub(previous)
+                .saturating_add(size);
+            if used > limit {
+                return false;
+            }
             self.index
-                .insert(row.key.clone(), SearchRow::new(row, position));
+                .insert(row.key.clone(), SearchRow::new(&row, position));
+            self.items[position] = row;
+            self.encoded_bytes = used;
         }
+        true
     }
     /// True Jira/view membership count, independent of search and filters.
     pub fn view_count(&self, view: usize) -> usize {
@@ -227,6 +255,23 @@ pub fn valid_items(items: &[Ticket]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn full_detail_updates_cannot_grow_the_shared_snapshot_past_its_budget() {
+        let mut w = Workspace {
+            items: data::demo_tickets(),
+            ..Default::default()
+        };
+        w.reindex();
+        let before = w.items[0].summary();
+        let limit = w.encoded_bytes + 16;
+        let mut detail = w.items[0].clone();
+        detail.fields["summary"] = serde_json::json!("x".repeat(1024));
+        assert!(!w.update_with_limit(&detail, limit));
+        assert_eq!(w.items[0].summary(), before);
+        assert!(w.matches(&w.items[0], config::BACKLOG, "", "", &before));
+        detail.fields["summary"] = serde_json::json!("small");
+        assert!(w.update_with_limit(&detail, limit));
+    }
     #[test]
     fn parent_epic_labels_update_search_and_clear_without_changing_rank_or_membership() {
         let items = data::demo_tickets();

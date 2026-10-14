@@ -1,0 +1,29 @@
+# Third-party notices
+
+Generated from the locked dependency graph with cargo-about 0.9.2. Includes target-specific dependencies, so this is a conservative superset of a native binary's components. The component table records declared SPDX expressions; the license texts below cover the alternatives selected by cargo-about under about.toml. This is not a relicensing of third-party code.
+
+Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an unchanged registry package, its original source archive is available at `https://crates.io/api/v1/crates/<name>/<version>/download`. Release bundles include the source archives of MPL-2.0 packages. Retain this document, the source inventory and the project's MIT LICENSE when distributing binaries.
+
+## Components
+
+| Component | Version | Declared SPDX expression |
+|---|---|---|
+{{#each crates}}
+| {{package.name}} | {{package.version}} | {{license}} |
+{{/each}}
+
+## License texts
+
+{{#each licenses}}
+### {{name}}
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+
+```text
+{{{text}}}
+```
+
+{{/each}}

@@ -7,3 +7,9 @@ coverage.out
 .env.*
 !.env.example
 *.local.json
+__pycache__/
+*.py[cod]
+/core
+/core.*
+*.core
+.DS_Store

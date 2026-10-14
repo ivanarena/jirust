@@ -70,6 +70,9 @@ struct Options {
     image_protocol: String,
     #[arg(long = "no-inline-images", alias = "no-images")]
     no_images: bool,
+    /// Select rows normally without writing to the clipboard.
+    #[arg(long)]
+    no_copy_on_click: bool,
 }
 #[derive(Subcommand)]
 enum CliCommand {
@@ -324,9 +327,7 @@ async fn main() -> Result<()> {
     }
     let scope = backend.scope().await;
     let cache = Cache::new(&scope, opts.no_cache || backend.kind == Kind::Demo)?;
-    let attachment_dir = opts
-        .attachment_dir
-        .unwrap_or(jirust::config::attachment_directory(&scope)?);
+    let attachment_dir = attachment_root(backend.kind, &scope, opts.attachment_dir)?;
     enable_raw_mode()?;
     let guard = TerminalGuard;
     execute!(
@@ -367,6 +368,7 @@ async fn main() -> Result<()> {
         attachment_dir,
     );
     app.automatic_images = !opts.no_images;
+    app.copy_on_click = !opts.no_copy_on_click;
     let jobs = app.reload();
     dispatch(jobs, &backend, &picker, &tx, &clipboard_tx);
     let mut dirty = true;
@@ -435,6 +437,14 @@ async fn main() -> Result<()> {
     drop(guard);
     Ok(())
 }
+fn attachment_root(kind: Kind, scope: &str, explicit: Option<PathBuf>) -> Result<PathBuf> {
+    match explicit {
+        Some(path) => Ok(path),
+        // Demo must not migrate/chmod the user's actual cache directories.
+        None if kind == Kind::Demo => Ok(std::env::temp_dir().join("jirust-demo-attachments")),
+        None => jirust::config::attachment_directory(scope),
+    }
+}
 fn dispatch(
     jobs: Vec<Job>,
     backend: &Arc<Backend>,
@@ -483,6 +493,15 @@ fn dispatch(
                     action: action.clone(),
                     result: backend.apply(&action).await,
                 },
+                Job::Move {
+                    action,
+                    settings,
+                    read_only,
+                } => {
+                    let result =
+                        jirust::movement::confirmed(&backend, &settings, &action, read_only).await;
+                    Message::Written { action, result }
+                }
                 Job::Browser(url) => {
                     let result = async {
                         if !data::valid_url(&url) {
@@ -676,6 +695,18 @@ mod tests {
         .err()
         .unwrap();
         assert!(e.to_string().contains("cancelled"));
+    }
+    #[test]
+    fn demo_attachment_defaults_do_not_resolve_personal_config_or_cache() {
+        assert_eq!(
+            attachment_root(Kind::Demo, "demo", None).unwrap(),
+            std::env::temp_dir().join("jirust-demo-attachments")
+        );
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(
+            attachment_root(Kind::Demo, "demo", Some(d.path().into())).unwrap(),
+            d.path()
+        );
     }
     #[test]
     fn move_parses_one_key_destination_and_global_read_only() {

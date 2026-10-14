@@ -108,9 +108,61 @@ pub async fn execute(
     }
     Ok(())
 }
+/// Shared confirmed TUI entry; no cached-state shortcut to the move POST.
+pub async fn confirmed(
+    backend: &Backend,
+    settings: &Settings,
+    action: &Action,
+    read_only: bool,
+) -> Result<()> {
+    let to = match action.kind.as_str() {
+        "board" => Destination::Board,
+        "backlog" => Destination::Backlog,
+        _ => anyhow::bail!("Unsupported membership destination"),
+    };
+    execute(backend, settings, action, to, read_only, true).await
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn tui_confirmed_moves_revalidate_scope_destination_and_already_completed_moves() {
+        use std::sync::atomic::Ordering;
+        let b = Backend::new("demo", None).unwrap();
+        let s = Settings {
+            project: "DEV".into(),
+            board_id: Some(17),
+            ..Default::default()
+        };
+        let a = prepare(&b, &s, "DEV-102", Destination::Board, false)
+            .await
+            .unwrap()
+            .unwrap();
+        let outside = Settings {
+            project: "OTHER".into(),
+            ..s.clone()
+        };
+        assert!(confirmed(&b, &outside, &a, false).await.is_err());
+        let changed = Settings {
+            board_id: Some(18),
+            ..s.clone()
+        };
+        assert!(confirmed(&b, &changed, &a, false).await.is_err());
+        assert!(confirmed(&b, &s, &a, true).await.is_err());
+        assert_eq!(b.demo_moves.load(Ordering::SeqCst), 0);
+        // Simulate a collaborator finishing the move while the dialog is open.
+        b.apply(&a).await.unwrap();
+        confirmed(&b, &s, &a, false).await.unwrap();
+        assert_eq!(b.demo_moves.load(Ordering::SeqCst), 1);
+        let before = b.get("DEV-102").await.unwrap().status();
+        let a = prepare(&b, &s, "DEV-102", Destination::Backlog, false)
+            .await
+            .unwrap()
+            .unwrap();
+        confirmed(&b, &s, &a, false).await.unwrap();
+        assert_eq!(b.demo_moves.load(Ordering::SeqCst), 2);
+        assert_eq!(before, b.get("DEV-102").await.unwrap().status());
+    }
     #[test]
     fn epic_containers_are_not_move_candidates() {
         let mut w = Workspace {

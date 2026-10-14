@@ -1,4 +1,4 @@
-.PHONY: build test check install
+.PHONY: build test check install notices notices-check package
 build:
 	cargo build --release --locked
 	mkdir -p bin
@@ -12,3 +12,10 @@ check:
 install: build
 	mkdir -p "$(HOME)/.local/bin"
 	install -m 755 bin/jirust "$(HOME)/.local/bin/jirust"
+
+notices:
+	python3 scripts/notices.py
+notices-check:
+	python3 scripts/notices.py --check
+package: build notices-check
+	python3 scripts/package.py

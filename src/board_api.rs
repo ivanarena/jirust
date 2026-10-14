@@ -68,7 +68,21 @@ fn read_profiles(paths: &[std::path::PathBuf]) -> Result<Profile> {
             .read_to_end(&mut bytes)
             .context("Cannot read existing acli profile metadata")?;
         ensure!(bytes.len() < 1024 * 1024, "acli metadata is too large");
-        let c: CliConfig = serde_yaml::from_slice(&bytes)
+        let options = serde_saphyr::options! {
+            reject_unsupported_tags: true,
+            with_snippet: false,
+            budget: serde_saphyr::budget! {
+                max_depth: 16, flow_nesting_limit: 16, max_documents: 1,
+                max_nodes: 20_000, max_events: 50_000, max_aliases: 64, max_anchors: 64,
+                max_total_scalar_bytes: 2 * 1024 * 1024,
+                max_recorded_anchor_bytes: 2 * 1024 * 1024,
+            },
+            alias_limits: serde_saphyr::alias_limits! {
+                max_total_replayed_events: 20_000, max_replay_stack_depth: 16,
+                max_alias_expansions_per_anchor: 64,
+            },
+        };
+        let c: CliConfig = serde_saphyr::from_slice_with_options(&bytes, options)
             .map_err(|_| anyhow::anyhow!("Invalid acli profile metadata"))?;
         let active = c
             .profiles
@@ -142,28 +156,28 @@ async fn profile_credential(
         cfg!(target_os = "linux"),
         "Keyring fallback is Linux-only; configure JIRA_URL, JIRA_EMAIL and JIRA_API_TOKEN in a private local env file on macOS"
     );
-    let out = timeout(
+    let mut command = Command::new("secret-tool");
+    command
+        .args([
+            "lookup",
+            "service",
+            "acli",
+            "username",
+            &p.keyring_username(),
+        ])
+        .stdin(Stdio::null());
+    let (status, stdout) = timeout(
         Duration::from_secs(10),
-        Command::new("secret-tool")
-            .args([
-                "lookup",
-                "service",
-                "acli",
-                "username",
-                &p.keyring_username(),
-            ])
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output(),
+        crate::process::output(command, 1024 * 1024, crate::limits::STDERR_BYTES),
     )
     .await
     .context("Keyring lookup timed out")?
     .context("Install secret-tool to reuse the acli Linux keyring")?;
     ensure!(
-        out.status.success() && !out.stdout.is_empty(),
+        status.success() && !stdout.is_empty(),
         "Cannot access current acli keyring credential"
     );
-    decode_credential(&out.stdout, p.is_oauth())
+    decode_credential(&stdout, p.is_oauth())
 }
 /// Approved read-only attachment-content bridge; never follows content URLs,
 /// redirects, or external image links, and never sends credentials to a CDN.
@@ -445,6 +459,7 @@ impl BoardApi {
             fields.push_str(id);
         }
         let mut all = Vec::new();
+        let mut encoded_bytes = 0usize;
         let mut start = 0usize;
         loop {
             let v = self
@@ -460,8 +475,10 @@ impl BoardApi {
                     None,
                 )
                 .await?;
-            let mut page: Vec<Ticket> = serde_json::from_value(v["issues"].clone())
-                .context("Missing Board API issue page")?;
+            let mut page: Vec<Ticket> =
+                serde_json::from_value(v["issues"].clone()).map_err(|_| {
+                    anyhow::anyhow!("Missing or invalid Board API issue page (content suppressed)")
+                })?;
             for t in &mut page {
                 ensure!(
                     t.fields.is_object(),
@@ -479,6 +496,12 @@ impl BoardApi {
                 "Board API returned invalid or duplicate keys"
             );
             let count = page.len();
+            encoded_bytes = encoded_bytes.saturating_add(crate::limits::tickets(&page)?);
+            ensure!(
+                encoded_bytes <= crate::limits::WORKSPACE_BYTES
+                    && all.len().saturating_add(count) <= crate::limits::RECORDS,
+                "Board dataset exceeds resource limits; narrow the scope"
+            );
             all.extend(page);
             start += count;
             if v["isLast"].as_bool() == Some(true)
@@ -704,12 +727,46 @@ fn merge_membership(board: Vec<Ticket>, backlog: Vec<Ticket>) -> Result<Workspac
         synced_at: crate::config::now(),
         ..Default::default()
     };
+    crate::limits::tickets(&w.items)?;
+    crate::limits::size(&w, crate::limits::WORKSPACE_BYTES)?;
     w.reindex();
     Ok(w)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn yaml_profiles_preserve_quoted_ids_oauth_and_anchors_but_reject_includes_duplicates_and_bad_types()
+     {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("profile.yaml");
+        let valid = "current_profile: 'cloud:alex'\nprofiles:\n - &selected\n   site: example.atlassian.net\n   cloud_id: 'cloud'\n   account_id: 'alex'\n   email: 'alex@example.com'\n   auth_type: oauth\n";
+        std::fs::write(&p, valid).unwrap();
+        let profile = read_profiles(std::slice::from_ref(&p)).unwrap();
+        assert!(profile.is_oauth());
+        assert_eq!(profile.keyring_username(), "jira:cloud:alex");
+        for bad in [
+            valid.replace("'alex@example.com'", "!include /not-read"),
+            valid.replace(
+                "auth_type: oauth",
+                "auth_type: oauth\n   auth_type: api_token",
+            ),
+            valid.replace("'alex@example.com'", "[SYNTHETIC_ONLY]"),
+            format!("{valid}\n---\n{valid}"),
+            format!(
+                "{valid}\nignored: {}SYNTHETIC_ONLY{}",
+                "[".repeat(40),
+                "]".repeat(40)
+            ),
+        ] {
+            std::fs::write(&p, bad).unwrap();
+            let error = format!(
+                "{:#}",
+                read_profiles(std::slice::from_ref(&p)).err().unwrap()
+            );
+            assert!(!error.contains("SYNTHETIC_ONLY"));
+        }
+    }
     #[test]
     fn cli_metadata_supports_native_and_standard_paths_without_guessing_identity() {
         let dir = tempfile::tempdir().unwrap();

@@ -1097,7 +1097,12 @@ mod tests {
                 row: apply.y,
                 modifiers: KeyModifiers::NONE,
             }));
-            assert!(jobs.iter().all(|j| !matches!(j, crate::app::Job::Write(_))));
+            assert!(
+                jobs.iter().all(|j| !matches!(
+                    j,
+                    crate::app::Job::Write(_) | crate::app::Job::Move { .. }
+                ))
+            );
             assert_eq!(app.assignee_filter, "sam");
             assert_eq!(app.status_filter, "To Do");
             assert!(app.dialog.is_none());

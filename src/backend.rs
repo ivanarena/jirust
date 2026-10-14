@@ -51,6 +51,8 @@ pub struct Backend {
     pub binary: PathBuf,
     slots: Semaphore,
     demo: Mutex<BTreeMap<String, Ticket>>,
+    #[cfg(test)]
+    pub(crate) demo_moves: std::sync::atomic::AtomicUsize,
     api: std::sync::RwLock<Option<Arc<crate::board_api::BoardApi>>>,
     image_api: std::sync::RwLock<Option<Arc<crate::board_api::ImageApi>>>,
     image_slots: Semaphore,
@@ -84,6 +86,8 @@ impl Backend {
         Ok(Arc::new(Self {
             kind,
             binary,
+            #[cfg(test)]
+            demo_moves: std::sync::atomic::AtomicUsize::new(0),
             slots: Semaphore::new(3),
             api: std::sync::RwLock::new(None),
             image_api: std::sync::RwLock::new(None),
@@ -220,15 +224,20 @@ impl Backend {
             if self.kind == Kind::Acli {
                 command.env_remove("JIRA_API_TOKEN");
             }
-            let out = command.output().await?;
-            if !out.status.success() {
+            let (status, stdout) = crate::process::output(
+                command,
+                crate::limits::CLI_BYTES,
+                crate::limits::STDERR_BYTES,
+            )
+            .await?;
+            if !status.success() {
                 bail!(
-                    "{}: {}",
+                    "{} failed (exit {:?}); diagnostic output suppressed to protect credentials. An update may have reached Jira; reload before retrying.",
                     self.kind.name(),
-                    data::safe(&String::from_utf8_lossy(&out.stderr))
-                )
+                    status.code()
+                );
             }
-            Ok(out.stdout)
+            Ok(stdout)
         };
         timeout(Duration::from_secs(45), operation)
             .await
@@ -398,6 +407,8 @@ impl Backend {
                 bail!("CLI returned invalid keys")
             }
             workspace.mine = mine.into_iter().map(|t| t.key).collect();
+            workspace.encoded_bytes =
+                crate::limits::size(&workspace, crate::limits::WORKSPACE_BYTES)?;
             return Ok((workspace, changes.into_iter().map(|t| t.key).collect()));
         }
         let (items, mine, changes) =
@@ -413,6 +424,7 @@ impl Backend {
         {
             bail!("CLI returned invalid ticket keys")
         }
+        crate::limits::tickets(&items)?;
         let complete = self.kind != Kind::Jira
             || (items.len() < 100 && mine.len() < 100 && changes.len() < 100);
         // Keep the CLI's Rank sequence; removing children must
@@ -447,6 +459,7 @@ impl Backend {
             synced_at: crate::config::now(),
             ..Default::default()
         };
+        crate::limits::size(&workspace, crate::limits::WORKSPACE_BYTES)?;
         workspace.reindex();
         Ok((workspace, changes.into_iter().map(|t| t.key).collect()))
     }
@@ -468,8 +481,9 @@ impl Backend {
         } else {
             strings(&["issue", "view", key, "--raw"])
         };
-        let mut ticket: Ticket = serde_json::from_slice(&self.run(&args).await?)
-            .context("CLI returned an unsupported ticket JSON shape")?;
+        let mut ticket: Ticket = serde_json::from_slice(&self.run(&args).await?).map_err(|_| {
+            anyhow::anyhow!("CLI returned an unsupported ticket JSON shape (content suppressed)")
+        })?;
         ticket.estimate_fields = self.estimate_fields().await;
         Ok(ticket)
     }
@@ -557,7 +571,12 @@ impl Backend {
             let mut map = self.demo.lock().await;
             let t = map.get_mut(&a.key).context("Demo ticket not found")?;
             match a.kind.as_str() {
-                "board" | "backlog" => t.fields["_jirust_board"] = json!(a.kind == "board"),
+                "board" | "backlog" => {
+                    #[cfg(test)]
+                    self.demo_moves
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    t.fields["_jirust_board"] = json!(a.kind == "board");
+                }
                 "status" => {
                     t.fields["status"]["name"] = json!(a.value);
                     t.fields["status"]["statusCategory"]["key"] =
@@ -740,16 +759,24 @@ fn strings(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| s.to_string()).collect()
 }
 fn collection<T: DeserializeOwned>(bytes: &[u8], keys: &[&str]) -> Result<Vec<T>> {
-    let mut v: Value = serde_json::from_slice(bytes).context("CLI did not return valid JSON")?;
-    if v.is_array() {
-        return Ok(serde_json::from_value(v)?);
+    let mut v: Value = serde_json::from_slice(bytes)
+        .map_err(|_| anyhow::anyhow!("CLI did not return valid JSON (content suppressed)"))?;
+    let array = if v.is_array() {
+        v
+    } else {
+        let key = keys.iter().find(|key| v[**key].is_array()).ok_or_else(|| {
+            anyhow::anyhow!("CLI collection shape unsupported; no result silently discarded")
+        })?;
+        v[*key].take()
+    };
+    if array
+        .as_array()
+        .is_some_and(|a| a.len() > crate::limits::RECORDS)
+    {
+        bail!("CLI collection exceeds record limit; narrow the scope");
     }
-    for key in keys {
-        if v[*key].is_array() {
-            return Ok(serde_json::from_value(v[*key].take())?);
-        }
-    }
-    bail!("CLI collection shape unsupported; no result silently discarded")
+    serde_json::from_value(array)
+        .map_err(|_| anyhow::anyhow!("CLI collection shape unsupported (content suppressed)"))
 }
 fn receipt(bytes: &[u8]) -> Result<()> {
     fn failed(v: &Value) -> bool {
@@ -778,8 +805,7 @@ fn receipt(bytes: &[u8]) -> Result<()> {
         && failed(&v)
     {
         bail!(
-            "CLI reported unsuccessful update: {}",
-            data::safe(&String::from_utf8_lossy(bytes))
+            "CLI reported unsuccessful update (content suppressed); outcome may be unknown. Reload before retrying."
         )
     }
     Ok(())
@@ -844,6 +870,32 @@ mod tests {
             b.action_args(&Action::new("summary", "--help", "x"), None)
                 .is_err()
         );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ordinary_errors_and_success_exit_failure_receipts_never_expose_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let cli = d.path().join("fake-acli");
+        std::fs::write(&cli, "#!/bin/sh\nprintf 'Authorization: Bearer SYNTHETIC_ONLY; https://user:password@example.com' >&2\nexit 7\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let b = Backend::new("acli", Some(cli)).unwrap();
+        let error = format!("{:#}", b.run(&[]).await.unwrap_err());
+        assert!(error.contains("exit Some(7)"));
+        for secret in ["SYNTHETIC_ONLY", "password", "Authorization"] {
+            assert!(!error.contains(secret));
+        }
+        let error = format!(
+            "{:#}",
+            receipt(br#"{"errors":["SYNTHETIC_ONLY"]}"#).unwrap_err()
+        );
+        assert!(!error.contains("SYNTHETIC_ONLY"));
+        let error = format!(
+            "{:#}",
+            collection::<Ticket>(br#"[{"key":"DEV-1","transitions":"SYNTHETIC_ONLY"}]"#, &[])
+                .unwrap_err()
+        );
+        assert!(!error.contains("SYNTHETIC_ONLY"));
     }
     #[test]
     fn response_shapes_and_receipts() {

@@ -258,7 +258,7 @@ pub fn cached_bytes(path: &Path) -> Option<Vec<u8>> {
             return None;
         }
     }
-    local_bytes(path).ok()
+    crate::private_fs::read(path, MAX_BYTES as usize).ok()
 }
 pub fn store(path: &Path, bytes: &[u8]) -> Result<()> {
     store_with_quota(path, bytes, CACHE_BYTES)
@@ -277,6 +277,7 @@ fn store_with_quota(path: &Path, bytes: &[u8], quota: u64) -> Result<()> {
             "Image cache must be a regular directory"
         );
     }
+    let _lock = crate::private_fs::lock(dir)?;
     let mut entries = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -293,7 +294,10 @@ fn store_with_quota(path: &Path, bytes: &[u8], quota: u64) -> Result<()> {
                 return None;
             }
             let m = std::fs::symlink_metadata(&p).ok()?;
-            if !m.is_file() || m.file_type().is_symlink() {
+            if !m.is_file()
+                || m.file_type().is_symlink()
+                || !crate::private_fs::valid(&p, MAX_BYTES as usize)
+            {
                 return None;
             }
             Some((m.modified().ok(), m.len(), p))

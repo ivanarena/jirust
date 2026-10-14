@@ -5,7 +5,6 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -52,7 +51,8 @@ impl Settings {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let value: Value = serde_json::from_slice(&fs::read(path)?)?;
+        let value: Value = serde_json::from_slice(&crate::private_fs::read(&path, 64 * 1024)?)
+            .map_err(|_| anyhow::anyhow!("Invalid private settings JSON (content suppressed)"))?;
         Self::from_value(value)
     }
     fn from_value(value: Value) -> Result<Self> {
@@ -192,11 +192,14 @@ pub fn quote(s: &str) -> String {
 fn migrate_directory(base: &Path) -> Result<PathBuf> {
     let target = base.join("jirust");
     let legacy = base.join("jiraui");
-    if !target.exists() && legacy.exists() {
+    if fs::symlink_metadata(&target).is_ok() {
+        private_dir(&target)?;
+    } else if fs::symlink_metadata(&legacy).is_ok() {
         let metadata = fs::symlink_metadata(&legacy)?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             bail!("Legacy application directory must be a real directory");
         }
+        private_dir(&legacy)?;
         fs::rename(&legacy, &target).context("Cannot migrate legacy application directory")?;
     }
     Ok(target)
@@ -217,21 +220,14 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(config_directory()?.join("config.json"))
 }
 fn private_dir(path: &Path) -> Result<()> {
-    fs::create_dir_all(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    }
+    crate::private_fs::directory(path, true)?;
     Ok(())
 }
 pub fn private_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().context("Missing parent directory")?;
-    private_dir(parent)?;
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    file.write_all(bytes)?;
-    file.persist(path)?;
-    Ok(())
+    if bytes.len() > crate::limits::ENTRY_BYTES {
+        bail!("Private write exceeds size limit");
+    }
+    crate::private_fs::write(path, bytes)
 }
 fn hash(s: &str) -> String {
     format!("{:x}", Sha256::digest(s.as_bytes()))
@@ -250,14 +246,21 @@ impl Cache {
         if disabled || scope.is_empty() {
             return Ok(Self { directory: None });
         }
-        let path = cache_directory()?.join("rust").join(hash(scope));
+        let root = cache_directory()?;
+        private_dir(&root)?;
+        private_dir(&root.join("rust"))?;
+        let path = root.join("rust").join(hash(scope));
         private_dir(&path)?;
         Ok(Self {
             directory: Some(path),
         })
     }
     pub fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<(T, u64)> {
-        let bytes = fs::read(self.directory.as_ref()?.join(format!("{}.json", hash(key)))).ok()?;
+        let bytes = crate::private_fs::read(
+            &self.directory.as_ref()?.join(format!("{}.json", hash(key))),
+            crate::limits::ENTRY_BYTES,
+        )
+        .ok()?;
         let entry: Entry<T> = serde_json::from_slice(&bytes).ok()?;
         Some((entry.data, entry.time))
     }
@@ -265,16 +268,26 @@ impl Cache {
         let Some(path) = &self.directory else {
             return Ok(());
         };
+        let _lock = crate::private_fs::lock(path)?;
         let e = Entry { time: now(), data };
-        private_write(
-            &path.join(format!("{}.json", hash(key))),
-            &serde_json::to_vec(&e)?,
-        )
+        let destination = path.join(format!("{}.json", hash(key)));
+        let bytes = crate::limits::encode(&e, crate::limits::ENTRY_BYTES)?;
+        crate::private_fs::quota(
+            path,
+            &destination,
+            bytes.len(),
+            crate::limits::CACHE_BYTES,
+            crate::limits::CACHE_ENTRIES,
+        )?;
+        private_write(&destination, &bytes)
     }
     pub fn exists(&self, key: &str) -> bool {
-        self.directory
-            .as_ref()
-            .is_some_and(|dir| dir.join(format!("{}.json", hash(key))).is_file())
+        self.directory.as_ref().is_some_and(|dir| {
+            crate::private_fs::valid(
+                &dir.join(format!("{}.json", hash(key))),
+                crate::limits::ENTRY_BYTES,
+            )
+        })
     }
     pub fn remove(&self, key: &str) {
         if let Some(dir) = &self.directory {
@@ -338,6 +351,18 @@ mod tests {
                     & 0o777,
                 0o600
             );
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn migration_rejects_legacy_and_destination_symlinks() {
+        use std::os::unix::fs::symlink;
+        for name in ["jiraui", "jirust"] {
+            let d = tempfile::tempdir().unwrap();
+            let external = tempfile::tempdir().unwrap();
+            symlink(external.path(), d.path().join(name)).unwrap();
+            assert!(migrate_directory(d.path()).is_err());
+            assert!(external.path().exists());
         }
     }
     #[test]
