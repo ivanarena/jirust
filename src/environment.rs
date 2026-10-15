@@ -25,6 +25,9 @@ fn file_present(path: &Path) -> Result<bool> {
         )),
     }
 }
+fn user_file() -> Result<PathBuf> {
+    Ok(crate::config::config_directory()?.join(".env"))
+}
 fn selected_file(
     explicit: Option<&Path>,
     profile: Option<PathBuf>,
@@ -42,16 +45,31 @@ fn selected_file(
 }
 impl Environment {
     pub fn load(explicit: Option<&Path>) -> Result<Self> {
+        Self::load_inner(explicit, false)
+    }
+    pub fn load_for_auth(explicit: Option<&Path>) -> Result<Self> {
+        Self::load_inner(explicit, true)
+    }
+    pub(crate) fn auth_file(explicit: Option<&Path>) -> Result<PathBuf> {
+        match Self::selected(explicit)? {
+            Some(path) => Ok(path),
+            None => user_file(),
+        }
+    }
+    fn selected(explicit: Option<&Path>) -> Result<Option<PathBuf>> {
         let profile = std::env::var_os("JIRUST_ENV_FILE")
             .filter(|s| !s.is_empty())
             .map(PathBuf::from);
         // Do not even resolve/migrate the personal config directory for an explicit profile.
-        let path = selected_file(explicit, profile, Path::new(".env"), || {
-            Ok(crate::config::config_directory()?.join(".env"))
-        })?;
-        let Some(path) = path else {
+        selected_file(explicit, profile, Path::new(".env"), user_file)
+    }
+    fn load_inner(explicit: Option<&Path>, allow_missing: bool) -> Result<Self> {
+        let Some(path) = Self::selected(explicit)? else {
             return Ok(Self::default());
         };
+        if allow_missing && !file_present(&path)? {
+            return Ok(Self::default());
+        }
         let bytes=crate::private_fs::read_environment(&path,65536).context("Cannot read private environment file; require an owned regular 0600 file, no symlink/hardlink, at most 64 KiB")?;
         let values = dotenvy::from_read_iter(bytes.as_slice())
             .collect::<std::result::Result<BTreeMap<_, _>, _>>()
@@ -61,6 +79,7 @@ impl Environment {
     pub fn value(&self, key: &str) -> Option<String> {
         std::env::var(key)
             .ok()
+            .filter(|s| !s.is_empty())
             .or_else(|| self.values.get(key).cloned())
             .filter(|s| !s.is_empty())
     }
@@ -87,7 +106,13 @@ impl Environment {
             .transpose()
     }
     pub fn credentials(&self) -> Result<Option<Arc<Credentials>>> {
-        let values = ["JIRA_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"].map(|k| self.value(k));
+        Self::credentials_from_values(
+            ["JIRA_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"].map(|k| self.value(k)),
+        )
+    }
+    pub(crate) fn credentials_from_values(
+        values: [Option<String>; 3],
+    ) -> Result<Option<Arc<Credentials>>> {
         if values.iter().all(Option::is_none) {
             return Ok(None);
         }

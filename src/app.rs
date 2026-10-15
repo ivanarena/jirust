@@ -20,6 +20,9 @@ use std::{
 };
 
 pub enum Job {
+    Projects {
+        generation: u64,
+    },
     Sync {
         generation: u64,
         base: String,
@@ -59,6 +62,10 @@ pub enum Job {
     },
 }
 pub enum Message {
+    Projects {
+        generation: u64,
+        result: Result<Vec<crate::backend::Project>>,
+    },
     SyncProgress {
         generation: u64,
         stage: crate::refresh::Stage,
@@ -116,6 +123,7 @@ pub struct Choice {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Purpose {
+    Project,
     Assign,
     Status,
     Links,
@@ -442,8 +450,8 @@ impl App {
                 self.doc_dirty = true;
                 self.notice(e.to_string(), true);
                 if self.settings.project.is_empty() && self.settings.scope_jql.is_empty() {
-                    self.scope_dialog()
-                };
+                    return self.scope_dialog();
+                }
                 vec![]
             }
         }
@@ -1097,6 +1105,52 @@ impl App {
     }
     pub fn message(&mut self, message: Message) -> Vec<Job> {
         match message {
+            Message::Projects { generation, result } => {
+                if generation != self.generation
+                    || !matches!(
+                        &self.dialog,
+                        Some(Dialog::Picker {
+                            purpose: Purpose::Project,
+                            ..
+                        })
+                    )
+                {
+                    return vec![];
+                }
+                let (title, mut choices) = match result {
+                    Ok(projects) => {
+                        let title = if projects.is_empty() {
+                            "No available projects · r retry"
+                        } else {
+                            "Choose a project · r refresh"
+                        };
+                        (
+                            title,
+                            projects
+                                .into_iter()
+                                .map(|project| Choice {
+                                    label: format!("{} · {}", project.key, project.name),
+                                    value: project.key,
+                                    target: None,
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    }
+                    Err(error) => {
+                        self.notice(format!("Cannot list projects: {error}"), true);
+                        ("Cannot list projects · r retry", vec![])
+                    }
+                };
+                choices.push(Self::manual_project_choice());
+                self.dialog = Some(Dialog::Picker {
+                    title: title.into(),
+                    choices,
+                    selected: 0,
+                    purpose: Purpose::Project,
+                    key: String::new(),
+                });
+                self.dirty = true;
+            }
             Message::SyncProgress { generation, stage } => {
                 if self.syncing && generation == self.generation {
                     self.refresh_stage = stage;
@@ -1797,8 +1851,7 @@ impl App {
                     return vec![];
                 }
                 if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
-                    self.scope_dialog();
-                    return vec![];
+                    return self.scope_dialog();
                 }
                 match key.code {
                     KeyCode::Char('x') => return self.clear_filters(),
@@ -1897,7 +1950,7 @@ impl App {
                         self.search.clear();
                         self.search_changed();
                     }
-                    KeyCode::Char('g') => self.scope_dialog(),
+                    KeyCode::Char('g') => return self.scope_dialog(),
                     KeyCode::Char('A') => self.assignee_picker(true),
                     KeyCode::Char('S' | 'T')
                         if !key
@@ -2120,8 +2173,7 @@ impl App {
                             }
                         }
                         if contains(self.scope_rect, mouse.column, mouse.row) {
-                            self.scope_dialog();
-                            return vec![];
+                            return self.scope_dialog();
                         }
                         if contains(self.search_rect, mouse.column, mouse.row) {
                             self.search_mode = SearchMode::Text;
@@ -2317,9 +2369,33 @@ impl App {
         a.dedup();
         a
     }
-    fn scope_dialog(&mut self) {
+    fn manual_project_choice() -> Choice {
+        Choice {
+            label: "Enter a project or JQL manually".into(),
+            value: "__manual".into(),
+            target: None,
+        }
+    }
+    fn scope_dialog(&mut self) -> Vec<Job> {
+        if self.settings.project.is_empty() && self.settings.scope_jql.is_empty() {
+            self.generation += 1;
+            self.dialog = Some(Dialog::Picker {
+                title: "Load available Jira projects · r retry".into(),
+                choices: vec![Self::manual_project_choice()],
+                selected: 0,
+                purpose: Purpose::Project,
+                key: String::new(),
+            });
+            return vec![Job::Projects {
+                generation: self.generation,
+            }];
+        }
+        self.advanced_scope_dialog();
+        vec![]
+    }
+    fn advanced_scope_dialog(&mut self) {
         self.dialog = Some(Dialog::Form {
-            title: "Advanced · shared backlog scope (already configured)".into(),
+            title: "Advanced · shared backlog scope".into(),
             labels: vec![
                 "Project".into(),
                 "Ticket prefix (blank = project)".into(),
@@ -3075,6 +3151,7 @@ impl App {
                 key: ticket_key,
                 ..
             } => match key.code {
+                KeyCode::Char('r') if *purpose == Purpose::Project => return self.scope_dialog(),
                 KeyCode::Down | KeyCode::Char('j') => {
                     *selected = (*selected + 1).min(choices.len().saturating_sub(1))
                 }
@@ -3085,6 +3162,15 @@ impl App {
                     };
                     let purpose = *purpose;
                     let ticket_key = ticket_key.clone();
+                    if purpose == Purpose::Project {
+                        if choice.value == "__manual" {
+                            self.advanced_scope_dialog();
+                            return vec![];
+                        }
+                        self.settings.project = choice.value;
+                        self.save_settings();
+                        return self.reload();
+                    }
                     if purpose == Purpose::Links {
                         if let Some(t) = choice.target {
                             return self.open_target(t);
@@ -3150,7 +3236,7 @@ impl App {
                                 .unwrap_or_default();
                             if choice.value == "description"
                                 && !self.details.contains_key(&ticket_key)
-                                && !t.is_some_and(|t| t.fields.get("description").is_some())
+                                && t.is_none_or(|t| t.fields.get("description").is_none())
                             {
                                 self.notice(
                                     "Load full details before editing the description",
@@ -3314,6 +3400,102 @@ mod tests {
             a.details.insert(t.key.clone(), (t, config::now()));
         }
         a
+    }
+    fn unconfigured_app() -> App {
+        let mut app = app();
+        app.settings.project.clear();
+        app.settings.scope_jql.clear();
+        app.settings.prefix.clear();
+        app.workspace = None;
+        app
+    }
+    #[test]
+    fn initial_setup_lists_projects_and_selection_starts_scoped_sync() {
+        let mut app = unconfigured_app();
+        app.read_only = true;
+        let jobs = app.reload();
+        let [Job::Projects { generation }] = jobs.as_slice() else {
+            panic!("expected discovery");
+        };
+        let generation = *generation;
+        app.message(Message::Projects {
+            generation,
+            result: Ok(vec![crate::backend::Project {
+                key: "DEV".into(),
+                name: "Demo project".into(),
+            }]),
+        });
+        assert!(app.settings.project.is_empty());
+        assert!(
+            matches!(&app.dialog, Some(Dialog::Picker { choices, purpose: Purpose::Project, .. }) if choices.len() == 2 && choices[0].label == "DEV · Demo project")
+        );
+        let jobs = app.event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.settings.project, "DEV");
+        assert!(app.dialog.is_none());
+        assert!(
+            matches!(jobs.first(), Some(Job::Sync { base, .. }) if base.contains("project = \"DEV\""))
+        );
+        assert!(
+            jobs.iter()
+                .all(|job| !matches!(job, Job::Write(_) | Job::Move { .. }))
+        );
+    }
+    #[test]
+    fn project_discovery_handles_empty_errors_retry_and_manual_setup() {
+        for result in [Ok(vec![]), Err(anyhow::anyhow!("Synthetic CLI failure"))] {
+            let mut app = unconfigured_app();
+            app.reload();
+            let generation = app.generation;
+            app.message(Message::Projects { generation, result });
+            assert!(
+                matches!(&app.dialog, Some(Dialog::Picker { choices, .. }) if choices.len() == 1 && choices[0].value == "__manual")
+            );
+            let jobs = app.event(key('r', KeyModifiers::NONE));
+            assert!(
+                matches!(jobs.as_slice(), [Job::Projects { generation: new }] if *new > generation)
+            );
+            app.event(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            )));
+            assert!(matches!(&app.dialog, Some(Dialog::Form { kind, .. }) if kind == "scope"));
+            app.message(Message::Projects {
+                generation: app.generation,
+                result: Ok(vec![]),
+            });
+            assert!(matches!(&app.dialog, Some(Dialog::Form { .. })));
+        }
+    }
+    #[test]
+    fn cancelled_or_stale_project_results_do_not_reopen_setup() {
+        let mut app = unconfigured_app();
+        app.reload();
+        let generation = app.generation;
+        app.event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        app.message(Message::Projects {
+            generation,
+            result: Ok(vec![]),
+        });
+        assert!(app.dialog.is_none());
+        app.event(key('g', KeyModifiers::NONE));
+        app.message(Message::Projects {
+            generation,
+            result: Ok(vec![]),
+        });
+        assert!(
+            matches!(&app.dialog, Some(Dialog::Picker { title, .. }) if title.contains("Load available"))
+        );
+        assert!(app.settings.project.is_empty());
+    }
+    #[test]
+    fn configured_scope_keeps_advanced_form_without_project_discovery() {
+        let mut app = app();
+        let jobs = app.event(key('g', KeyModifiers::NONE));
+        assert!(jobs.is_empty());
+        assert!(matches!(app.dialog, Some(Dialog::Form { .. })));
     }
     fn key(c: char, mods: KeyModifiers) -> Event {
         Event::Key(KeyEvent::new(KeyCode::Char(c), mods))
