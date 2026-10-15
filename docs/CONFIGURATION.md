@@ -2,6 +2,23 @@
 
 Jirust has no built-in company, account, project, ticket prefix, board ID or browser site. The tracked `.env.example` is synthetic; set your own scope. The four views and authoritative Jira membership/Rank rules remain the same for every account.
 
+## Platform setup
+
+For the short install/connect/run sequence, start with the [README](../README.md).
+
+- **Linux:** install [Rust 1.90+](https://rustup.rs), Git, make, a C compiler and [acli](https://developer.atlassian.com/cloud/acli/guides/install-linux/). On Debian/Ubuntu, `sudo apt-get install build-essential git` provides the build tools.
+- **macOS:** with Homebrew installed, run `brew tap atlassian/homebrew-acli` and `brew install acli rust`; install Xcode Command Line Tools if a compiler is missing. See the [official acli guide](https://developer.atlassian.com/cloud/acli/guides/install-macos/).
+
+`make install` builds Jirust into `~/.local/bin`; add that directory to PATH. Leave `JIRA_CLI_BIN` empty for native executable discovery, especially when moving between Linux and macOS. Herdr is optional. The terminal must be at least 60×16 cells.
+
+## Authentication
+
+**Recommended on either OS:** fill `JIRA_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN` together in a private 0600 env file, using an API token **without scopes**, then run `jirust auth`. This explicitly configures acli; the token goes through stdin, never argv. Validate with `jirust --read-only --no-cache --check` before starting the TUI.
+
+**Reuse a CLI login:** leave all three authentication variables empty and skip `jirust auth`. Ordinary operations use that login. The optional Board/image/field HTTP bridges can reuse the active acli keyring entry on **Linux only**, with `secret-tool` installed. Some OAuth grants lack Jira Software scopes even if ordinary issue reads work; use the explicit token setup if needed. **macOS HTTP bridges require the private token setup**; Jirust does not read macOS Keychain.
+
+Startup never silently switches accounts. CLI authentication must match the configured site/email; restart after changing authentication. Conflicting acli metadata in standard/native config locations fails closed instead of guessing. Direct HTTP remains restricted to the approved pinned Cloud endpoints; browser overrides do not change authentication.
+
 ## Precedence and profiles
 
 Explicit CLI flags win over exported environment variables, then the selected dotenv file, then saved/default settings. An empty dotenv value supplies no override. Scope/project/prefix/JQL/board/name/view settings may be remembered for later TUI launches; credentials, browser overrides and refresh intervals are not written to settings. `--check`, subcommands and demo do not save those settings.
@@ -11,7 +28,7 @@ Select a dotenv file in this order:
 1. `--env-file /private/path/work.env`
 2. exported `JIRUST_ENV_FILE=/private/path/work.env`
 3. `./.env`
-4. `.env` in the platform-native Jirust config directory (see README).
+4. `.env` in the [platform-native Jirust config directory](#storage-locations).
 
 An explicitly selected missing/invalid file fails rather than falling back to another account. Default-file inspection errors also fail; only an absent default file permits trying the next location. `JIRUST_ENV_FILE` is a bootstrap selector from the process environment, not a variable inside another dotenv file. Keep files owned by you, regular, **0600**, no symlinks/hardlinks, and at most **64 KiB**. A normal owned 0755 project directory is supported; its permissions are never changed. The immediate parent must not be writable by other users. Dotenv values are not exported globally or to CLI children. Demo ignores personal environment settings; explicit demo flags still work.
 
@@ -24,6 +41,15 @@ jirust --env-file /private/path/work.env
 ```
 
 Profiles select settings, **not accounts**. Jirust never silently switches the CLI's active login. Use explicit `jirust --env-file /private/path/work.env auth` only when intentionally changing authentication, then restart. Account/site mismatch checks and account-private caches still apply.
+
+## Storage locations
+
+| Platform | Settings / private env directory | Account-scoped cache root |
+|---|---|---|
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/jirust` | `${XDG_CACHE_HOME:-~/.cache}/jirust/rust/<account-hash>` |
+| macOS | `~/Library/Application Support/jirust` | `~/Library/Caches/jirust/rust/<account-hash>` |
+
+Settings are `config.json`; the optional private env is `.env`. Account/site determines cache identity; unknown identity disables persistence. Files are private and directories owned/private. `--no-cache` disables ticket/image persistence; demo does not save settings/cache or migrate personal configuration. When upgrading from the former app name, quit the old process first; safe migration never overwrites an existing new directory. See [storage/security boundaries](../SECURITY.md).
 
 ## Settings reference
 
@@ -69,4 +95,16 @@ The second example generates `https://jira.example.org/jira/browse/DEV-123` for 
 
 No token, OAuth bearer or attachment request is ever sent to this browser base. Board/image/field HTTP remains pinned to the independently validated CLI/token site, with fixed approved endpoints, no redirects and existing bounds. Without an override, server `/jira/rest/...` metadata preserves `/jira` in browser links. OAuth gateway URLs are not guessed into browser links; use the pinned profile site or supply the browser base.
 
-A custom browser host/context is **not** support for arbitrary authenticated API hosts, Jira Data Center membership, other board strategies or universal terminal/macOS parity. Those support limits remain documented in `SUPPORT.md`.
+A custom browser host/context is **not** support for arbitrary authenticated API hosts, Jira Data Center membership, other board strategies or universal terminal/macOS parity. See the [support matrix](SUPPORT.md).
+
+## Troubleshooting
+
+| Problem | What to check |
+|---|---|
+| `jirust: command not found` | Add `$HOME/.local/bin` to PATH, or use `./bin/jirust` from a built checkout. |
+| No project/scope or wrong env | Set `JIRA_PROJECT`; use `--env-file /absolute/path` when launching elsewhere. |
+| Env file rejected | Owned regular 0600 file, no symlink/hardlink, parent not writable by others; only absent default files permit fallback. |
+| Account mismatch / HTTP 401 | Check the three authentication settings and permissions. Run `jirust auth` only for the intended account, then restart. OAuth can lack Software scopes. |
+| Unsupported Board metadata | Check the actual Board ID and support matrix; never substitute status guesses for membership. |
+| Empty list after filtering | F6 clears the current view; shown/scope counts distinguish filtering from missing data. |
+| Image/clipboard trouble | Try `--image-protocol halfblocks`, `--no-images` or `--no-copy-on-click`; see [usage](USAGE.md). |

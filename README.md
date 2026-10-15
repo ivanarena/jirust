@@ -6,7 +6,7 @@ A fast Jira terminal client with **Mine, Available, Board and Backlog** views, i
 
 ## 1. Install
 
-You need [Rust **1.90+**](https://rustup.rs), Git, make, a C compiler and [Atlassian CLI (acli)](https://developer.atlassian.com/cloud/acli/guides/install-acli/). [Platform setup](docs/SETUP.md) covers more detail.
+You need [Rust **1.90+**](https://rustup.rs), Git, make, a C compiler and [Atlassian CLI (acli)](https://developer.atlassian.com/cloud/acli/guides/install-acli/). [Platform setup](docs/CONFIGURATION.md#platform-setup) covers more detail.
 
 ```sh
 git clone https://github.com/ivanarena/jirust.git
@@ -44,7 +44,7 @@ jirust --read-only --no-cache --check
 jirust --read-only
 ```
 
-`auth` explicitly configures acli from your private file. Start read-only; omit `--read-only` when you want confirmed updates. Already authenticated? See [reusing a CLI login](docs/SETUP.md#local-environment-configuration).
+`auth` explicitly configures acli from your private file. Start read-only; omit `--read-only` when you want confirmed updates. Already authenticated? See [reusing a CLI login](docs/CONFIGURATION.md#authentication).
 
 Run from the checkout, or pass `--env-file /absolute/path/to/.env` from elsewhere. [All settings and profile locations →](docs/CONFIGURATION.md)
 
@@ -69,7 +69,7 @@ Use `--no-copy-on-click` to disable clipboard writes, or `--no-images` to disabl
 
 ## More
 
-- [Setup and authentication](docs/SETUP.md) · [Configuration reference](docs/CONFIGURATION.md)
+- [Configuration, authentication and troubleshooting](docs/CONFIGURATION.md)
 - [Detailed controls, images and behavior](docs/USAGE.md)
 - [Supported platforms and Jira boards](docs/SUPPORT.md) · [Security](SECURITY.md)
 - Development: `make check && make build`. [Release checklist](docs/RELEASING.md)
