@@ -4,9 +4,9 @@ Jirust is experimental software, not a hosted service. Only the latest released 
 
 ## Reporting
 
-The repository is currently private. Authorized collaborators should report concerns through a **private repository issue** or an existing private channel with the owner. Do not include tokens, real ticket bodies, CLI configuration, dotenv files, clipboard contents or unredacted logs. Describe reproduction steps using synthetic DEV tickets.
+Use GitHub's private [Report a vulnerability](https://github.com/ivanarena/jirust/security/advisories/new) channel for potential vulnerabilities, **not public issues**. Do not include tokens, real ticket bodies, CLI configuration, dotenv files, clipboard contents or unredacted logs. Describe reproduction steps using synthetic DEV tickets.
 
-**Before any public publication**, the owner must enable GitHub Private Vulnerability Reporting and verify that [Report a vulnerability](https://github.com/ivanarena/jirust/security/advisories/new) is available. Once enabled, use that private channel, not public issues, for potential vulnerabilities. Do not change visibility merely to enable reporting. Response is best-effort; there is no guaranteed response-time SLA.
+Response is best-effort; there is no guaranteed response-time SLA.
 
 ## Boundaries
 

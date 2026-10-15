@@ -111,7 +111,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | is_terminal_polyfill | 1.70.2 | MIT OR Apache-2.0 |
 | itertools | 0.14.0 | MIT OR Apache-2.0 |
 | itoa | 1.0.18 | MIT OR Apache-2.0 |
-| jirust | 0.17.1 | MIT |
+| jirust | 0.17.2 | MIT |
 | js-sys | 0.3.106 | MIT OR Apache-2.0 |
 | kasuari | 0.4.12 | MIT OR Apache-2.0 |
 | libc | 0.2.190 | MIT OR Apache-2.0 |
@@ -178,7 +178,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustix | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| rustls | 0.23.45 | Apache-2.0 OR ISC OR MIT |
+| rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 |
 | rustls-webpki | 0.103.15 | ISC |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 |
@@ -2938,7 +2938,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 - hyper-rustls 0.27.10
-- rustls 0.23.45
+- rustls 0.23.46
 
 ```text
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
@@ -5065,7 +5065,7 @@ SOFTWARE.
 ### MIT License
 
 Used by:
-- jirust 0.17.1
+- jirust 0.17.2
 
 ```text
 MIT License
