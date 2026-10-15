@@ -15,13 +15,23 @@ For the short install/connect/run sequence, start with the [README](../README.md
 
 **Recommended on either OS:** fill `JIRA_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN` together in a private 0600 env file, using an API token **without scopes**, then run `jirust auth`. This explicitly configures acli; the token goes through stdin, never argv. Validate with `jirust --read-only --no-cache --check` before starting the TUI.
 
+**Interactive setup:** Run `jirust auth` in a terminal. If credentials are incomplete, Jirust offers to set the missing values. At the `JIRA_URL` prompt, enter the URL of your Jira Cloud site, for example `https://your-site.atlassian.net`. There is no default site. The API token stays hidden. Jirust validates the completed credentials and asks for confirmation before it saves them. It then authenticates acli. If authentication fails, the saved credentials remain available for correction.
+
+The destination follows the dotenv selection order below. If no file exists, Jirust creates the personal configuration `.env`. An explicitly selected absent file is permitted for `auth` only. Jirust preserves unrelated settings and comments. It saves the values that you enter and the values from the file in a private `0600` file. It does not save exported variables, which still take precedence. The confirmation prompt names the keys that Jirust will save. If the file changes before Jirust saves it, Jirust stops and saves nothing. Cancellation saves nothing. Without a terminal, incomplete credentials cause an error instead of a prompt.
+
 **Reuse a CLI login:** leave all three authentication variables empty and skip `jirust auth`. Ordinary operations use that login. The optional Board/image/field HTTP bridges can reuse the active acli keyring entry on **Linux only**, with `secret-tool` installed. Some OAuth grants lack Jira Software scopes even if ordinary issue reads work; use the explicit token setup if needed. **macOS HTTP bridges require the private token setup**; Jirust does not read macOS Keychain.
 
 Startup never silently switches accounts. CLI authentication must match the configured site/email; restart after changing authentication. Conflicting acli metadata in standard/native config locations fails closed instead of guessing. Direct HTTP remains restricted to the approved pinned Cloud endpoints; browser overrides do not change authentication.
 
+## Initial project setup
+
+If no project or JQL scope is configured, Jirust lists the active projects visible to your Jira account. It uses `acli jira project list --paginate --json`. Each entry shows the project key and name. Use the arrow keys and Enter, or click an entry. Jirust saves the selected project in `config.json` and loads its tickets. This also works in read-only mode; no Jira records change.
+
+Press `r` to retry or refresh the list. Select **Enter a project or JQL manually** for manual setup. Empty results and CLI errors keep this option available. Jirust skips list entries that have no valid project key or name. Project discovery requires the acli backend. Other backends support manual setup. Existing project or JQL configuration keeps the advanced form under `g`.
+
 ## Precedence and profiles
 
-Explicit CLI flags win over exported environment variables, then the selected dotenv file, then saved/default settings. An empty dotenv value supplies no override. Scope/project/prefix/JQL/board/name/view settings may be remembered for later TUI launches; credentials, browser overrides and refresh intervals are not written to settings. `--check`, subcommands and demo do not save those settings.
+Explicit CLI flags win over exported environment variables, then the selected dotenv file, then saved/default settings. An empty exported variable or an empty dotenv value supplies no override. Scope/project/prefix/JQL/board/name/view settings may be remembered for later TUI launches; credentials, browser overrides and refresh intervals are not written to settings. `--check`, subcommands and demo do not save those settings.
 
 Select a dotenv file in this order:
 

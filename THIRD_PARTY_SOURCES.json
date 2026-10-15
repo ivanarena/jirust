@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "813f6247c9556bc053b8e3a4de8238f39974e3a421e08f4598af61a2e3f18044",
+  "cargo_lock_sha256": "d113f2fe15a21e0a5f31f7a0331113f5ee7902efc02a513e39943784c0d8a5a2",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -1260,6 +1260,20 @@
       "sha256": "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7",
       "source": "https://crates.io/api/v1/crates/ring/0.17.14/download",
       "version": "0.17.14"
+    },
+    {
+      "license": "Apache-2.0",
+      "name": "rpassword",
+      "sha256": "2da316a15f47e3d053de9cb2c439650bd8fa4aaeb9365f2e5f27f492ff73c196",
+      "source": "https://crates.io/api/v1/crates/rpassword/7.5.4/download",
+      "version": "7.5.4"
+    },
+    {
+      "license": "Apache-2.0",
+      "name": "rtoolbox",
+      "sha256": "9a1efe12a1469752d0e6ff5ebec0b6ef4924cc5c4c71046b0ec730040535819d",
+      "source": "https://crates.io/api/v1/crates/rtoolbox/0.0.6/download",
+      "version": "0.0.6"
     },
     {
       "license": "Apache-2.0 OR MIT",

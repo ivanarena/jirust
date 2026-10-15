@@ -30,6 +30,42 @@ impl Kind {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Project {
+    pub key: String,
+    pub name: String,
+}
+
+fn parse_projects(bytes: &[u8]) -> Result<Vec<Project>> {
+    let values: Vec<Value> = collection(bytes, &["values", "projects"])?;
+    let mut projects = BTreeMap::new();
+    for value in values {
+        if value["archived"].as_bool() == Some(true) || value["deleted"].as_bool() == Some(true) {
+            continue;
+        }
+        // Skip malformed entries so that one bad project does not hide the others.
+        let (Some(key), Some(name)) = (value["key"].as_str(), value["name"].as_str()) else {
+            continue;
+        };
+        if !(key.len() <= 64
+            && key.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+            && key
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_'))
+        {
+            continue;
+        }
+        projects.insert(
+            key.to_owned(),
+            Project {
+                key: key.to_owned(),
+                name: data::line(name),
+            },
+        );
+    }
+    Ok(projects.into_values().collect())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Action {
     pub kind: String,
     pub key: String,
@@ -590,6 +626,27 @@ impl Backend {
             &["comments", "values"],
         )
     }
+    pub async fn projects(&self) -> Result<Vec<Project>> {
+        if self.kind == Kind::Demo {
+            return Ok(vec![Project {
+                key: "DEV".into(),
+                name: "Demo project".into(),
+            }]);
+        }
+        if self.kind != Kind::Acli {
+            bail!("Project discovery requires acli; use manual project setup with this backend");
+        }
+        let bytes = self
+            .run(&strings(&[
+                "jira",
+                "project",
+                "list",
+                "--paginate",
+                "--json",
+            ]))
+            .await?;
+        parse_projects(&bytes)
+    }
     pub async fn boards(&self, project: &str) -> Result<Vec<Board>> {
         if self.kind == Kind::Demo {
             return Ok(vec![Board {
@@ -980,6 +1037,52 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("synthetic-secret")
+        );
+    }
+    #[test]
+    fn project_responses_are_validated_sorted_and_sanitized() {
+        let projects = parse_projects(br#"[{"key":"ZZ","name":"Last"},{"key":"DEV","name":"\u001b[31mDemo\u001b[0m"},{"key":"DEV","name":"Demo"},{"key":"OLD","name":"Archived","archived":true},{"key":"GONE","name":"Deleted","deleted":true}]"#).unwrap();
+        assert_eq!(
+            projects,
+            vec![
+                Project {
+                    key: "DEV".into(),
+                    name: "Demo".into()
+                },
+                Project {
+                    key: "ZZ".into(),
+                    name: "Last".into()
+                }
+            ]
+        );
+        assert!(parse_projects(br#"{"values":[]}"#).unwrap().is_empty());
+        assert!(parse_projects(br#"{"projects":[{"key":"DEV","name":"Demo"}]}"#).is_ok());
+        let projects = parse_projects(br#"[{"key":"--help","name":"Invalid"},{"name":"No key"},{"key":"BAD","name":null},{"key":"DEV","name":"Demo"}]"#).unwrap();
+        assert_eq!(
+            projects,
+            vec![Project {
+                key: "DEV".into(),
+                name: "Demo".into()
+            }]
+        );
+        assert!(parse_projects(br#"{"unexpected":[]}"#).is_err());
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn project_discovery_uses_paginated_cli_reads() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let cli = directory.path().join("acli");
+        std::fs::write(&cli, "#!/bin/sh\n[ \"$*\" = 'jira project list --paginate --json' ] || exit 1\nprintf '[{\"key\":\"DEV\",\"name\":\"Demo\"}]'\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let backend = Backend::new("acli", Some(cli)).unwrap();
+        assert_eq!(backend.projects().await.unwrap()[0].key, "DEV");
+        assert!(
+            Backend::new("jira", Some("/nonexistent/jira".into()))
+                .unwrap()
+                .projects()
+                .await
+                .is_err()
         );
     }
     #[test]

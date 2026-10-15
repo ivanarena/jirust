@@ -160,8 +160,7 @@ impl Options {
             ("jql", "JIRA_JQL", &mut self.jql),
             ("scope_name", "JIRA_SCOPE_NAME", &mut self.scope_name),
         ] {
-            if !supplied(name)
-                && !(project_changed && name != "project")
+            if !(supplied(name) || (project_changed && name != "project"))
                 && let Some(v) = env.value(key)
             {
                 *field = Some(v);
@@ -330,7 +329,11 @@ async fn main() -> Result<()> {
     let env = if opts.demo || opts.backend == "demo" {
         Environment::default()
     } else {
-        Environment::load(opts.env_file.as_deref())?
+        if matches!(opts.command, Some(CliCommand::Auth)) {
+            Environment::load_for_auth(opts.env_file.as_deref())?
+        } else {
+            Environment::load(opts.env_file.as_deref())?
+        }
     };
     opts.apply_environment(&env, &matches)?;
     opts.validate()?;
@@ -341,19 +344,21 @@ async fn main() -> Result<()> {
         if opts.demo { "demo" } else { &opts.backend },
         opts.cli_bin.clone(),
     )?;
+    if matches!(opts.command, Some(CliCommand::Auth)) {
+        anyhow::ensure!(
+            backend.kind != Kind::Demo,
+            "Demo does not support authentication"
+        );
+        let credentials = jirust::auth_setup::prepare(env, opts.env_file.as_deref())?;
+        backend.authenticate(&credentials).await?;
+        println!("acli authenticated from local environment; token not displayed");
+        return Ok(());
+    }
     let credentials = if backend.kind == Kind::Demo {
         None
     } else {
         env.credentials()?
     };
-    if matches!(opts.command, Some(CliCommand::Auth)) {
-        let credentials = credentials.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Set JIRA_URL, JIRA_EMAIL and JIRA_API_TOKEN before authentication")
-        })?;
-        backend.authenticate(credentials).await?;
-        println!("acli authenticated from local environment; token not displayed");
-        return Ok(());
-    }
     backend.configure_environment(credentials)?;
     backend.configure_links(
         opts.browse_url
@@ -595,6 +600,10 @@ fn dispatch(
         tokio::spawn(async move {
             let message = match job {
                 Job::CopyLink(_) => return,
+                Job::Projects { generation } => Message::Projects {
+                    generation,
+                    result: backend.projects().await,
+                },
                 Job::Sync {
                     generation,
                     base,
