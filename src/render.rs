@@ -216,13 +216,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let data_rows = app.visible.iter().enumerate().map(|(position, i)| {
             let t = &app.items[*i];
             Row::new(vec![
-                Cell::from(t.key.clone()),
+                Cell::from(appearance::ticket_key(t)),
                 Cell::from(appearance::status_label(&t.status())).style(app.status_colors.style(t)),
                 Cell::from(t.user("assignee").display_label()),
                 Cell::from(t.points_label()),
                 Cell::from(appearance::ticket_summary_with_style(
                     t,
-                    inner.width.saturating_sub(46),
+                    inner.width.saturating_sub(48),
                     app.epic_colors.style(t),
                 )),
             ])
@@ -235,7 +235,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Table::new(
             data_rows,
             [
-                Constraint::Length(11),
+                Constraint::Length(13),
                 Constraint::Length(13),
                 Constraint::Length(14),
                 Constraint::Length(4),
@@ -249,11 +249,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let data_rows = app.visible.iter().enumerate().map(|(position, i)| {
             let t = &app.items[*i];
             Row::new(vec![
-                Cell::from(t.key.clone()),
+                Cell::from(appearance::ticket_key(t)),
                 Cell::from(Text::from(vec![
                     appearance::ticket_summary_with_style(
                         t,
-                        inner.width.saturating_sub(12),
+                        inner.width.saturating_sub(14),
                         app.epic_colors.style(t),
                     ),
                     Line::from(vec![
@@ -293,7 +293,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             })
             .height(2)
         });
-        Table::new(data_rows, [Constraint::Length(11), Constraint::Min(20)]).header(header)
+        Table::new(data_rows, [Constraint::Length(13), Constraint::Min(20)]).header(header)
     }
     .column_spacing(1)
     // Rows already paint the selection background; a final table-wide
@@ -316,7 +316,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             break;
         }
         let t = &app.items[*index];
-        let summary_x = inner.x + if app.row_height == 1 { 46 } else { 12 };
+        let summary_x = inner.x + if app.row_height == 1 { 48 } else { 14 };
         let summary_width = inner.right().saturating_sub(summary_x);
         let summary =
             appearance::ticket_summary_with_style(t, summary_width, app.epic_colors.style(t));
@@ -343,7 +343,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         if app.row_height == 1 {
             filter_hit(
                 &mut app.filter_hits,
-                Rect::new(inner.x + 12, y, 13, 1),
+                Rect::new(inner.x + 14, y, 13, 1),
                 clip,
                 &t.key,
                 Some(crate::interaction::FilterTarget::Status(t.status())),
@@ -351,7 +351,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             );
             filter_hit(
                 &mut app.filter_hits,
-                Rect::new(inner.x + 26, y, 14, 1),
+                Rect::new(inner.x + 28, y, 14, 1),
                 clip,
                 &t.key,
                 crate::interaction::FilterTarget::assignee(t),
@@ -1071,6 +1071,58 @@ mod tests {
         });
         app
     }
+    #[test]
+    fn help_symbol_legend_is_readable_and_scrollable_at_minimum_size() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        for (width, height) in [(60, 16), (120, 28)] {
+            let mut app = field_app();
+            let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+            assert!(app.event(key(KeyCode::Char('?'))).is_empty());
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut seen = String::new();
+            for _ in 0..10 {
+                terminal.draw(|f| draw(f, &mut app)).unwrap();
+                let buffer = terminal.backend().buffer();
+                for y in app.popup_rect.y..app.popup_rect.bottom() {
+                    for x in app.popup_rect.x..app.popup_rect.right() {
+                        seen.push_str(buffer[(x, y)].symbol());
+                    }
+                    seen.push('\n');
+                }
+                assert!(app.event(key(KeyCode::Down)).is_empty());
+            }
+            assert!(seen.contains("SYMBOL LEGEND"));
+            for kind in [
+                "Bug",
+                "Task",
+                "Story",
+                "Design",
+                "Epic",
+                "Sub-task",
+                "Improvement",
+                "Feature",
+                "Spike",
+                "Custom type",
+            ] {
+                let mut ticket = crate::data::demo_tickets().remove(0);
+                ticket.fields["issuetype"] = serde_json::json!({"name": kind});
+                let (icon, _) = appearance::issue_type_icon(&ticket);
+                let label = if kind == "Custom type" {
+                    "Other/unknown type"
+                } else {
+                    kind
+                };
+                assert!(seen.contains(&format!("{icon} {label}")), "{kind}");
+            }
+            for label in ["Done", "Discarded"] {
+                assert!(seen.contains(&format!("{} {label}", appearance::status_label(label))));
+            }
+            assert!(seen.contains("Colored labels: parent epics. SP: story points."));
+            assert!(seen.contains("Blank SP means unknown/unset, not zero."));
+            assert!(app.event(key(KeyCode::Esc)).is_empty());
+            assert!(app.dialog.is_none());
+        }
+    }
     fn field_click(rect: Rect) -> crossterm::event::Event {
         use crossterm::event::*;
         Event::Mouse(MouseEvent {
@@ -1390,7 +1442,7 @@ mod tests {
                         assert!(left.contains(&format!("SP:{label}")));
                     }
                 } else {
-                    let x = app.tickets_rect.x + 1 + 11 + 1 + 13 + 1 + 14 + 1;
+                    let x = app.tickets_rect.x + 1 + 13 + 1 + 13 + 1 + 14 + 1;
                     let y = app.tickets_rect.y + 2;
                     let cell = (x..x + 4)
                         .map(|x| buffer[(x, y)].symbol())
@@ -1523,6 +1575,45 @@ mod tests {
             assert_eq!(app.assignee_filter, "sam");
             assert_eq!(app.status_filter, "To Do");
             assert!(app.dialog.is_none());
+        }
+    }
+    #[test]
+    fn issue_type_icons_render_in_wide_narrow_and_selected_rows_and_details() {
+        for width in [60, 120, 180] {
+            for (kind, icon) in [
+                ("Bug", "●"),
+                ("Task", "□"),
+                ("Design", "✎"),
+                ("Custom type", "◈"),
+            ] {
+                let mut app = field_app();
+                app.items[0].fields["issuetype"] = serde_json::json!({"name":kind});
+                app.visible = vec![0];
+                app.selected = 0;
+                let t = app.items[0].clone();
+                let mut terminal = Terminal::new(TestBackend::new(width, 28)).unwrap();
+                terminal.draw(|f| draw(f, &mut app)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let x = app.tickets_rect.x + 1;
+                let y = app.tickets_rect.y + 2;
+                assert_eq!(buffer[(x, y)].symbol(), icon, "{kind}, {width}");
+                assert_eq!(buffer[(x, y)].fg, appearance::issue_type_icon(&t).1);
+                assert_eq!(buffer[(x, y)].bg, selection().bg.unwrap());
+                // At the minimum terminal width the table clips key text;
+                // the type icon must remain visible even then.
+                if width > 60 {
+                    let key: String = (x + 2..x + 2 + t.key.len() as u16)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect();
+                    assert_eq!(key, t.key);
+                }
+                let doc = markdown::ticket_document(&t, 80);
+                let text: String = doc
+                    .iter()
+                    .flat_map(|line| line.chunks.iter().map(|c| c.text.as_str()))
+                    .collect();
+                assert!(text.contains(&format!("Type: {icon} {kind} · Priority:")));
+            }
         }
     }
     #[test]

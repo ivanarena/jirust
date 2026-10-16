@@ -55,6 +55,10 @@ Successful writes fully refresh **all four views**, fence older reads, preserve 
 
 ## Ticket fields and images
 
+Press **?** for the in-app symbol legend at the top of Help; use ↑/↓ to scroll and Esc to close.
+
+Issue-type icons appear beside ticket keys in both list layouts and beside the full type name in details: ● Bug, □ Task, ≡ Story, ✎ Design, ϟ Epic, ⊟ Sub-task, ↗ Improvement, ◆ Feature, ◇ Spike. Custom or missing types use ◈; the exact server type name remains in details. These are Unicode symbols; no Nerd Font is required.
+
 Only explicit **parent epic labels** are colored—not epic rows/titles. Colors are distinct and persist per account/key across views and renames. Missing/non-epic parent relationships are not guessed. Done badges are green/✓, Discarded red/✕; other statuses have distinct readable colors. Styling never determines workflow or membership.
 
 Absent people and unknown/ambiguous story points are blank. Genuine zero/fractions remain visible. Points come from numeric server-named/schema-identified fields, never guessed IDs or child sums. Full details/metadata permissions can affect availability; restart after fixing field access.

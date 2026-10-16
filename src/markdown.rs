@@ -537,7 +537,12 @@ pub fn ticket_document_with_styles(
         ),
         (
             "Type:",
-            format!("{} · Priority: {}", t.kind(), t.priority()),
+            format!(
+                "{} {} · Priority: {}",
+                crate::appearance::issue_type_icon(t).0,
+                t.kind(),
+                t.priority()
+            ),
             Style::default(),
             None,
         ),
