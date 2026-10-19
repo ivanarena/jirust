@@ -1,5 +1,5 @@
 //! Serialized, coalesced best-effort cache I/O away from the UI thread.
-//! Up to three large source-bounded snapshots and four metadata snapshots;
+//! Up to three large source-bounded snapshots and five metadata snapshots;
 //! metadata encoding is capped at 8 MiB. Count/encoded budgets aren't an RSS cap.
 use crate::config::Cache;
 use serde::Serialize;
@@ -80,7 +80,9 @@ impl CacheWriter {
         }
         let limit = match kind {
             Kind::Snapshot => 3,
-            Kind::Metadata => 4,
+            // History, two palettes and dirty keys can all be pending while
+            // an older metadata value is active and cannot be coalesced away.
+            Kind::Metadata => 5,
             Kind::Remove => crate::limits::CACHE_ENTRIES,
         };
         while p.tasks.iter().filter(|(_, _, k)| *k == kind).count()
@@ -195,6 +197,52 @@ mod tests {
         w.flush();
         assert!(!cache.exists("victim"));
         assert_eq!(cache.get::<Vec<i32>>("palette").unwrap().0, [1, 2, 3]);
+    }
+    #[test]
+    fn status_history_replacement_survives_all_metadata_writes_while_old_history_is_active() {
+        let d = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let cache = Cache {
+            directory: Some(d.path().into()),
+        };
+        let writer = CacheWriter::new(cache.clone());
+        let (release, wait) = std::sync::mpsc::channel();
+        let (began, ready) = std::sync::mpsc::channel();
+        writer.enqueue(
+            crate::statuses::CACHE_KEY.into(),
+            Box::new(move |cache| {
+                began.send(()).unwrap();
+                wait.recv().unwrap();
+                cache
+                    .put(crate::statuses::CACHE_KEY, &vec!["To Do"])
+                    .unwrap();
+            }),
+            Kind::Metadata,
+        );
+        ready.recv().unwrap();
+        writer.metadata(
+            crate::statuses::CACHE_KEY.into(),
+            vec!["To Do", "Discarded"],
+        );
+        writer.put(crate::appearance::STATUS_COLORS_CACHE.into(), vec![1]);
+        writer.put(crate::appearance::EPIC_COLORS_CACHE.into(), vec![2]);
+        writer.metadata("workspace-dirty:synthetic".into(), vec!["DEV-1"]);
+        release.send(()).unwrap();
+        writer.flush();
+        assert_eq!(
+            cache
+                .get::<Vec<String>>(crate::statuses::CACHE_KEY)
+                .unwrap()
+                .0,
+            ["To Do", "Discarded"]
+        );
+        assert!(cache.exists(crate::appearance::STATUS_COLORS_CACHE));
+        assert!(cache.exists(crate::appearance::EPIC_COLORS_CACHE));
+        assert!(cache.exists("workspace-dirty:synthetic"));
     }
     #[test]
     fn latest_pending_value_wins_and_removal_cannot_resurrect_an_old_entry() {
