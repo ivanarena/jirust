@@ -21,4 +21,5 @@ mod process;
 pub mod refresh;
 pub mod render;
 pub mod sorting;
+pub mod statuses;
 pub mod workspace;

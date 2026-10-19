@@ -1,4 +1,4 @@
-//! Opt-in Jira Software API bridge. Existing acli authentication is reused;
+//! Approved Jira Software, image and read-only metadata bridges. Existing acli authentication is reused;
 //! OAuth login/refresh stays in acli. Never serialize or debug credentials.
 use crate::{
     data::{self, Ticket},
@@ -179,8 +179,8 @@ async fn profile_credential(
     );
     decode_credential(&stdout, p.is_oauth())
 }
-/// Approved read-only attachment-content bridge; never follows content URLs,
-/// redirects, or external image links, and never sends credentials to a CDN.
+/// Approved read-only attachment-content and field/project-status metadata bridge.
+/// Never follows redirects or external media links, or sends credentials to a CDN.
 pub struct ImageApi {
     profile: Profile,
     credentials: Option<std::sync::Arc<crate::environment::Credentials>>,
@@ -209,7 +209,7 @@ impl ImageApi {
     pub fn check_identity(&self) -> Result<()> {
         ensure!(
             profile()? == self.profile,
-            "Jira account/site/authentication changed; restart jirust before downloading images"
+            "Jira account/site/authentication changed; restart jirust"
         );
         Ok(())
     }
@@ -224,13 +224,34 @@ impl ImageApi {
         }
     }
     pub async fn estimate_fields(&self) -> Result<Vec<String>> {
+        let url = Url::parse(&format!("{}/rest/api/3/field", self.origin()))
+            .map_err(|_| anyhow::anyhow!("Invalid field metadata URL"))?;
+        crate::estimates::fields(&self.metadata(url).await?)
+    }
+    fn project_statuses_url(&self, project: &str) -> Result<Url> {
+        ensure!(
+            crate::statuses::valid_project(project),
+            "Invalid project key for status metadata"
+        );
+        Url::parse(&format!(
+            "{}/rest/api/3/project/{project}/statuses",
+            self.origin()
+        ))
+        .map_err(|_| anyhow::anyhow!("Invalid project status metadata URL"))
+    }
+    pub async fn project_statuses(&self, project: &str) -> Result<Vec<String>> {
+        let url = self.project_statuses_url(project)?;
+        crate::statuses::project_names(&self.metadata(url).await?)
+    }
+    async fn metadata(&self, url: Url) -> Result<Value> {
         let _permit = self.slots.acquire().await?;
         self.check_identity()?;
         let token = profile_credential(&self.profile, self.credentials.as_ref()).await?;
         let request = self
             .client
-            .get(format!("{}/rest/api/3/field", self.origin()))
-            .header("Accept", "application/json");
+            .get(url)
+            .header("Accept", "application/json")
+            .header("Cache-Control", "no-cache");
         let request = if self.credentials.is_none() && self.profile.is_oauth() {
             request.bearer_auth(token)
         } else {
@@ -239,34 +260,32 @@ impl ImageApi {
         let mut response = request
             .send()
             .await
-            .map_err(|_| anyhow::anyhow!("Field metadata request failed (details redacted)"))?;
+            .map_err(|_| anyhow::anyhow!("Jira metadata request failed (details redacted)"))?;
         ensure!(
             response.status().as_u16() == 200,
-            "Field metadata HTTP {} (details redacted)",
+            "Jira metadata HTTP {} (details redacted)",
             response.status().as_u16()
         );
         ensure!(
             response
                 .content_length()
                 .is_none_or(|n| n <= 2 * 1024 * 1024),
-            "Field metadata exceeds limit"
+            "Jira metadata exceeds limit"
         );
         let mut bytes = Vec::new();
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|_| anyhow::anyhow!("Field metadata response interrupted"))?
+            .map_err(|_| anyhow::anyhow!("Jira metadata response interrupted"))?
         {
             ensure!(
                 bytes.len() + chunk.len() <= 2 * 1024 * 1024,
-                "Field metadata exceeds limit"
+                "Jira metadata exceeds limit"
             );
             bytes.extend_from_slice(&chunk);
         }
         self.check_identity()?;
-        let metadata: Value = serde_json::from_slice(&bytes)
-            .map_err(|_| anyhow::anyhow!("Invalid field metadata JSON"))?;
-        crate::estimates::fields(&metadata)
+        serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("Invalid Jira metadata JSON"))
     }
     fn url(&self, id: &str) -> Result<Url> {
         ensure!(crate::images::valid_id(id), "Invalid image attachment ID");
@@ -946,7 +965,27 @@ mod tests {
         assert_eq!(url.path(), "/rest/api/3/attachment/content/23");
         assert_eq!(url.query(), Some("redirect=false"));
         assert!(api.url("https://example.invalid/").is_err());
+        let status_url = api.project_statuses_url("DEV").unwrap();
+        assert_eq!(status_url.host_str(), Some("synthetic.atlassian.net"));
+        assert_eq!(status_url.path(), "/rest/api/3/project/DEV/statuses");
+        assert!(status_url.query().is_none());
+        for invalid in [
+            "",
+            "../field",
+            "DEV?token=secret",
+            "DEV/other",
+            "https://other.invalid",
+            "DEV\n",
+        ] {
+            assert!(api.project_statuses_url(invalid).is_err());
+        }
         api.credentials = None;
+        let status_url = api.project_statuses_url("DEV").unwrap();
+        assert_eq!(status_url.host_str(), Some("api.atlassian.com"));
+        assert_eq!(
+            status_url.path(),
+            "/ex/jira/synthetic-cloud/rest/api/3/project/DEV/statuses"
+        );
         let url = api.url("23").unwrap();
         assert_eq!(url.host_str(), Some("api.atlassian.com"));
         assert!(

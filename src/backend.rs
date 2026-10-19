@@ -231,6 +231,28 @@ impl Backend {
         api.check_identity()?;
         Ok(bytes)
     }
+    pub async fn project_statuses(&self, project: &str) -> Result<Vec<String>> {
+        anyhow::ensure!(
+            crate::statuses::valid_project(project),
+            "Invalid project key for status metadata"
+        );
+        if self.kind == Kind::Demo {
+            return Ok([
+                "To Do",
+                "In Progress",
+                "Code Review",
+                "Ready for Staging",
+                "Done",
+                "Discarded",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect());
+        }
+        let api = self.image_api.read().unwrap().clone()
+            .context("Project statuses require an authenticated acli Cloud profile; cached suggestions remain available")?;
+        api.project_statuses(project).await
+    }
     async fn estimate_fields(&self) -> Vec<String> {
         self.estimate_fields
             .get_or_init(|| async {

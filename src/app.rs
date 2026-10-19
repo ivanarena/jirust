@@ -22,6 +22,7 @@ use std::{
 pub enum Job {
     Sync {
         generation: u64,
+        project: String,
         base: String,
         mine: String,
         changed: Option<String>,
@@ -59,6 +60,11 @@ pub enum Job {
     },
 }
 pub enum Message {
+    ProjectStatuses {
+        generation: u64,
+        project: String,
+        result: Result<Vec<String>>,
+    },
     SyncProgress {
         generation: u64,
         stage: crate::refresh::Stage,
@@ -179,6 +185,7 @@ pub struct ViewFilters {
     text: String,
 }
 pub struct App {
+    status_history: crate::statuses::History,
     pub status_colors: crate::appearance::StatusColors,
     pub epic_colors: crate::appearance::EpicColors,
     view_filters: [ViewFilters; 4],
@@ -294,8 +301,14 @@ impl App {
             .map(|(c, _)| c)
             .filter(crate::appearance::EpicColors::valid)
             .unwrap_or_default();
+        let status_history = cache
+            .get::<crate::statuses::History>(crate::statuses::CACHE_KEY)
+            .map(|(history, _)| history)
+            .filter(crate::statuses::History::valid)
+            .unwrap_or_default();
         let cache_writer = crate::cache_writer::CacheWriter::new(cache.clone());
         Self {
+            status_history,
             status_colors,
             epic_colors,
             view_filters: std::array::from_fn(|_| ViewFilters::default()),
@@ -700,12 +713,14 @@ impl App {
         self.next_sync = Some(Instant::now() + self.refresh_interval);
         vec![Job::Sync {
             generation: self.generation,
+            project: self.settings.project.clone(),
             base: self.last_query.clone(),
             mine,
             changed,
         }]
     }
     fn set_items(&mut self, items: Vec<Ticket>) {
+        self.remember_ticket_statuses(&items);
         let key = self.selected_ticket().map(|t| t.key.clone());
         self.items = items;
         self.epic_order = None;
@@ -846,6 +861,7 @@ impl App {
                 }
             }
             self.backend.decorate_ticket(&mut t);
+            self.remember_ticket_statuses([&t]);
             if self.status_colors.register([&t]) {
                 self.cache_writer.put(
                     crate::appearance::STATUS_COLORS_CACHE.into(),
@@ -1097,6 +1113,33 @@ impl App {
     }
     pub fn message(&mut self, message: Message) -> Vec<Job> {
         match message {
+            Message::ProjectStatuses {
+                generation,
+                project,
+                result,
+            } => {
+                if generation != self.generation
+                    || !project.eq_ignore_ascii_case(&self.settings.project)
+                {
+                    return vec![];
+                }
+                match result {
+                    Ok(names) => {
+                        let mut changed = false;
+                        for name in names {
+                            changed |= self.status_history.remember(&project, &name);
+                        }
+                        if changed {
+                            self.save_status_history();
+                            self.refresh_filter_lists();
+                        }
+                    }
+                    Err(e) => self.notice(
+                        format!("Project status lookup failed; cached suggestions retained: {e}"),
+                        true,
+                    ),
+                }
+            }
             Message::SyncProgress { generation, stage } => {
                 if self.syncing && generation == self.generation {
                     self.refresh_stage = stage;
@@ -1125,6 +1168,7 @@ impl App {
                         if workspace.index.is_empty() || count != workspace.items.len() {
                             workspace.reindex();
                         }
+                        self.remember_ticket_statuses(&workspace.items);
                         if self.status_colors.register(&workspace.items) {
                             self.cache_writer.put(
                                 crate::appearance::STATUS_COLORS_CACHE.into(),
@@ -1245,6 +1289,7 @@ impl App {
                         }
                         self.filter_hits.clear();
                         let selected_key = self.selected_ticket().map(|t| t.key.clone());
+                        self.remember_ticket_statuses([&ticket]);
                         if self.status_colors.register([&ticket]) {
                             self.cache_writer.put(
                                 crate::appearance::STATUS_COLORS_CACHE.into(),
@@ -1348,6 +1393,12 @@ impl App {
                     .remove(format!("list:{}:{}", self.limit, self.last_query));
                 match result {
                     Ok(()) => {
+                        if action.kind == "status"
+                            && let Some((project, _)) = action.key.rsplit_once('-')
+                            && self.status_history.remember(project, &action.value)
+                        {
+                            self.save_status_history();
+                        }
                         // Every confirmed successful write uses the same full,
                         // unfiltered shared refresh as F5, not a view/detail-only
                         // or incremental refresh. This also fences stale reads.
@@ -2304,6 +2355,26 @@ impl App {
             .map(|(items, _)| items)
             .unwrap_or_default()
     }
+    fn save_status_history(&self) {
+        self.cache_writer.metadata(
+            crate::statuses::CACHE_KEY.into(),
+            self.status_history.clone(),
+        );
+    }
+    fn remember_ticket_statuses<'a>(&mut self, tickets: impl IntoIterator<Item = &'a Ticket>) {
+        if self.status_history.register(tickets) {
+            self.save_status_history();
+        }
+    }
+    fn remember_status_filters(&mut self) {
+        let mut changed = false;
+        for name in self.status_filter.values() {
+            changed |= self.status_history.remember(&self.settings.project, name);
+        }
+        if changed {
+            self.save_status_history();
+        }
+    }
     pub fn known_statuses(&self) -> Vec<String> {
         let backlog = self.cached_backlog();
         let mut a: Vec<_> = self
@@ -2313,8 +2384,9 @@ impl App {
             .map(Ticket::status)
             .filter(|s| !s.is_empty())
             .collect();
-        a.sort();
-        a.dedup();
+        a.extend(self.status_history.names(&self.settings.project));
+        a.sort_by_key(|name| name.to_lowercase());
+        a.dedup_by(|a, b| a.to_lowercase() == b.to_lowercase());
         a
     }
     fn scope_dialog(&mut self) {
@@ -2477,6 +2549,7 @@ impl App {
         self.search_due = None;
         self.lookup_generation += 1;
         [self.assignee_filter, self.status_filter] = checked;
+        self.remember_status_filters();
         // Filters intersect the selected preset/membership view, never switch it.
         self.reload()
     }
@@ -3127,6 +3200,7 @@ impl App {
                         }
                         Purpose::StatusFilter => {
                             self.status_filter = choice.value.into();
+                            self.remember_status_filters();
                             return self.reload();
                         }
                         Purpose::Edit => {
@@ -3202,6 +3276,7 @@ impl App {
                         "filters" => {
                             self.apply_assignee_filter(values[0].trim().into());
                             self.status_filter = values[1].trim().into();
+                            self.remember_status_filters();
                             return self.reload();
                         }
                         "assignee_filter" => {
@@ -3210,6 +3285,7 @@ impl App {
                         }
                         "status_filter" => {
                             self.status_filter = values[0].trim().into();
+                            self.remember_status_filters();
                             return self.reload();
                         }
                         "jql" => {
@@ -3278,7 +3354,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "SYMBOL LEGEND\n● Bug · □ Task · ≡ Story · ✎ Design\nϟ Epic · ⊟ Sub-task · ↗ Improvement\n◆ Feature · ◇ Spike · ◈ Other/unknown type\n✓ Done · ✕ Discarded\nColored labels: parent epics. SP: story points.\nBlank SP means unknown/unset, not zero.\n\nLAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Double-click an assignee/status/epic label in rows or ticket metadata to filter that field only (other filters remain). Exact IDs/epic keys, current view only. v clears Epic; F6 clears all current filters. Single detail-epic links wait 350 ms for a double-click. Mouse opens other detail links immediately. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each by default. E toggles local Rank/Epic sorting for this view: parent epic alphabetically, no epic last, Rank within groups. Sort is cached, never rebuilt per search keystroke; changing scope resets it.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · s status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / S or dropdowns open the same popup (T remains an alias). Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels. Every successful update automatically fully refreshes all four views, retaining their filters.\n--read-only blocks changes. ! shows safe error details; raw CLI output is suppressed.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Phase and elapsed time are shown. Details warm only near selection with bounded concurrency; obsolete background reads are cancelled. Cache writes run off the UI thread. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "SYMBOL LEGEND\n● Bug · □ Task · ≡ Story · ✎ Design\nϟ Epic · ⊟ Sub-task · ↗ Improvement\n◆ Feature · ◇ Spike · ◈ Other/unknown type\n✓ Done · ✕ Discarded\nColored labels: parent epics. SP: story points.\nBlank SP means unknown/unset, not zero.\n\nLAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Double-click an assignee/status/epic label in rows or ticket metadata to filter that field only (other filters remain). Exact IDs/epic keys, current view only. v clears Epic; F6 clears all current filters. Single detail-epic links wait 350 ms for a double-click. Mouse opens other detail links immediately. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each by default. E toggles local Rank/Epic sorting for this view: parent epic alphabetically, no epic last, Rank within groups. Sort is cached, never rebuilt per search keystroke; changing scope resets it.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · s status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nStartup/refresh fetches all project statuses with acli; ! shows metadata errors.\nSeen/applied custom statuses are remembered per account/project (unless --no-cache).\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / S or dropdowns open the same popup (T remains an alias). Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels. Every successful update automatically fully refreshes all four views, retaining their filters.\n--read-only blocks changes. ! shows safe error details; raw CLI output is suppressed.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Phase and elapsed time are shown. Details warm only near selection with bounded concurrency; obsolete background reads are cancelled. Cache writes run off the UI thread. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -4098,6 +4174,136 @@ mod tests {
         assert!(restarted.status_colors.valid());
     }
     #[test]
+    fn remembered_statuses_survive_refresh_filter_reset_and_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        a.cache = Cache {
+            directory: Some(dir.path().into()),
+        };
+        a.cache_writer = crate::cache_writer::CacheWriter::new(a.cache.clone());
+        a.filters_dialog();
+        toggle_filter(&mut a, 1, "__other");
+        a.event(Event::Paste("Ready for Staging".into()));
+        a.event(key('s', KeyModifiers::CONTROL));
+        assert!(a.status_filter.contains("Ready for Staging"));
+        assert!(!a.writing);
+        a.message(Message::ProjectStatuses {
+            generation: a.generation,
+            project: "DEV".into(),
+            result: Ok(vec!["Discarded".into()]),
+        });
+        let mut workspace = a.workspace.clone().unwrap();
+        workspace.items[0].fields["status"] = serde_json::json!({"name": "PO Testing"});
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((workspace, vec![])),
+        });
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((Workspace::default(), vec![])),
+        });
+        a.event(Event::Key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE)));
+        assert!(a.status_filter.is_empty());
+        for view in 0..4 {
+            a.switch_view(view);
+            let choices = a.status_choices(true).0;
+            for name in ["Ready for Staging", "PO Testing", "Discarded"] {
+                assert!(choices.iter().any(|c| c.value == name));
+            }
+        }
+        a.cache_writer.flush();
+        let mut restarted = App::new(
+            a.backend.clone(),
+            a.cache.clone(),
+            a.settings.clone(),
+            true,
+            500,
+            PathBuf::new(),
+        );
+        assert!(restarted.items.is_empty());
+        assert!(restarted.status_filter.is_empty());
+        let (choices, suggestions) = restarted.status_choices(false);
+        assert!(suggestions);
+        for name in ["Ready for Staging", "PO Testing", "Discarded"] {
+            assert!(choices.iter().any(|c| c.value == name));
+        }
+        restarted.settings.project = "OTHER".into();
+        assert!(restarted.known_statuses().is_empty());
+        let other_account = App::new(
+            a.backend.clone(),
+            Cache { directory: None },
+            a.settings.clone(),
+            true,
+            500,
+            PathBuf::new(),
+        );
+        assert!(other_account.known_statuses().is_empty());
+    }
+    #[test]
+    fn project_status_metadata_is_fenced_and_updates_open_filters_without_losing_checks() {
+        let mut a = app();
+        a.filters_dialog();
+        toggle_filter(&mut a, 1, "To Do");
+        for (generation, project) in [(a.generation + 1, "DEV"), (a.generation, "OTHER")] {
+            a.message(Message::ProjectStatuses {
+                generation,
+                project: project.into(),
+                result: Ok(vec!["Stale status".into()]),
+            });
+        }
+        assert!(!a.known_statuses().contains(&"Stale status".into()));
+        a.message(Message::ProjectStatuses {
+            generation: a.generation,
+            project: "DEV".into(),
+            result: Ok(vec!["Discarded".into()]),
+        });
+        let Some(Dialog::Filters {
+            choices, checked, ..
+        }) = &a.dialog
+        else {
+            panic!()
+        };
+        assert!(choices[1].iter().any(|c| c.value == "Discarded"));
+        assert!(checked[1].contains("To Do"));
+        let keys = a.workspace.as_ref().unwrap().keys();
+        a.message(Message::ProjectStatuses {
+            generation: a.generation,
+            project: "DEV".into(),
+            result: Err(anyhow::anyhow!("Synthetic metadata failure")),
+        });
+        assert!(a.known_statuses().contains(&"Discarded".into()));
+        assert_eq!(a.workspace.as_ref().unwrap().keys(), keys);
+        assert!(a.error.contains("cached suggestions retained"));
+    }
+    #[test]
+    fn remembered_suggestions_do_not_override_server_transition_targets() {
+        let mut a = app();
+        a.apply_filter_selections([Selection::default(), "Ready for Staging".into()]);
+        let mut ticket = data::demo_tickets().remove(0);
+        ticket.transitions = vec![serde_json::json!({"to": {"name": "Allowed target"}})];
+        a.set_items(vec![ticket]);
+        a.focus = Focus::Tickets;
+        a.status_filter.clear();
+        a.rebuild_visible();
+        let (choices, suggestions) = a.status_choices(false);
+        assert!(!suggestions);
+        assert!(choices.iter().any(|c| c.value == "Allowed target"));
+        assert!(!choices.iter().any(|c| c.value == "Ready for Staging"));
+    }
+    #[test]
+    fn cancelling_custom_status_does_not_remember_it() {
+        let mut a = app();
+        a.filters_dialog();
+        toggle_filter(&mut a, 1, "__other");
+        a.event(Event::Paste("Cancelled status".into()));
+        a.event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        a.event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!a.known_statuses().iter().any(|s| s == "Cancelled status"));
+    }
+    #[test]
     fn changing_scope_resets_all_views_filters_without_changing_palette() {
         let mut a = app();
         a.status_filter = "To Do".into();
@@ -4526,6 +4732,7 @@ mod tests {
                 base,
                 mine,
                 changed,
+                ..
             } = jobs
                 .into_iter()
                 .find(|j| matches!(j, Job::Sync { .. }))

@@ -15,7 +15,7 @@ For the short install/connect/run sequence, start with the [README](../README.md
 
 **Recommended on either OS:** fill `JIRA_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN` together in a private 0600 env file, using an API token **without scopes**, then run `jirust auth`. This explicitly configures acli; the token goes through stdin, never argv. Validate with `jirust --read-only --no-cache --check` before starting the TUI.
 
-**Reuse a CLI login:** leave all three authentication variables empty and skip `jirust auth`. Ordinary operations use that login. The optional Board/image/field HTTP bridges can reuse the active acli keyring entry on **Linux only**, with `secret-tool` installed. Some OAuth grants lack Jira Software scopes even if ordinary issue reads work; use the explicit token setup if needed. **macOS HTTP bridges require the private token setup**; Jirust does not read macOS Keychain.
+**Reuse a CLI login:** leave all three authentication variables empty and skip `jirust auth`. Ordinary operations use that login. The optional Board/image and read-only field/status HTTP bridges can reuse the active acli keyring entry on **Linux only**, with `secret-tool` installed. Some OAuth grants lack Jira Software scopes even if ordinary issue reads work; use the explicit token setup if needed. **macOS HTTP bridges require the private token setup**; Jirust does not read macOS Keychain.
 
 Startup never silently switches accounts. CLI authentication must match the configured site/email; restart after changing authentication. Conflicting acli metadata in standard/native config locations fails closed instead of guessing. Direct HTTP remains restricted to the approved pinned Cloud endpoints; browser overrides do not change authentication.
 
@@ -49,7 +49,7 @@ Profiles select settings, **not accounts**. Jirust never silently switches the C
 | Linux | `${XDG_CONFIG_HOME:-~/.config}/jirust` | `${XDG_CACHE_HOME:-~/.cache}/jirust/rust/<account-hash>` |
 | macOS | `~/Library/Application Support/jirust` | `~/Library/Caches/jirust/rust/<account-hash>` |
 
-Settings are `config.json`; the optional private env is `.env`. Account/site determines cache identity; unknown identity disables persistence. Files are private and directories owned/private. `--no-cache` disables ticket/image persistence; demo does not save settings/cache or migrate personal configuration. When upgrading from the former app name, quit the old process first; safe migration never overwrites an existing new directory. See [storage/security boundaries](../SECURITY.md).
+Settings are `config.json`; the optional private env is `.env`. Account/site determines cache identity; unknown identity disables persistence. Files are private and directories owned/private. `--no-cache` disables ticket/image and status-history persistence; demo does not save settings/cache or migrate personal configuration. When upgrading from the former app name, quit the old process first; safe migration never overwrites an existing new directory. See [storage/security boundaries](../SECURITY.md).
 
 ## Settings reference
 
@@ -93,7 +93,7 @@ JIRA_BROWSE_URL=https://example.atlassian.net
 
 The second example generates `https://jira.example.org/jira/browse/DEV-123` for a synthetic ticket. HTTP(S), optional port and plain context paths are supported; credentials, query strings, fragments and encoded context paths are rejected. Prefer HTTPS. The override applies consistently to generated open-ticket/attachment links and row-click copies, including cached tickets; it is session-only and not serialized in ticket caches. Original descriptions and unrelated external links are not rewritten.
 
-No token, OAuth bearer or attachment request is ever sent to this browser base. Board/image/field HTTP remains pinned to the independently validated CLI/token site, with fixed approved endpoints, no redirects and existing bounds. Without an override, server `/jira/rest/...` metadata preserves `/jira` in browser links. OAuth gateway URLs are not guessed into browser links; use the pinned profile site or supply the browser base.
+No token, OAuth bearer or attachment request is ever sent to this browser base. Board/image/field/status HTTP remains pinned to the independently validated CLI/token site, with fixed approved endpoints, no redirects and existing bounds. Without an override, server `/jira/rest/...` metadata preserves `/jira` in browser links. OAuth gateway URLs are not guessed into browser links; use the pinned profile site or supply the browser base.
 
 A custom browser host/context is **not** support for arbitrary authenticated API hosts, Jira Data Center membership, other board strategies or universal terminal/macOS parity. See the [support matrix](SUPPORT.md).
 
@@ -107,4 +107,5 @@ A custom browser host/context is **not** support for arbitrary authenticated API
 | Account mismatch / HTTP 401 | Check the three authentication settings and permissions. Run `jirust auth` only for the intended account, then restart. OAuth can lack Software scopes. |
 | Unsupported Board metadata | Check the actual Board ID and support matrix; never substitute status guesses for membership. |
 | Empty list after filtering | F6 clears the current view; shown/scope counts distinguish filtering from missing data. |
+| Missing status suggestions | Set the intended project and use acli with the pinned Cloud metadata connection. Startup/F5 fetches all configured project statuses; **!** shows lookup errors while cached suggestions remain usable. |
 | Image/clipboard trouble | Try `--image-protocol halfblocks`, `--no-images` or `--no-copy-on-click`; see [usage](USAGE.md). |

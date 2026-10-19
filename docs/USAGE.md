@@ -26,6 +26,10 @@ Exact membership requires a supported Board ID (`JIRA_BOARD_ID` / `--board`). Th
 - **Double-click** a rendered status, assignee or epic label in a row/detail metadata to replace only that field's current-view filter. Other filters/text/sort remain. Assignees use exact identities, statuses full names, epics explicit keys—not equal display labels. Description words do not become filter gestures.
 - An Epic filter includes that epic and explicitly parented tickets already in scope, never guessed/linked members. **v** clears only Epic; **F6 / browsing x** clears all current-view filters/search while preserving sort. Changing scope resets all views' runtime filters.
 
+At startup and each refresh, the acli backend fetches all statuses configured for the selected project, across issue types. This includes unused statuses such as Discarded; matching cached tickets are not required. The read-only lookup uses the pinned Cloud metadata connection and does not require a Board ID. Set a project explicitly for custom-JQL scopes; Jirust does not infer additional projects from JQL.
+
+Status suggestions also remember names seen on tickets, returned transition targets and custom status filters that you apply. They remain available after refreshes, filter resets and restarts, even when no ticket currently uses them. History is private per account and project, bounded to 4,096 names, and saved best-effort with the cache. `--no-cache` still fetches project statuses but keeps history in memory only. Cancelled filter changes are not remembered. If metadata is unavailable or the backend does not support it, cached suggestions remain available and **!** shows the lookup error. Remembered names are suggestions, not proof that a ticket can transition to that status.
+
 An empty filtered view does not imply deleted tickets: compare shown/scope counts and try F6. Filters/search/sort never write Jira.
 
 ## Navigation, links and clipboard
@@ -39,6 +43,8 @@ Internal ticket links open in the client; Esc goes back. Single detail-parent-ep
 ## Updates and confirmations
 
 **a** assigns, **s** changes status (t remains an alias), **e** edits, **c** comments, **L** links tickets, **m** reviews a Board/Backlog move. Every update targets one validated ticket and requires **y** confirmation; n/Esc cancels. Read-only mode blocks both entry and confirmation.
+
+The status picker uses Jira-provided transition targets when available. Otherwise it offers remembered status suggestions; Jira still validates the workflow. Successful status updates also remember their destination. Remembered suggestions never determine Board/Backlog membership.
 
 Forms use Tab, Ctrl+U to clear, Ctrl+S to review/save. The Markdown editor supports cursor/editing keys and bracketed paste. Description edits are **not lossless** for every ADF feature: mentions, embedded media and unsupported extensions may change. Review before confirming; use Jira web for those cases.
 

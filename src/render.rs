@@ -988,6 +988,7 @@ mod tests {
             base,
             mine,
             changed,
+            ..
         } = app.reload().into_iter().next().unwrap()
         else {
             panic!()
