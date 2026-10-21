@@ -588,13 +588,27 @@ impl BoardApi {
             model["id"].as_u64() == Some(self.id),
             "Board metadata identity mismatch"
         );
-        let board_query = membership_query(&model, &plan, base)?;
+        let membership = membership_query(&model, &plan, base)?;
         let board_endpoint = format!("board/{}/issue", self.id);
+        // Jira can retain deleted/inaccessible IDs in the manual list after
+        // omitting their records. Ignore them ONLY if the board resource proves
+        // they cannot be returned in this scope. Never infer their done marker.
+        for ids in membership.missing.chunks(100) {
+            let page = self
+                .request(
+                    Method::GET,
+                    &board_endpoint,
+                    &missing_membership_parameters(base, ids),
+                    None,
+                )
+                .await?;
+            confirm_unavailable_membership(&page)?;
+        }
         let backlog_endpoint = format!("board/{}/backlog", self.id);
         report(crate::refresh::Stage::Tickets);
         let (board, backlog) = tokio::try_join!(
             async {
-                match board_query {
+                match membership.query {
                     Some(q) => self.issues(&board_endpoint, &q, estimate_fields).await,
                     None => Ok(Vec::new()),
                 }
@@ -614,7 +628,30 @@ impl BoardApi {
 /// cutoff. Evaluate `updated` in JQL on the SERVER, not against a local clock.
 /// This read-only web metadata is version-sensitive: fail closed on unknown
 /// shapes/strategies rather than substitute guessed statuses or all project work.
-fn membership_query(model: &Value, plan: &Value, base: &str) -> Result<Option<String>> {
+struct BoardMembership {
+    query: Option<String>,
+    missing: Vec<u64>,
+}
+fn missing_membership_parameters(base: &str, ids: &[u64]) -> Vec<(&'static str, String)> {
+    let ids = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    vec![
+        ("jql", format!("({base}) AND issue IN ({ids})")),
+        // Strict JQL validation rejects deleted IDs with HTTP 400. Disabling
+        // validation does not broaden this numeric-ID intersection or permissions.
+        ("validateQuery", "false".into()),
+        ("fields", "status".into()),
+        ("startAt", "0".into()),
+        ("maxResults", "1".into()),
+    ]
+}
+fn confirm_unavailable_membership(page: &Value) -> Result<()> {
+    ensure!(
+        page["issues"].as_array().is_some_and(Vec::is_empty) && page["total"].as_u64() == Some(0),
+        "Incomplete Board membership records; cannot verify missing tickets are unavailable"
+    );
+    Ok(())
+}
+fn membership_query(model: &Value, plan: &Value, base: &str) -> Result<BoardMembership> {
     ensure!(
         model["isSimpleBoard"].as_bool() == Some(true)
             && model["backlogStrategy"].as_str() == Some("ISSUE_LIST"),
@@ -665,10 +702,8 @@ fn membership_query(model: &Value, plan: &Value, base: &str) -> Result<Option<St
             active.push(n.to_string());
         }
     }
-    ensure!(
-        seen.len() == ids.len(),
-        "Incomplete Board membership records"
-    );
+    let mut missing: Vec<_> = ids.difference(&seen).copied().collect();
+    missing.sort_unstable();
     let mut clauses = Vec::new();
     if !active.is_empty() {
         clauses.push(format!("issue IN ({})", active.join(",")));
@@ -690,13 +725,9 @@ fn membership_query(model: &Value, plan: &Value, base: &str) -> Result<Option<St
             done.join(",")
         ));
     }
-    if clauses.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(format!(
-        "({base}) AND ({}) ORDER BY Rank ASC",
-        clauses.join(" OR ")
-    )))
+    let query = (!clauses.is_empty())
+        .then(|| format!("({base}) AND ({}) ORDER BY Rank ASC", clauses.join(" OR ")));
+    Ok(BoardMembership { query, missing })
 }
 fn decode_credential(bytes: &[u8], oauth: bool) -> Result<String> {
     ensure!(bytes.len() < 1024 * 1024, "Credential envelope too large");
@@ -833,9 +864,9 @@ mod tests {
     fn board_membership_uses_actual_issue_list_and_configured_cutoff_not_status_names() {
         let model = json!({"isSimpleBoard":true,"backlogStrategy":"ISSUE_LIST","boardIssueList":{"key":"synthetic-list"},"oldDoneIssuesCutoff":"-7d"});
         let plan = json!({"isTruncated":false,"isIssueLimitExceeded":false,"workViewIssueListKey":"synthetic-list","boardIssueIds":["84",9],"issues":[{"id":"61","done":false},{"id":"84","done":false},{"id":"9","done":true}]});
-        let q = membership_query(&model, &plan, "project = DEV")
-            .unwrap()
-            .unwrap();
+        let membership = membership_query(&model, &plan, "project = DEV").unwrap();
+        assert!(membership.missing.is_empty());
+        let q = membership.query.unwrap();
         assert_eq!(
             q,
             "(project = DEV) AND (issue IN (84) OR (issue IN (9) AND updated >= -7d)) ORDER BY Rank ASC"
@@ -851,9 +882,69 @@ mod tests {
         let mut bad = plan.clone();
         bad["workViewIssueListKey"] = json!("another-board");
         assert!(membership_query(&model, &bad, "project = DEV").is_err());
-        let mut bad = plan.clone();
-        bad["boardIssueIds"] = json!([84, 9, 12]);
-        assert!(membership_query(&model, &bad, "project = DEV").is_err());
+        let mut missing = plan.clone();
+        missing["boardIssueIds"] = json!([84, 9, 12]);
+        let membership = membership_query(&model, &missing, "project = DEV").unwrap();
+        assert_eq!(membership.missing, [12]);
+        assert_eq!(membership.query.as_deref(), Some(q.as_str()));
+        // Missing records do not relax validation of records that ARE present.
+        for invalid in [json!(null), json!("false")] {
+            missing["issues"][1]["done"] = invalid;
+            assert!(membership_query(&model, &missing, "project = DEV").is_err());
+        }
+    }
+    #[test]
+    fn missing_membership_probe_is_scoped_and_handles_deleted_ids_without_strict_jql_validation() {
+        let parameters = missing_membership_parameters("project = DEV OR labels = test", &[12, 34]);
+        assert_eq!(
+            parameters,
+            vec![
+                (
+                    "jql",
+                    "(project = DEV OR labels = test) AND issue IN (12,34)".into()
+                ),
+                ("validateQuery", "false".into()),
+                ("fields", "status".into()),
+                ("startAt", "0".into()),
+                ("maxResults", "1".into()),
+            ]
+        );
+        assert!(confirm_unavailable_membership(&json!({"issues":[],"total":0})).is_ok());
+        for page in [
+            json!({"issues":[{"id":"12"}],"total":1}),
+            json!({"issues":[{"id":"12"}],"total":0}),
+            json!({"issues":[],"total":1}),
+            json!({"issues":[],"isLast":false}),
+            json!({"issues":[],"total":"0"}),
+            json!({"total":0}),
+            json!({"issues":null,"total":0}),
+            json!({}),
+        ] {
+            assert!(confirm_unavailable_membership(&page).is_err());
+        }
+    }
+    #[test]
+    fn all_missing_records_still_require_verification_and_never_query_the_whole_board() {
+        let model = json!({"isSimpleBoard":true,"backlogStrategy":"ISSUE_LIST","boardIssueList":{"key":"synthetic-list"}});
+        let mut plan = json!({"isTruncated":false,"isIssueLimitExceeded":false,"workViewIssueListKey":"synthetic-list","boardIssueIds":[34,"12"],"issues":[]});
+        let membership = membership_query(&model, &plan, "project = DEV").unwrap();
+        assert_eq!(membership.missing, [12, 34]);
+        assert!(membership.query.is_none());
+        for invalid in [
+            json!(0),
+            json!("12 OR project = DEV"),
+            json!(-1),
+            json!(null),
+        ] {
+            plan["boardIssueIds"] = json!([invalid]);
+            assert!(membership_query(&model, &plan, "project = DEV").is_err());
+        }
+    }
+    #[test]
+    fn duplicate_records_remain_invalid_even_with_missing_membership() {
+        let model = json!({"isSimpleBoard":true,"backlogStrategy":"ISSUE_LIST","boardIssueList":{"key":"synthetic-list"}});
+        let plan = json!({"isTruncated":false,"isIssueLimitExceeded":false,"workViewIssueListKey":"synthetic-list","boardIssueIds":[12,34],"issues":[{"id":12,"done":false},{"id":"12","done":false}]});
+        assert!(membership_query(&model, &plan, "project = DEV").is_err());
     }
     #[test]
     fn actual_epic_membership_keeps_rank_and_is_not_inferred_from_type() {
@@ -880,6 +971,7 @@ mod tests {
         assert!(
             membership_query(&model, &plan, "project = DEV")
                 .unwrap()
+                .query
                 .is_none()
         );
     }
