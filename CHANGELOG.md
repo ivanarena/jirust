@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.17.4
+
+- Available now requires both an unassigned ticket and the exact status **To Do**, in local cached views and generated JQL. In Progress, Done and other statuses stay excluded even when filters are cleared or changed.
+- Update the demo and help text to match; Board/Backlog membership and Mine remain unchanged.
+
 ## 0.17.3
 
 First tagged release. Jirust remains experimental.

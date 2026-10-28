@@ -1541,7 +1541,6 @@ mod tests {
                 "Alex",
                 "Sam",
                 "In Progress",
-                "Refinement",
                 "To Do",
             ] {
                 assert!(
@@ -1549,7 +1548,7 @@ mod tests {
                     "missing {label} at {width}x{height}"
                 );
             }
-            for (column, index) in [(0, 4), (1, 3)] {
+            for (column, index) in [(0, 4), (1, 2)] {
                 let rect = app.filter_list_rects[column];
                 app.event(Event::Mouse(MouseEvent {
                     kind: MouseEventKind::Down(MouseButton::Left),

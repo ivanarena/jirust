@@ -114,7 +114,10 @@ impl Settings {
         }
         match view {
             MINE => parts.push("assignee = currentUser()".into()),
-            AVAILABLE => parts.push("assignee IS EMPTY".into()),
+            AVAILABLE => {
+                parts.push("assignee IS EMPTY".into());
+                parts.push("status = \"To Do\"".into());
+            }
             BOARD | BACKLOG => {}
             _ => bail!("Unknown view"),
         }
@@ -425,6 +428,27 @@ mod tests {
         );
         assert!(s.query(MINE, "", "sam", "").unwrap().contains("\"sam\""));
         assert_eq!(s.prefix(), "DEV");
+    }
+    #[test]
+    fn available_requires_unassigned_and_exact_to_do_even_with_other_filters() {
+        for board_id in [None, Some(17)] {
+            let s = Settings {
+                project: "DEV".into(),
+                board_id,
+                ..Default::default()
+            };
+            for status in ["", "To Do", "In Progress", "Done"] {
+                let q = s.query(AVAILABLE, "", "", status).unwrap();
+                assert!(q.contains("assignee IS EMPTY AND status = \"To Do\""));
+            }
+            for view in [MINE, BOARD, BACKLOG] {
+                assert!(
+                    !s.query(view, "", "", "")
+                        .unwrap()
+                        .contains("status = \"To Do\"")
+                );
+            }
+        }
     }
     #[test]
     fn base_scope_keeps_its_sort_and_additional_filters() {

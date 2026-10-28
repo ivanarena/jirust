@@ -355,9 +355,9 @@ impl Backend {
                 let re =
                     regex::Regex::new(&format!(r#"(?i)\b{}\s*[=~]\s*(\"(?:\\.|[^\"])*\")"#, field))
                         .unwrap();
-                if let Some(value) = re
-                    .captures(query)
-                    .and_then(|c| serde_json::from_str::<String>(&c[1]).ok())
+                for value in re
+                    .captures_iter(query)
+                    .filter_map(|c| serde_json::from_str::<String>(&c[1]).ok())
                 {
                     tickets.retain(|t| match field {
                         "text" => format!("{} {} {}", t.key, t.summary(), t.description())
@@ -1077,6 +1077,16 @@ mod tests {
             board_unassigned.key = "DEV-104".into();
             board_unassigned.fields["status"]["name"] = json!("To Do");
             tickets.insert(board_unassigned.key.clone(), board_unassigned);
+            for (key, status) in [
+                ("DEV-106", "In Progress"),
+                ("DEV-107", "Done"),
+                ("DEV-108", "Refinement"),
+            ] {
+                let mut unavailable = tickets["DEV-102"].clone();
+                unavailable.key = key.into();
+                unavailable.fields["status"]["name"] = json!(status);
+                tickets.insert(unavailable.key.clone(), unavailable);
+            }
             let mut backlog_mine = tickets["DEV-101"].clone();
             backlog_mine.key = "DEV-105".into();
             backlog_mine.fields["status"]["name"] = json!("Refinement");
@@ -1106,7 +1116,23 @@ mod tests {
             available.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(),
             ["DEV-102", "DEV-104"]
         );
-        assert_eq!(backlog.len(), 5);
+        assert_eq!(backlog.len(), 8);
+        for board_id in [None, Some(17)] {
+            let settings = crate::config::Settings {
+                board_id,
+                ..s.clone()
+            };
+            for status in ["In Progress", "Done", "Refinement"] {
+                let q = settings
+                    .query(crate::config::AVAILABLE, "", "", status)
+                    .unwrap();
+                assert!(b.search(&q, 500).await.unwrap().is_empty());
+            }
+            let q = settings
+                .query(crate::config::AVAILABLE, "", "", "")
+                .unwrap();
+            assert_eq!(b.search(&q, 500).await.unwrap().len(), 2);
+        }
     }
     #[cfg(unix)]
     #[tokio::test]

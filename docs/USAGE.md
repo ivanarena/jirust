@@ -7,7 +7,7 @@
 | View | Contents |
 |---|---|
 | Mine | Current CLI user's assigned tickets across Board and Backlog |
-| Available | Unassigned tickets across both sections |
+| Available | Unassigned tickets with status **To Do** across both sections |
 | Board | Verified Board membership, including returned completed tickets |
 | Backlog | Verified Backlog membership |
 
@@ -22,7 +22,7 @@ Exact membership requires a supported Board ID (`JIRA_BOARD_ID` / `--board`). Th
 - **/** searches the local index, including descriptions, type and explicit parent-epic labels. It does not fetch Jira or rebuild documents/sort on every keystroke.
 - **Digits** search `<prefix>-<number>` immediately in cached data; unknown numbers debounce a CLI lookup. Enter focuses details; Esc restores the view.
 - **f**, **A** or **S** opens Status/Assignee filters. Space/click toggles; Tab/←→ switches lists; Enter/Ctrl+S applies; Esc cancels. Ctrl+U clears a column; Ctrl+R stages resetting both. Other adds an exact custom value; commas are literal.
-- Values are **OR within a field, AND across fields/text**. Mine/Available assignment presets and Board/Backlog membership still apply. Each view retains independent runtime filters/search.
+- Values are **OR within a field, AND across fields/text**. Mine/Available presets (including Available's exact **To Do** status) and Board/Backlog membership still apply. Each view retains independent runtime filters/search.
 - **Double-click** a rendered status, assignee or epic label in a row/detail metadata to replace only that field's current-view filter. Other filters/text/sort remain. Assignees use exact identities, statuses full names, epics explicit keys—not equal display labels. Description words do not become filter gestures.
 - An Epic filter includes that epic and explicitly parented tickets already in scope, never guessed/linked members. **v** clears only Epic; **F6 / browsing x** clears all current-view filters/search while preserving sort. Changing scope resets all views' runtime filters.
 

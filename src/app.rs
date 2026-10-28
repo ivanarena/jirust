@@ -3389,7 +3389,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "SYMBOL LEGEND\n● Bug · □ Task · ≡ Story · ✎ Design\nϟ Epic · ⊟ Sub-task · ↗ Improvement\n◆ Feature · ◇ Spike · ◈ Other/unknown type\n✓ Done · ✕ Discarded\nColored labels: parent epics. SP: story points.\nBlank SP means unknown/unset, not zero.\n\nLAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Double-click an assignee/status/epic label in rows or ticket metadata to filter that field only (other filters remain). Exact IDs/epic keys, current view only. v clears Epic; F6 clears all current filters. Single detail-epic links wait 350 ms for a double-click. Mouse opens other detail links immediately. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each by default. E toggles local Rank/Epic sorting for this view: parent epic alphabetically, no epic last, Rank within groups. Sort is cached, never rebuilt per search keystroke; changing scope resets it.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · s status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nStartup/refresh fetches all project statuses with acli; ! shows metadata errors.\nSeen/applied custom statuses are remembered per account/project (unless --no-cache).\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / S or dropdowns open the same popup (T remains an alias). Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels. Every successful update automatically fully refreshes all four views, retaining their filters.\n--read-only blocks changes. ! shows safe error details; raw CLI output is suppressed.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Phase and elapsed time are shown. Details warm only near selection with bounded concurrency; obsolete background reads are cancelled. Cache writes run off the UI thread. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "SYMBOL LEGEND\n● Bug · □ Task · ≡ Story · ✎ Design\nϟ Epic · ⊟ Sub-task · ↗ Improvement\n◆ Feature · ◇ Spike · ◈ Other/unknown type\n✓ Done · ✕ Discarded\nColored labels: parent epics. SP: story points.\nBlank SP means unknown/unset, not zero.\n\nLAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Double-click an assignee/status/epic label in rows or ticket metadata to filter that field only (other filters remain). Exact IDs/epic keys, current view only. v clears Epic; F6 clears all current filters. Single detail-epic links wait 350 ms for a double-click. Mouse opens other detail links immediately. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned AND status To Do.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each by default. E toggles local Rank/Epic sorting for this view: parent epic alphabetically, no epic last, Rank within groups. Sort is cached, never rebuilt per search keystroke; changing scope resets it.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · s status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nStartup/refresh fetches all project statuses with acli; ! shows metadata errors.\nSeen/applied custom statuses are remembered per account/project (unless --no-cache).\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / S or dropdowns open the same popup (T remains an alias). Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels. Every successful update automatically fully refreshes all four views, retaining their filters.\n--read-only blocks changes. ! shows safe error details; raw CLI output is suppressed.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Phase and elapsed time are shown. Details warm only near selection with bounded concurrency; obsolete background reads are cancelled. Cache writes run off the UI thread. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -3443,6 +3443,7 @@ mod tests {
             let mut t = data::demo_tickets()[0].clone();
             t.key = key.into();
             t.fields["assignee"] = serde_json::Value::Null;
+            t.fields["status"] = serde_json::json!({"name":"To Do","statusCategory":{"key":"new"}});
             t.fields["parent"] = epic.map(|(key, name)| serde_json::json!({"key":key,"fields":{"summary":name,"issuetype":{"name":"Epic"}}})).unwrap_or_default();
             items.push(t);
         }
@@ -4366,7 +4367,7 @@ mod tests {
             (
                 config::BACKLOG,
                 vec!["unassigned"],
-                vec!["Refinement"],
+                vec!["To Do"],
                 "Enter",
                 "DEV-102",
             ),
@@ -4380,7 +4381,7 @@ mod tests {
             (
                 config::AVAILABLE,
                 vec!["unassigned"],
-                vec!["Refinement"],
+                vec!["To Do"],
                 "Enter",
                 "DEV-102",
             ),
@@ -4411,7 +4412,7 @@ mod tests {
             assert_eq!(a.selected_ticket().unwrap().key, key);
         }
         a.switch_view(config::BACKLOG);
-        assert_eq!(a.status_filter, "Refinement");
+        assert_eq!(a.status_filter, "To Do");
         assert_eq!(a.remote_search, "Enter");
         assert_eq!(a.assignee_filter, "unassigned");
         assert!(a.clear_filters().is_empty());
@@ -4432,7 +4433,7 @@ mod tests {
         assert!(a.remote_search.is_empty());
         assert!(a.assignee_filter.is_empty());
         a.switch_view(config::AVAILABLE);
-        assert_eq!(a.status_filter, "Refinement");
+        assert_eq!(a.status_filter, "To Do");
         assert_eq!(a.remote_search, "Enter");
     }
     #[test]
@@ -4817,7 +4818,7 @@ mod tests {
                 .ticket("DEV-102")
                 .unwrap()
                 .status(),
-            "Refinement"
+            "To Do"
         );
     }
     #[test]
@@ -4889,10 +4890,10 @@ mod tests {
         a.view_filters[config::AVAILABLE] = ViewFilters {
             epic: None,
             assignee: "unassigned".into(),
-            status: "Refinement".into(),
+            status: "To Do".into(),
             text: "digits".into(),
         };
-        a.status_filter = "Refinement".into();
+        a.status_filter = "To Do".into();
         a.local_search = "digits".into();
         a.remote_search = "digits".into();
         a.rebuild_visible();
@@ -4916,7 +4917,7 @@ mod tests {
         assert_eq!(a.view, config::BACKLOG);
         assert_eq!(a.detail_key, "DEV-102");
         assert_eq!(a.scroll, 7);
-        assert_eq!(a.status_filter.single(), "Refinement");
+        assert_eq!(a.status_filter.single(), "To Do");
         assert_eq!(a.remote_search, "digits");
         assert_eq!(a.view_filters[config::MINE].text, "terminal");
         assert_eq!(a.view_filters[config::AVAILABLE].text, "digits");
@@ -5363,6 +5364,7 @@ mod tests {
     #[test]
     fn list_filters_stage_both_columns_and_apply_without_jira_writes() {
         let mut a = app();
+        a.status_history.remember("DEV", "Refinement");
         a.read_only = true;
         a.assignee_picker(true);
         for _ in 0..4 {
@@ -5669,6 +5671,7 @@ mod tests {
         w.items[0].fields["status"] =
             serde_json::json!({"name":"Done","statusCategory":{"key":"done"}});
         w.items[0].fields["assignee"] = serde_json::Value::Null;
+        w.items[2].fields["assignee"] = serde_json::Value::Null;
         w.reindex();
         a.items_are_workspace = false;
         a.last_query = a.settings.query(config::BACKLOG, "", "", "").unwrap();
@@ -5676,7 +5679,7 @@ mod tests {
         for (view, keys) in [
             (config::BOARD, vec!["DEV-101", "DEV-103"]),
             (config::BACKLOG, vec!["DEV-102"]),
-            (config::AVAILABLE, vec!["DEV-101", "DEV-102"]),
+            (config::AVAILABLE, vec!["DEV-102", "DEV-103"]),
         ] {
             assert!(a.switch_view(view).is_empty());
             assert_eq!(
@@ -5687,6 +5690,11 @@ mod tests {
                 keys
             );
         }
+        a.status_filter = "Done".into();
+        a.reload();
+        assert!(a.visible.is_empty());
+        a.clear_filters();
+        assert_eq!(visible_keys(&a), ["DEV-102", "DEV-103"]);
         a.switch_view(config::BOARD);
         a.status_filter = "Done".into();
         a.reload();

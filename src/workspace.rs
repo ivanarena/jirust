@@ -110,7 +110,7 @@ impl SearchRow {
     ) -> bool {
         if !self.backlog_ticket
             || view == config::MINE && !mine
-            || view == config::AVAILABLE && !self.unassigned
+            || view == config::AVAILABLE && (!self.unassigned || self.status != "to do")
         {
             return false;
         }
@@ -385,6 +385,65 @@ pub fn valid_items(items: &[Ticket]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn available_requires_unassigned_to_do_in_cached_and_unindexed_rows() {
+        use serde_json::json;
+        let mut w = Workspace {
+            items: [
+                ("DEV-1", Some("To Do"), false),
+                ("DEV-2", Some("to do"), false),
+                ("DEV-3", Some("To Do"), true),
+                ("DEV-4", Some("In Progress"), false),
+                ("DEV-5", Some("Done"), false),
+                ("DEV-6", Some("Refinement"), false),
+                ("DEV-7", None, false),
+            ]
+            .into_iter()
+            .map(|(key, status, assigned)| Ticket {
+                key: key.into(),
+                fields: json!({"status":{"name":status},"assignee":if assigned { json!({"accountId":"sam"}) } else { json!(null) }}),
+                ..Default::default()
+            })
+            .collect(),
+            board: Some(["DEV-1".into(), "DEV-4".into(), "DEV-5".into()].into()),
+            ..Default::default()
+        };
+        for indexed in [false, true] {
+            if indexed {
+                // Derived indexes are rebuilt from persisted fields on load.
+                w = serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();
+                w.reindex();
+            }
+            assert_eq!(w.view_count(config::AVAILABLE), 2);
+            let keys = w
+                .items
+                .iter()
+                .filter(|t| w.matches(t, config::AVAILABLE, "", "", ""))
+                .map(|t| t.key.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(keys, ["DEV-1", "DEV-2"]);
+            assert!(w.items.iter().all(|t| !w.matches(
+                t,
+                config::AVAILABLE,
+                "",
+                "In Progress",
+                ""
+            )));
+            assert_eq!(w.view_count(config::BOARD), 3);
+            assert_eq!(w.view_count(config::BACKLOG), 4);
+        }
+        let mut detail = w.ticket("DEV-1").unwrap().clone();
+        detail.fields["status"] = json!({"name":"In Progress"});
+        assert!(w.update(&detail));
+        assert_eq!(w.view_count(config::AVAILABLE), 1);
+        w.apply_confirmed(
+            &crate::backend::Action::new("status", "DEV-1", "To Do"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(w.view_count(config::AVAILABLE), 2);
+        assert!(w.board.as_ref().unwrap().contains("DEV-1"));
+    }
     #[test]
     fn confirmed_assignment_updates_membership_and_reuses_known_identity() {
         use crate::backend::Action;
