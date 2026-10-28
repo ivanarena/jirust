@@ -148,7 +148,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | potential_utf | 0.1.6 | Unicode-3.0 |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 |
-| pulldown-cmark | 0.13.4 | MIT |
+| pulldown-cmark | 0.13.5 | MIT |
 | pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 |
 | quantette | 0.6.0 | MIT OR Apache-2.0 |
 | quick-error | 2.0.1 | MIT OR Apache-2.0 |
@@ -180,7 +180,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | rustix | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 |
-| rustls-webpki | 0.103.15 | ISC |
+| rustls-webpki | 0.103.16 | ISC |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 |
 | ryu | 1.0.23 | Apache-2.0 OR BSL-1.0 |
 | safe_arch | 1.2.0 | Zlib OR Apache-2.0 OR MIT |
@@ -220,7 +220,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 |
 | thiserror-impl | 2.0.21 | MIT OR Apache-2.0 |
 | tinystr | 0.8.4 | Unicode-3.0 |
-| tokio | 1.53.2 | MIT |
+| tokio | 1.54.1 | MIT |
 | tokio-macros | 2.7.2 | MIT |
 | tokio-rustls | 0.26.6 | MIT OR Apache-2.0 |
 | tower | 0.5.3 | MIT |
@@ -250,7 +250,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | wasm-bindgen-macro-support | 0.2.129 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.129 | MIT OR Apache-2.0 |
 | web-sys | 0.3.106 | MIT OR Apache-2.0 |
-| webpki-roots | 1.0.9 | CDLA-Permissive-2.0 |
+| webpki-roots | 1.0.11 | CDLA-Permissive-2.0 |
 | weezl | 0.1.12 | MIT OR Apache-2.0 |
 | wide | 1.7.1 | Zlib OR Apache-2.0 OR MIT |
 | winapi | 0.3.9 | MIT OR Apache-2.0 |
@@ -1426,7 +1426,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### Community Data License Agreement Permissive 2.0
 
 Used by:
-- webpki-roots 1.0.9
+- webpki-roots 1.0.11
 
 ```text
 # Community Data License Agreement - Permissive - Version 2.0
@@ -2054,7 +2054,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ### ISC License
 
 Used by:
-- rustls-webpki 0.103.15
+- rustls-webpki 0.103.16
 
 ```text
 Except as otherwise noted, this project is licensed under the following
@@ -5150,7 +5150,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- tokio 1.53.2
+- tokio 1.54.1
 
 ```text
 MIT License
@@ -5528,7 +5528,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- pulldown-cmark 0.13.4
+- pulldown-cmark 0.13.5
 
 ```text
 The MIT License

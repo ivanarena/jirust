@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "813f6247c9556bc053b8e3a4de8238f39974e3a421e08f4598af61a2e3f18044",
+  "cargo_lock_sha256": "4f32fc0cc8bbe086fc558a31b45bb2c677b68e0f7080855980863ac107a70dda",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -1047,9 +1047,9 @@
     {
       "license": "MIT",
       "name": "pulldown-cmark",
-      "sha256": "e9f068eba8e7071c5f9511831b44f32c740d5adf574e990f946ddb53db2f314e",
-      "source": "https://crates.io/api/v1/crates/pulldown-cmark/0.13.4/download",
-      "version": "0.13.4"
+      "sha256": "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb",
+      "source": "https://crates.io/api/v1/crates/pulldown-cmark/0.13.5/download",
+      "version": "0.13.5"
     },
     {
       "license": "BSD-3-Clause OR Apache-2.0",
@@ -1306,9 +1306,9 @@
     {
       "license": "ISC",
       "name": "rustls-webpki",
-      "sha256": "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2",
-      "source": "https://crates.io/api/v1/crates/rustls-webpki/0.103.15/download",
-      "version": "0.103.15"
+      "sha256": "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281",
+      "source": "https://crates.io/api/v1/crates/rustls-webpki/0.103.16/download",
+      "version": "0.103.16"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -1607,9 +1607,9 @@
     {
       "license": "MIT",
       "name": "tokio",
-      "sha256": "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044",
-      "source": "https://crates.io/api/v1/crates/tokio/1.53.2/download",
-      "version": "1.53.2"
+      "sha256": "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3",
+      "source": "https://crates.io/api/v1/crates/tokio/1.54.1/download",
+      "version": "1.54.1"
     },
     {
       "license": "MIT",
@@ -1824,9 +1824,9 @@
     {
       "license": "CDLA-Permissive-2.0",
       "name": "webpki-roots",
-      "sha256": "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a",
-      "source": "https://crates.io/api/v1/crates/webpki-roots/1.0.9/download",
-      "version": "1.0.9"
+      "sha256": "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171",
+      "source": "https://crates.io/api/v1/crates/webpki-roots/1.0.11/download",
+      "version": "1.0.11"
     },
     {
       "license": "MIT OR Apache-2.0",
