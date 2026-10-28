@@ -57,7 +57,7 @@ jirust move DEV-123 --to backlog
 
 Replace the synthetic key with one intended ticket. CLI moves ask you to type the key; `--yes` is explicit single-ticket confirmation for noninteractive use. Read-only blocks them too. **Never automatically retry an uncertain write**: reload first. A server change between the final membership read and POST remains possible.
 
-Successful writes fully refresh **all four views**, fence older reads, preserve filters/search and retain selection/reading position where possible. Failed writes or failed follow-up refreshes never repeat the mutation.
+After a confirmed successful assignment, status/summary/description/labels edit or membership move, the shared local snapshot updates immediately: assigning yourself a Backlog ticket makes it visible in Mine without waiting for a refresh (unless filters hide it). Only explicit moves change Board/Backlog membership. Every successful write also fully refreshes **all four views** in the background, fences older reads, preserves filters/search and retains selection/reading position where possible. Failed writes do not apply local changes; failed follow-up refreshes retain the local snapshot and never repeat the mutation.
 
 ## Ticket fields and images
 

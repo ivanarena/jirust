@@ -263,6 +263,97 @@ impl Workspace {
         }
         true
     }
+    /// Reflect a successful, confirmed write before the network reconciliation.
+    /// Only explicit moves alter Board membership; status names never do.
+    pub fn apply_confirmed(
+        &mut self,
+        action: &crate::backend::Action,
+        jira: bool,
+    ) -> Option<Ticket> {
+        use serde_json::{Value, json};
+        let mut ticket = self.ticket(&action.key)?.clone();
+        let mut mine = None;
+        match action.kind.as_str() {
+            "assign" => {
+                let known = self.items.iter().find(|t| {
+                    if action.value == "@me" {
+                        self.mine.contains(&t.key) && !t.fields["assignee"].is_null()
+                    } else {
+                        t.user("assignee").identity(jira) == action.value
+                    }
+                });
+                mine = Some(
+                    action.value == "@me" || known.is_some_and(|t| self.mine.contains(&t.key)),
+                );
+                ticket.fields["assignee"] = if action.value == "unassigned" {
+                    mine = Some(false);
+                    Value::Null
+                } else if let Some(known) = known {
+                    known.fields["assignee"].clone()
+                } else if action.value == "@me" {
+                    // No cached self identity: do not invent an account ID.
+                    json!({"displayName":"Me"})
+                } else {
+                    let mut user = json!({"displayName":action.value});
+                    user[if action.value.contains('@') {
+                        "emailAddress"
+                    } else if jira {
+                        "name"
+                    } else {
+                        "accountId"
+                    }] = json!(action.value);
+                    user
+                };
+            }
+            "status" => {
+                ticket.fields["status"] = ticket
+                    .transitions
+                    .iter()
+                    .map(|t| &t["to"])
+                    .chain(self.items.iter().map(|t| &t.fields["status"]))
+                    .find(|s| s["name"].as_str() == Some(&action.value))
+                    .cloned()
+                    .unwrap_or_else(|| json!({"name":action.value}));
+            }
+            "summary" => ticket.fields["summary"] = json!(action.value),
+            "description" => ticket.fields["description"] = crate::markdown::to_adf(&action.value),
+            "labels" => {
+                ticket.fields["labels"] =
+                    json!(action.value.split(',').map(str::trim).collect::<Vec<_>>())
+            }
+            "board" | "backlog" => {}
+            _ => return None,
+        }
+        // Reserve bounded membership growth as well as the updated ticket bytes.
+        // The next server snapshot replaces this conservative accounting.
+        let reserve = 2 * (action.key.len() + 3);
+        if !self.update_with_limit(
+            &ticket,
+            crate::limits::WORKSPACE_BYTES.saturating_sub(reserve),
+        ) {
+            return None;
+        }
+        if let Some(mine) = mine {
+            if mine {
+                self.mine.insert(action.key.clone());
+            } else {
+                self.mine.remove(&action.key);
+            }
+        }
+        if let Some(board) = &mut self.board {
+            match action.kind.as_str() {
+                "board" => {
+                    board.insert(action.key.clone());
+                }
+                "backlog" => {
+                    board.remove(&action.key);
+                }
+                _ => {}
+            }
+        }
+        self.encoded_bytes = self.encoded_bytes.saturating_add(reserve);
+        Some(ticket)
+    }
     /// True Jira/view membership count, independent of search and filters.
     pub fn view_count(&self, view: usize) -> usize {
         self.items
@@ -294,6 +385,81 @@ pub fn valid_items(items: &[Ticket]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn confirmed_assignment_updates_membership_and_reuses_known_identity() {
+        use crate::backend::Action;
+        let mut w = Workspace {
+            items: data::demo_tickets(),
+            mine: ["DEV-101".into()].into(),
+            board: Some(["DEV-101".into()].into()),
+            ..Default::default()
+        };
+        w.reindex();
+        let assignee = w.ticket("DEV-101").unwrap().fields["assignee"].clone();
+        w.apply_confirmed(&Action::new("assign", "DEV-102", "@me"), false)
+            .unwrap();
+        assert!(w.mine.contains("DEV-102"));
+        assert_eq!(w.ticket("DEV-102").unwrap().fields["assignee"], assignee);
+        assert_eq!(w.view_count(config::AVAILABLE), 0);
+        w.apply_confirmed(&Action::new("assign", "DEV-102", "sam"), false)
+            .unwrap();
+        assert!(!w.mine.contains("DEV-102"));
+        assert_eq!(w.ticket("DEV-102").unwrap().user("assignee").id, "sam");
+        let id = w.ticket("DEV-101").unwrap().user("assignee").id;
+        w.apply_confirmed(&Action::new("assign", "DEV-102", &id), false)
+            .unwrap();
+        assert!(w.mine.contains("DEV-102"));
+        w.apply_confirmed(&Action::new("assign", "DEV-102", "unassigned"), false)
+            .unwrap();
+        assert!(!w.mine.contains("DEV-102"));
+        assert_eq!(w.view_count(config::AVAILABLE), 1);
+        assert_eq!(
+            w.board.as_ref().unwrap(),
+            &HashSet::from(["DEV-101".into()])
+        );
+    }
+    #[test]
+    fn confirmed_self_assignment_without_cached_identity_does_not_invent_account_id() {
+        let mut w = Workspace {
+            items: data::demo_tickets(),
+            ..Default::default()
+        };
+        w.reindex();
+        w.apply_confirmed(
+            &crate::backend::Action::new("assign", "DEV-102", "@me"),
+            false,
+        )
+        .unwrap();
+        let row = w.ticket("DEV-102").unwrap();
+        assert!(w.matches(row, config::MINE, "@me", "", ""));
+        assert!(!w.matches(row, config::AVAILABLE, "", "", ""));
+        assert!(row.user("assignee").id.is_empty());
+    }
+    #[test]
+    fn confirmed_status_never_guesses_category_or_board_membership() {
+        use crate::backend::Action;
+        let mut w = Workspace {
+            items: data::demo_tickets(),
+            board: Some(["DEV-101".into()].into()),
+            ..Default::default()
+        };
+        w.reindex();
+        w.apply_confirmed(&Action::new("status", "DEV-102", "Unknown state"), false)
+            .unwrap();
+        assert_eq!(w.ticket("DEV-102").unwrap().status(), "Unknown state");
+        assert!(w.ticket("DEV-102").unwrap().fields["status"]["statusCategory"].is_null());
+        assert_eq!(
+            w.board.as_ref().unwrap(),
+            &HashSet::from(["DEV-101".into()])
+        );
+        w.apply_confirmed(&Action::new("board", "DEV-102", "1"), false)
+            .unwrap();
+        assert!(w.board.as_ref().unwrap().contains("DEV-102"));
+        w.apply_confirmed(&Action::new("backlog", "DEV-102", "1"), false)
+            .unwrap();
+        assert!(!w.board.as_ref().unwrap().contains("DEV-102"));
+        assert_eq!(w.ticket("DEV-102").unwrap().status(), "Unknown state");
+    }
     #[test]
     fn full_detail_updates_cannot_grow_the_shared_snapshot_past_its_budget() {
         let mut w = Workspace {

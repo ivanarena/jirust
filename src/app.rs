@@ -1378,7 +1378,7 @@ impl App {
             }
             Message::Written { action, result } => {
                 self.writing = false;
-                self.details.remove(&action.key);
+                let previous_detail = self.details.remove(&action.key);
                 self.doc_dirty = true;
                 self.cache_writer.remove(format!("detail:{}", action.key));
                 self.cache_writer.remove(full_cache_key(&action.key));
@@ -1393,6 +1393,41 @@ impl App {
                     .remove(format!("list:{}:{}", self.limit, self.last_query));
                 match result {
                     Ok(()) => {
+                        if let Some(ticket) = self.workspace.as_mut().and_then(|workspace| {
+                            workspace.apply_confirmed(&action, self.backend.kind == Kind::Jira)
+                        }) {
+                            let selected = self.selected_ticket().map(|t| t.key.clone());
+                            let field = match action.kind.as_str() {
+                                "assign" => Some("assignee"),
+                                "status" => Some("status"),
+                                "summary" => Some("summary"),
+                                "description" => Some("description"),
+                                "labels" => Some("labels"),
+                                _ => None,
+                            };
+                            for item in &mut self.items {
+                                if item.key == action.key
+                                    && let Some(field) = field
+                                {
+                                    item.fields[field] = ticket.fields[field].clone();
+                                }
+                            }
+                            if let Some((mut detail, time)) = previous_detail {
+                                if let Some(field) = field {
+                                    detail.fields[field] = ticket.fields[field].clone();
+                                }
+                                if action.kind == "status" {
+                                    detail.transitions.clear();
+                                }
+                                self.details.insert(action.key.clone(), (detail, time));
+                            }
+                            self.reset_click();
+                            self.filter_hits.clear();
+                            self.epic_order = None;
+                            self.rebuild_visible();
+                            self.restore_sort_selection(selected);
+                            self.refresh_filter_lists();
+                        }
                         if action.kind == "status"
                             && let Some((project, _)) = action.key.rsplit_once('-')
                             && self.status_history.remember(project, &action.value)
@@ -4726,7 +4761,21 @@ mod tests {
             assert_eq!(a.backend.kind, crate::backend::Kind::Demo);
             let result = a.backend.apply(&action).await;
             a.writing = true;
+            let key = action.key.clone();
+            let kind = action.kind.clone();
             let jobs = a.message(Message::Written { action, result });
+            // No jobs have run: every view must already reflect the receipt.
+            for (view, count) in counts.into_iter().enumerate() {
+                assert!(a.switch_view(view).is_empty());
+                assert_eq!(
+                    a.visible.len(),
+                    count,
+                    "view {view} must update before sync"
+                );
+                if kind == "assign" && view == config::MINE {
+                    assert!(a.visible.iter().any(|n| a.items[*n].key == key));
+                }
+            }
             let Job::Sync {
                 generation,
                 base,
@@ -4769,6 +4818,63 @@ mod tests {
                 .unwrap()
                 .status(),
             "Refinement"
+        );
+    }
+    #[test]
+    fn confirmed_edits_update_rows_details_and_search_before_any_network_read() {
+        for (kind, value, field) in [
+            ("assign", "@me", "assignee"),
+            ("status", "Synthetic state", "status"),
+            ("summary", "Instant synthetic summary", "summary"),
+            (
+                "description",
+                "Instant synthetic description",
+                "description",
+            ),
+            ("labels", "instant, synthetic", "labels"),
+        ] {
+            let mut a = app();
+            a.detail_key = "DEV-102".into();
+            a.scroll = 7;
+            a.writing = true;
+            let jobs = a.message(Message::Written {
+                action: Action::new(kind, "DEV-102", value),
+                result: Ok(()),
+            });
+            assert!(jobs.iter().any(|job| matches!(job, Job::Sync { .. })));
+            let workspace = a.workspace.as_ref().unwrap();
+            let row = workspace.ticket("DEV-102").unwrap();
+            assert_eq!(a.details["DEV-102"].0.fields[field], row.fields[field]);
+            assert_eq!(
+                a.items.iter().find(|t| t.key == "DEV-102").unwrap().fields[field],
+                row.fields[field]
+            );
+            assert_eq!(a.detail_key, "DEV-102");
+            assert_eq!(a.scroll, 7);
+            if kind == "assign" {
+                assert!(workspace.matches(row, config::MINE, "@me", "", ""));
+                assert!(!workspace.matches(row, config::AVAILABLE, "", "", ""));
+            } else {
+                let needle = if kind == "labels" { "instant" } else { value };
+                assert!(workspace.matches(row, config::BACKLOG, "", "", needle));
+            }
+        }
+    }
+    #[test]
+    fn failed_assignment_does_not_change_local_fields_or_membership() {
+        let mut a = app();
+        let before = a.workspace.as_ref().unwrap().cache_snapshot();
+        a.writing = true;
+        a.message(Message::Written {
+            action: Action::new("assign", "DEV-102", "@me"),
+            result: Err(anyhow::anyhow!("synthetic failure")),
+        });
+        let after = a.workspace.as_ref().unwrap();
+        assert_eq!(after.mine, before.mine);
+        assert_eq!(after.board, before.board);
+        assert_eq!(
+            after.ticket("DEV-102").unwrap().fields,
+            before.ticket("DEV-102").unwrap().fields
         );
     }
     #[test]
