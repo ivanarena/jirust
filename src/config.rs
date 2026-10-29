@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -19,6 +20,8 @@ pub struct Settings {
     pub last_view: usize,
     pub view_layout: u8,
     pub board_id: Option<u64>,
+    /// Per-project forward-step preferences; never change allowed transitions.
+    pub status_order: BTreeMap<String, Vec<String>>,
 }
 pub const MINE: usize = 0;
 pub const AVAILABLE: usize = 1;
@@ -35,6 +38,7 @@ impl Default for Settings {
             last_view: MINE,
             view_layout: 4,
             board_id: None,
+            status_order: BTreeMap::new(),
         }
     }
 }
@@ -58,6 +62,7 @@ impl Settings {
     fn from_value(value: Value) -> Result<Self> {
         let mut out: Self = serde_json::from_value(value.clone())
             .map_err(|_| anyhow::anyhow!("Invalid private settings shape (content suppressed)"))?;
+        out.status_order = crate::statuses::normalize_orders(out.status_order)?;
         // Migrate old numeric tabs without reinterpreting Board as Mine or
         // old Backlog-only as Available. All three now share one backlog scope.
         if value["view_layout"].as_u64() == Some(3) {
@@ -84,8 +89,20 @@ impl Settings {
         }
         Ok(out)
     }
+    /// Profile preferences override only the projects they explicitly name.
+    pub fn override_status_order(&mut self, orders: BTreeMap<String, Vec<String>>) -> Result<()> {
+        let mut combined = self.status_order.clone();
+        combined.extend(crate::statuses::normalize_orders(orders)?);
+        self.status_order = crate::statuses::normalize_orders(combined)?;
+        Ok(())
+    }
     pub fn save(&self) -> Result<()> {
-        private_write(&config_path()?, &serde_json::to_vec_pretty(self)?)
+        let bytes = serde_json::to_vec_pretty(self)?;
+        anyhow::ensure!(
+            bytes.len() <= 64 * 1024,
+            "Private settings exceed 64 KiB limit (values redacted)"
+        );
+        private_write(&config_path()?, &bytes)
     }
     pub fn scope(&self) -> Result<String> {
         if !self.scope_jql.trim().is_empty() {
@@ -511,6 +528,50 @@ mod tests {
                 .unwrap()
                 .contains("assignee = \"sam\"")
         );
+    }
+    #[test]
+    fn workflow_preferences_are_optional_per_project_and_round_trip() {
+        let legacy = Settings::from_value(serde_json::json!({"project":"DEV"})).unwrap();
+        assert!(legacy.status_order.is_empty());
+        let configured = Settings::from_value(serde_json::json!({
+            "project":"DEV", "status_order":{
+                "dev":["In Progress", "Code Review", "Staging", "Done"],
+                "OTHER":["Queued", "Working", "Finished"]
+            }
+        }))
+        .unwrap();
+        assert_eq!(configured.status_order["DEV"][1], "Code Review");
+        let mut roundtrip =
+            Settings::from_value(serde_json::to_value(&configured).unwrap()).unwrap();
+        assert_eq!(roundtrip.status_order, configured.status_order);
+        roundtrip.project = "OTHER".into();
+        assert_eq!(roundtrip.status_order["DEV"][1], "Code Review");
+        assert_eq!(roundtrip.status_order["OTHER"][1], "Working");
+        roundtrip
+            .override_status_order(BTreeMap::from([("dev".into(), vec![])]))
+            .unwrap();
+        assert!(roundtrip.status_order["DEV"].is_empty());
+        assert_eq!(
+            roundtrip.status_order["OTHER"],
+            configured.status_order["OTHER"]
+        );
+        let before = roundtrip.status_order.clone();
+        assert!(
+            roundtrip
+                .override_status_order((0..64).map(|n| (format!("DEV{n}"), vec![])).collect())
+                .is_err()
+        );
+        assert_eq!(roundtrip.status_order, before);
+        for invalid in [
+            serde_json::json!("SYNTHETIC_SECRET_MARKER"),
+            serde_json::json!({"DEV":["SYNTHETIC_SECRET_MARKER", "SYNTHETIC_SECRET_MARKER"]}),
+            serde_json::json!({"DEV":[{"name":"SYNTHETIC_SECRET_MARKER"}]}),
+        ] {
+            let error = Settings::from_value(serde_json::json!({"status_order":invalid}))
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("SYNTHETIC_SECRET_MARKER"));
+        }
     }
     #[test]
     fn invalid_settings_shapes_never_echo_private_values() {

@@ -372,6 +372,11 @@ async fn main() -> Result<()> {
         Settings::load()?
     };
     let scope_override = opts.apply_scope(&mut settings);
+    if backend.kind != Kind::Demo
+        && let Some(orders) = env.status_order()?
+    {
+        settings.override_status_order(orders)?;
+    }
     backend.configure_board(settings.board_id)?;
     let limit = if backend.kind == Kind::Jira {
         usize::from(opts.limit).min(100)
@@ -647,8 +652,9 @@ fn dispatch(
                     background,
                     result: detail_read(&backend, &key, cancel).await,
                 },
-                Job::Comments(key) => Message::Comments {
+                Job::Comments { key, revision } => Message::Comments {
                     key: key.clone(),
+                    revision,
                     result: backend.comments(&key).await,
                 },
                 Job::Write(action) => Message::Written {

@@ -2,7 +2,7 @@
 use crate::data::{self, Ticket};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const CACHE_KEY: &str = "status-history-v1";
 const MAX_NAMES: usize = 4096;
@@ -17,6 +17,58 @@ pub fn valid_project(project: &str) -> bool {
 }
 fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= MAX_NAME_BYTES && data::line(name) == name
+}
+/// User preferences, not a source of workflow states or allowed transitions.
+/// Project keys are normalized; ambiguous duplicates and unsafe values fail closed.
+pub fn normalize_orders(
+    orders: BTreeMap<String, Vec<String>>,
+) -> Result<BTreeMap<String, Vec<String>>> {
+    ensure!(orders.len() <= 64, "Too many projects in status_order");
+    let mut normalized = BTreeMap::new();
+    for (project, order) in orders {
+        ensure!(
+            valid_project(&project),
+            "Invalid project in status_order (value redacted)"
+        );
+        ensure!(order.len() <= 128, "Too many entries in status_order");
+        let mut seen = BTreeSet::new();
+        for name in &order {
+            ensure!(
+                valid_name(name),
+                "Invalid status_order name (value redacted)"
+            );
+            ensure!(
+                seen.insert(name.to_lowercase()),
+                "Duplicate status_order name (value redacted)"
+            );
+        }
+        ensure!(
+            normalized.insert(project.to_uppercase(), order).is_none(),
+            "Duplicate project in status_order (value redacted)"
+        );
+    }
+    Ok(normalized)
+}
+/// Promote available forward steps in configured order. Stable sorting preserves
+/// the caller's alphabetical fallback for backwards/unconfigured choices. Never
+/// add a status, wrap at the end, or treat a preference as workflow permission.
+pub fn prefer_next(names: &mut [String], current: &str, order: &[String]) {
+    let current = current.to_lowercase();
+    let Some(position) = order.iter().position(|s| s.to_lowercase() == current) else {
+        return;
+    };
+    let forward: BTreeMap<_, _> = order
+        .iter()
+        .skip(position + 1)
+        .enumerate()
+        .map(|(n, name)| (name.to_lowercase(), n))
+        .collect();
+    names.sort_by_cached_key(|name| {
+        forward
+            .get(&name.to_lowercase())
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
 }
 /// Jira returns statuses grouped by issue type, including unused workflow states.
 pub fn project_names(metadata: &serde_json::Value) -> Result<Vec<String>> {
@@ -114,6 +166,88 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn natural_order_promotes_only_available_forward_steps_without_wrapping() {
+        let order: Vec<String> = [
+            "To Do",
+            "In Progress",
+            "Code Review",
+            "Staging",
+            "PO Testing",
+            "Production",
+            "Done",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let mut alphabetical = order.clone();
+        alphabetical.extend(["Discarded".into(), "On Hold".into()]);
+        alphabetical.sort();
+        for pair in order.windows(2) {
+            let mut choices = alphabetical.clone();
+            prefer_next(&mut choices, &pair[0], &order);
+            assert_eq!(choices[0], pair[1]);
+            let mut inventory = choices.clone();
+            inventory.sort();
+            assert_eq!(inventory, alphabetical);
+        }
+        for current in ["Unknown state", "Done"] {
+            let mut choices = alphabetical.clone();
+            prefer_next(&mut choices, current, &order);
+            assert_eq!(choices, alphabetical);
+        }
+        let mut choices = vec!["Done".into(), "On Hold".into(), "PO Testing".into()];
+        prefer_next(&mut choices, "In Progress", &order);
+        assert_eq!(choices, ["PO Testing", "Done", "On Hold"]);
+        assert!(!choices.iter().any(|s| s == "Code Review"));
+        let mut backwards = vec!["Discarded".into(), "In Progress".into(), "On Hold".into()];
+        let original = backwards.clone();
+        prefer_next(&mut backwards, "Production", &order);
+        assert_eq!(backwards, original);
+    }
+    #[test]
+    fn workflow_matching_is_case_insensitive_and_preserves_server_values() {
+        let mut choices = vec!["Done".into(), "ÜBERPRÜFEN".into()];
+        prefer_next(
+            &mut choices,
+            "IN PROGRESS",
+            &["In Progress".into(), "Überprüfen".into(), "done".into()],
+        );
+        assert_eq!(choices, ["ÜBERPRÜFEN", "Done"]);
+    }
+    #[test]
+    fn workflow_configuration_is_bounded_normalized_and_rejects_ambiguity() {
+        let orders = normalize_orders(BTreeMap::from([
+            (
+                "dev".into(),
+                vec!["In Progress".into(), "Code Review".into()],
+            ),
+            ("OTHER".into(), vec![]),
+        ]))
+        .unwrap();
+        assert!(orders.contains_key("DEV"));
+        assert!(orders["OTHER"].is_empty());
+        for order in [
+            vec!["".into()],
+            vec![" In Progress".into()],
+            vec!["Unsafe\nstatus".into()],
+            vec!["\u{1b}[31mUnsafe".into()],
+            vec!["Review".into(), "review".into()],
+            vec!["x".repeat(MAX_NAME_BYTES + 1)],
+            vec!["status".into(); 129],
+        ] {
+            assert!(normalize_orders(BTreeMap::from([("DEV".into(), order)])).is_err());
+        }
+        assert!(
+            normalize_orders(BTreeMap::from([
+                ("DEV".into(), vec![]),
+                ("dev".into(), vec![])
+            ]))
+            .is_err()
+        );
+        assert!(normalize_orders(BTreeMap::from([("invalid project".into(), vec![])])).is_err());
+        assert!(normalize_orders((0..65).map(|n| (format!("DEV{n}"), vec![])).collect()).is_err());
+    }
     #[test]
     fn project_metadata_includes_unused_statuses_and_deduplicates_issue_types() {
         let names = project_names(&json!([

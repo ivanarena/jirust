@@ -21,7 +21,7 @@ Startup never silently switches accounts. CLI authentication must match the conf
 
 ## Precedence and profiles
 
-Explicit CLI flags win over exported environment variables, then the selected dotenv file, then saved/default settings. An empty dotenv value supplies no override. Scope/project/prefix/JQL/board/name/view settings may be remembered for later TUI launches; credentials, browser overrides and refresh intervals are not written to settings. `--check`, subcommands and demo do not save those settings.
+Explicit CLI flags win over exported environment variables, then the selected dotenv file, then saved/default settings. An empty dotenv value supplies no override. Scope/project/prefix/JQL/board/name/view and workflow-order settings may be remembered for later TUI launches; credentials, browser overrides and refresh intervals are not written to settings. `--check`, subcommands and demo do not save those settings.
 
 Select a dotenv file in this order:
 
@@ -65,6 +65,7 @@ Settings are `config.json`; the optional private env is `.env`. Account/site det
 | `JIRA_JQL` | `--jql` | Optional custom scope JQL. Jira remains authoritative for membership. |
 | `JIRA_SCOPE_NAME` | `--scope-name` | Optional scope display label, at most 128 bytes without controls; does not change JQL/membership. |
 | `JIRA_VIEW` | `--view` | `mine`, `available`, `board`, `backlog`; otherwise restore saved view. |
+| `JIRA_STATUS_ORDER` | — | Optional per-project JSON map of forward status preferences; overrides matching projects in saved `status_order`. See below. |
 | `JIRA_BACKEND` | `--backend` | `auto` (default), `acli`, `jira`, `demo`. |
 | `JIRA_CLI_BIN` | `--cli-bin` | Optional executable path; otherwise native discovery/PATH. Do not copy Linux paths to macOS. |
 | `JIRA_READ_ONLY` | `--read-only` | Block update entry and confirmation; default false. |
@@ -80,6 +81,32 @@ Settings are `config.json`; the optional private env is `.env`. Account/site det
 Boolean values: `true`/`false`, `1`/`0`. Invalid values fail without echoing dotenv contents. A new explicit project does not inherit another project's environment prefix/JQL/board/display label unless supplied explicitly. Choosing a project resets old custom prefix/JQL/label unless overridden; an actual project change clears the saved board. Changing JQL clears an old scope label unless a new label is supplied.
 
 Refresh intervals only affect periodic reads. F5 and successful confirmed writes still fully refresh all four views immediately. Existing read-only, confirmation and no-automatic-write-retry behavior is unchanged.
+
+## Preferred next status
+
+By default the **s** status-change picker stays alphabetical. To prefer the next natural step, add `status_order` to your existing `config.json`, keeping its other fields:
+
+```json
+{
+  "status_order": {
+    "DEV": ["To Do", "In Progress", "Code Review", "Staging", "PO Testing", "Production", "Done"]
+  }
+}
+```
+
+Or put the same map in your private dotenv profile (this survives saves by an older running Jirust):
+
+```dotenv
+JIRA_STATUS_ORDER='{"DEV":["To Do","In Progress","Code Review","Staging","PO Testing","Production","Done"]}'
+```
+
+Restart Jirust after editing. Each project can have a different order; a profile overrides only the projects it names. Use `[]` for a project to disable its saved preference. Preferences may be remembered in settings on subsequent TUI saves. Demo ignores personal preferences.
+
+For a ticket **In Progress**, **Code Review** appears first and is selected. If that choice is absent, the next available later step is preferred. Remaining forward steps follow the configured order, with backwards/unconfigured choices retaining their alphabetical fallback. Unknown current states, a project's missing/empty order and the final configured state keep the original alphabetical order; there is no wraparound from Done to To Do.
+
+Names match case-insensitively, but actions retain Jira's exact spelling. Use your actual workflow names (for example, `Ready for Staging` rather than `Staging` if that is what Jira calls it). This only **reorders existing choices**: ticket-specific transition targets remain authoritative; suggestion-only backends still rely on Jira validation. Configured names never create statuses or authorize transitions. Filters remain alphabetical, linked tickets use their own project's preference, and Enter still opens the separate **y** confirmation.
+
+Orders support at most 64 projects and 128 unique names per project; names must be nonempty, at most 1024 bytes, and contain no control characters or noncanonical whitespace. Project/name duplicates differing only by case are rejected. Settings and the environment JSON value are bounded to 64 KiB; errors redact values.
 
 ## Browser links are not API configuration
 

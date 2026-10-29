@@ -220,7 +220,21 @@ impl Workspace {
     pub fn update(&mut self, ticket: &Ticket) -> bool {
         self.update_with_limit(ticket, crate::limits::WORKSPACE_BYTES)
     }
+    /// Hydrate a detail without spending bytes needed to restore a pending edit.
+    /// Reserve only the saved row's growth over its current preview; omit it after
+    /// completion so the normal workspace budget is available again.
+    pub(crate) fn update_preserving(&mut self, ticket: &Ticket, rollback: Option<&Ticket>) -> bool {
+        self.update_preserving_with_limit(ticket, rollback, crate::limits::WORKSPACE_BYTES)
+    }
     fn update_with_limit(&mut self, ticket: &Ticket, limit: usize) -> bool {
+        self.update_preserving_with_limit(ticket, None, limit)
+    }
+    fn update_preserving_with_limit(
+        &mut self,
+        ticket: &Ticket,
+        rollback: Option<&Ticket>,
+        limit: usize,
+    ) -> bool {
         if self.index.len() != self.items.len() || self.encoded_bytes == 0 {
             self.reindex();
         }
@@ -241,6 +255,8 @@ impl Workspace {
                 "labels",
                 "description",
                 "parent",
+                "comment",
+                "issuelinks",
             ] {
                 row.fields[field] = ticket.fields[field].clone();
             }
@@ -253,7 +269,22 @@ impl Workspace {
                 .encoded_bytes
                 .saturating_sub(previous)
                 .saturating_add(size);
-            if used > limit {
+            let reserve = if let Some(original) = rollback {
+                let Ok(original_size) = crate::limits::size(original, limit) else {
+                    return false;
+                };
+                let current_size = if row.key == original.key {
+                    size
+                } else {
+                    self.index
+                        .get(&original.key)
+                        .map_or(original_size, |r| r.encoded_bytes)
+                };
+                original_size.saturating_sub(current_size)
+            } else {
+                0
+            };
+            if used.saturating_add(reserve) > limit {
                 return false;
             }
             self.index
@@ -263,7 +294,8 @@ impl Workspace {
         }
         true
     }
-    /// Reflect a successful, confirmed write before the network reconciliation.
+    /// Reflect a user-confirmed write locally before the remote request completes.
+    /// The caller owns rollback and must not persist an unacknowledged snapshot.
     /// Only explicit moves alter Board membership; status names never do.
     pub fn apply_confirmed(
         &mut self,
@@ -320,6 +352,33 @@ impl Workspace {
             "labels" => {
                 ticket.fields["labels"] =
                     json!(action.value.split(',').map(str::trim).collect::<Vec<_>>())
+            }
+            "comment" => {
+                let mut comments = ticket.fields["comment"]["comments"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                let total = ticket.fields["comment"]["total"]
+                    .as_u64()
+                    .unwrap_or(comments.len() as u64);
+                // No fabricated server ID or account identity.
+                comments.push(json!({
+                    "author":{"displayName":"You (pending sync)"},
+                    "body":crate::markdown::to_adf(&action.value)
+                }));
+                ticket.fields["comment"] =
+                    json!({"total":total.saturating_add(1),"comments":comments});
+            }
+            "link" => {
+                let mut links = ticket.fields["issuelinks"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                links.push(json!({
+                    "type":{"outward":action.extra},
+                    "outwardIssue":{"key":action.value}
+                }));
+                ticket.fields["issuelinks"] = json!(links);
             }
             "board" | "backlog" => {}
             _ => return None,
@@ -518,6 +577,51 @@ mod tests {
             .unwrap();
         assert!(!w.board.as_ref().unwrap().contains("DEV-102"));
         assert_eq!(w.ticket("DEV-102").unwrap().status(), "Unknown state");
+    }
+    #[test]
+    fn unrelated_details_must_leave_room_for_the_original_row_on_rollback() {
+        use serde_json::json;
+        let mut w = Workspace {
+            items: data::demo_tickets(),
+            mine: ["DEV-102".into()].into(),
+            board: Some(["DEV-102".into()].into()),
+            ..Default::default()
+        };
+        w.items[1].fields["description"] = json!("x".repeat(4096));
+        w.reindex();
+        // Use a scaled-down aggregate budget rather than allocating 64 MiB.
+        let limit = w.encoded_bytes + 512;
+        let original = w.items[1].clone();
+        let mut preview = original.clone();
+        preview.fields["description"] = json!("small preview");
+        assert!(w.update_with_limit(&preview, limit));
+        let mut other = w.items[2].clone();
+        other.fields["summary"] = json!("fits without consuming rollback space");
+        assert!(w.update_preserving_with_limit(&other, Some(&original), limit));
+        let accepted = w.items[2].clone();
+        other.fields["description"] = json!("y".repeat(1024));
+        assert!(
+            w.encoded_bytes + 1024 < limit,
+            "growth fits the optimistic snapshot alone"
+        );
+        assert!(!w.update_preserving_with_limit(&other, Some(&original), limit));
+        assert_eq!(w.items[2].fields, accepted.fields);
+        assert!(w.matches(&w.items[2], config::BACKLOG, "", "", "rollback space"));
+
+        let mut committed = w.clone();
+        // A successful write releases the need to reserve the original row.
+        assert!(committed.update_preserving_with_limit(&other, None, limit));
+        assert!(crate::limits::size(&committed, limit).is_ok());
+
+        // A failed write can restore the exact old row, membership and index
+        // without evicting unrelated accepted reads or exceeding the budget.
+        w.items[1] = original.clone();
+        w.reindex();
+        assert!(crate::limits::size(&w, limit).is_ok());
+        assert_eq!(w.ticket("DEV-102").unwrap().fields, original.fields);
+        assert_eq!(w.items[2].fields, accepted.fields);
+        assert!(w.mine.contains("DEV-102"));
+        assert!(w.board.as_ref().unwrap().contains("DEV-102"));
     }
     #[test]
     fn full_detail_updates_cannot_grow_the_shared_snapshot_past_its_budget() {

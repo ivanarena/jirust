@@ -86,6 +86,21 @@ impl Environment {
             })
             .transpose()
     }
+    /// The same per-project JSON map as saved settings; values stay out of errors.
+    pub fn status_order(&self) -> Result<Option<BTreeMap<String, Vec<String>>>> {
+        self.value("JIRA_STATUS_ORDER")
+            .map(|raw| {
+                ensure!(
+                    raw.len() <= 64 * 1024,
+                    "JIRA_STATUS_ORDER exceeds size limit"
+                );
+                let orders = serde_json::from_str(&raw).map_err(|_| {
+                    anyhow::anyhow!("Invalid JIRA_STATUS_ORDER JSON map (values redacted)")
+                })?;
+                crate::statuses::normalize_orders(orders)
+            })
+            .transpose()
+    }
     pub fn credentials(&self) -> Result<Option<Arc<Credentials>>> {
         let values = ["JIRA_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"].map(|k| self.value(k));
         if values.iter().all(Option::is_none) {
@@ -240,6 +255,52 @@ mod tests {
             env(&[("JIRA_API_TOKEN", "synthetic-token")])
                 .credentials()
                 .is_err()
+        );
+    }
+    #[test]
+    fn workflow_preferences_parse_json_maps_and_redact_invalid_values() {
+        assert!(Environment::default().status_order().unwrap().is_none());
+        let parsed = env(&[(
+            "JIRA_STATUS_ORDER",
+            r#"{"dev":["In Progress","Code Review","Done"],"OTHER":[]}"#,
+        )])
+        .status_order()
+        .unwrap()
+        .unwrap();
+        assert_eq!(parsed["DEV"], ["In Progress", "Code Review", "Done"]);
+        assert!(parsed["OTHER"].is_empty());
+        for raw in [
+            "SYNTHETIC_SECRET_MARKER",
+            r#"["SYNTHETIC_SECRET_MARKER"]"#,
+            r#"{"DEV":"SYNTHETIC_SECRET_MARKER"}"#,
+            r#"{"DEV":["SYNTHETIC_SECRET_MARKER","SYNTHETIC_SECRET_MARKER"]}"#,
+        ] {
+            let error = env(&[("JIRA_STATUS_ORDER", raw)])
+                .status_order()
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("SYNTHETIC_SECRET_MARKER"));
+        }
+        assert!(
+            env(&[("JIRA_STATUS_ORDER", &"x".repeat(65537))])
+                .status_order()
+                .is_err()
+        );
+    }
+    #[test]
+    fn workflow_json_in_a_private_dotenv_file_keeps_its_quoting() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        writeln!(
+            file,
+            r#"JIRA_STATUS_ORDER='{{"dev":["In Progress","Code Review","Done"]}}'"#
+        )
+        .unwrap();
+        let loaded = Environment::load(Some(file.path())).unwrap();
+        assert_eq!(
+            loaded.status_order().unwrap().unwrap()["DEV"],
+            ["In Progress", "Code Review", "Done"]
         );
     }
     #[test]

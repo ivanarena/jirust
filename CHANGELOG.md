@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.18.0
+
+Jirust remains experimental.
+
+- Show confirmed assignments, edits, comments, links and Board/Backlog moves locally before Jira responds. Pending values remain memory-only; older reads cannot overwrite them.
+- Roll back failed or uncertain writes and reload membership/details without automatically retrying mutations. Keep unrelated reads and reserve enough workspace space for rollback; rejected optimistic statuses never become saved suggestions.
+- Add optional per-project `status_order` settings and `JIRA_STATUS_ORDER` profile overrides. The status-change picker preselects the next available forward workflow step without adding transitions, changing filters or removing confirmation. Defaults remain alphabetical.
+- Add regression coverage for pending writes, persistence, rollback limits, workflow preferences and project isolation. Native CI is not live Jira compatibility evidence; existing support limits remain unchanged.
+
 ## 0.17.4
 
 - Available now requires both an unassigned ticket and the exact status **To Do**, in local cached views and generated JQL. In Progress, Done and other statuses stay excluded even when filters are cleared or changed.
