@@ -2031,7 +2031,11 @@ impl App {
                     }
                     KeyCode::Char('r') => return self.refresh_all(),
                     KeyCode::Char('l') => self.links(),
-                    KeyCode::Char('O') => {
+                    KeyCode::Char('o')
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
                         if let Some(url) = self.active_ticket().and_then(Ticket::web_url) {
                             return vec![Job::Browser(url)];
                         }
@@ -3596,7 +3600,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "SYMBOL LEGEND\n● Bug · □ Task · ≡ Story · ✎ Design\nϟ Epic · ⊟ Sub-task · ↗ Improvement\n◆ Feature · ◇ Spike · ◈ Other/unknown type\n✓ Done · ✕ Discarded\nColored labels: parent epics. SP: story points.\nBlank SP means unknown/unset, not zero.\n\nLAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Double-click an assignee/status/epic label in rows or ticket metadata to filter that field only (other filters remain). Exact IDs/epic keys, current view only. v clears Epic; F6 clears all current filters. Single detail-epic links wait 350 ms for a double-click. Mouse opens other detail links immediately. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned AND status To Do.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each by default. E toggles local Rank/Epic sorting for this view: parent epic alphabetically, no epic last, Rank within groups. Sort is cached, never rebuilt per search keystroke; changing scope resets it.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · s status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\nOptional per-project status_order / JIRA_STATUS_ORDER puts the next available forward status first. Only reorders choices; Jira validates transitions and y still confirms.\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nStartup/refresh fetches all project statuses with acli; ! shows metadata errors.\nSeen/applied custom statuses are remembered per account/project (unless --no-cache).\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / S or dropdowns open the same popup (T remains an alias). Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels. Confirmed changes appear locally before remote sync (memory-only until acknowledged). Failures restore the previous values and reload; uncertain writes are never retried. Every successful update automatically fully refreshes all four views, retaining their filters.\n--read-only blocks changes. ! shows safe error details; raw CLI output is suppressed.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Phase and elapsed time are shown. Details warm only near selection with bounded concurrency; obsolete background reads are cancelled. Cache writes run off the UI thread. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "SYMBOL LEGEND\n● Bug · □ Task · ≡ Story · ✎ Design\nϟ Epic · ⊟ Sub-task · ↗ Improvement\n◆ Feature · ◇ Spike · ◈ Other/unknown type\n✓ Done · ✕ Discarded\nColored labels: parent epics. SP: story points.\nBlank SP means unknown/unset, not zero.\n\nLAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Double-click an assignee/status/epic label in rows or ticket metadata to filter that field only (other filters remain). Exact IDs/epic keys, current view only. v clears Epic; F6 clears all current filters. Single detail-epic links wait 350 ms for a double-click. Mouse opens other detail links immediately. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned AND status To Do.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each by default. E toggles local Rank/Epic sorting for this view: parent epic alphabetically, no epic last, Rank within groups. Sort is cached, never rebuilt per search keystroke; changing scope resets it.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · s status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · o opens Jira · C loads all comments\nOptional per-project status_order / JIRA_STATUS_ORDER puts the next available forward status first. Only reorders choices; Jira validates transitions and y still confirms.\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nStartup/refresh fetches all project statuses with acli; ! shows metadata errors.\nSeen/applied custom statuses are remembered per account/project (unless --no-cache).\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / S or dropdowns open the same popup (T remains an alias). Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels. Confirmed changes appear locally before remote sync (memory-only until acknowledged). Failures restore the previous values and reload; uncertain writes are never retried. Every successful update automatically fully refreshes all four views, retaining their filters.\n--read-only blocks changes. ! shows safe error details; raw CLI output is suppressed.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Phase and elapsed time are shown. Details warm only near selection with bounded concurrency; obsolete background reads are cancelled. Cache writes run off the UI thread. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -3986,6 +3990,58 @@ mod tests {
         a.event(key('j', KeyModifiers::NONE));
         a.advance();
         assert_ne!(a.detail_key, "DEV-901");
+    }
+    #[test]
+    fn lowercase_o_opens_the_active_ticket_in_either_pane_even_when_read_only() {
+        for read_only in [false, true] {
+            for focus in [Focus::Tickets, Focus::Ticket] {
+                let mut a = app();
+                a.read_only = read_only;
+                let selected = a.selected_ticket().unwrap().key.clone();
+                a.detail_key = a
+                    .details
+                    .keys()
+                    .find(|key| **key != selected)
+                    .unwrap()
+                    .clone();
+                a.focus = focus;
+                let expected = a.active_ticket().unwrap().web_url().unwrap();
+                for (c, modifiers) in [
+                    ('O', KeyModifiers::SHIFT),
+                    ('O', KeyModifiers::NONE),
+                    ('o', KeyModifiers::CONTROL),
+                    ('o', KeyModifiers::ALT),
+                ] {
+                    assert!(a.event(key(c, modifiers)).is_empty());
+                }
+                let jobs = a.event(key('o', KeyModifiers::NONE));
+                assert!(matches!(&jobs[..], [Job::Browser(url)] if url == &expected));
+                assert_eq!(a.copy_generation, 0);
+            }
+        }
+        assert!(HELP.contains("o opens Jira"));
+        assert!(!HELP.contains("O opens Jira"));
+    }
+    #[test]
+    fn lowercase_o_does_not_open_a_browser_while_searching_or_in_a_dialog() {
+        let mut a = app();
+        a.event(key('/', KeyModifiers::NONE));
+        assert!(a.event(key('o', KeyModifiers::NONE)).is_empty());
+        assert_eq!(a.search, "o");
+        let mut a = app();
+        a.event(key('?', KeyModifiers::NONE));
+        assert!(a.dialog.is_some());
+        assert!(a.event(key('o', KeyModifiers::NONE)).is_empty());
+        assert!(a.dialog.is_some());
+    }
+    #[test]
+    fn lowercase_o_never_opens_an_unsafe_or_missing_ticket_link() {
+        let mut a = app();
+        a.focus = Focus::Tickets;
+        a.items[a.visible[a.selected]].self_url = "javascript:alert(1)".into();
+        assert!(a.event(key('o', KeyModifiers::NONE)).is_empty());
+        a.visible.clear();
+        assert!(a.event(key('o', KeyModifiers::NONE)).is_empty());
     }
     #[test]
     fn copy_on_click_opt_out_retains_selection_and_does_not_touch_clipboard() {

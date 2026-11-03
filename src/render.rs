@@ -566,7 +566,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ('c', "Comment"),
         ('i', "Images"),
         ('l', "Links"),
-        ('O', "Jira"),
+        ('o', "Jira"),
         ('f', "Filters"),
         ('?', "Help"),
     ];

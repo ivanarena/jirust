@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.18.1
+
+Jirust remains experimental.
+
+- Use lowercase **o** instead of uppercase **O** to open the active ticket in Jira. Update the footer and help text; searching and dialogs still consume their own input. Browser opening remains available in read-only mode.
+- Update `pulldown-cmark` to 0.13.6 to fix RUSTSEC-2026-0433, and regenerate third-party notices/source inventory.
+- Add daily reviewed dependency-refresh PRs, including inventory regeneration and explicit full-CI dispatch. Keep strict security auditing; updates never auto-merge or publish releases.
+- Add regression tests for the browser shortcut and dependency-refresh workflow. Existing support limits remain unchanged.
+
 ## 0.18.0
 
 Jirust remains experimental.

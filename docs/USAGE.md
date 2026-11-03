@@ -34,7 +34,7 @@ An empty filtered view does not imply deleted tickets: compare shown/scope count
 
 ## Navigation, links and clipboard
 
-Tab switches panes; arrows/j/k, Page Up/Down and mouse navigate. **l** lists links/attachments, **O** opens Jira, **C** loads comments, **!** shows the last safe error, **?** opens help, **q** quits.
+Tab switches panes; arrows/j/k, Page Up/Down and mouse navigate. **l** lists links/attachments, **o** opens Jira, **C** loads comments, **!** shows the last safe error, **?** opens help, **q** quits.
 
 A row click selects and copies its full browse link. The second field click filters without another copy. Keyboard/scroll/tabs/dialogs never copy. `--no-copy-on-click` disables these clipboard writes. Native helpers use stdin: macOS pbcopy, Wayland wl-copy, or X11 xclip/xsel; SSH/missing helpers use terminal OSC52, which requires host support. The application never reads clipboard contents.
 
