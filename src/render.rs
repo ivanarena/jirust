@@ -884,14 +884,19 @@ fn popup(frame: &mut Frame, app: &mut App, area: Rect) {
             frame.render_widget(b, rect);
             let preview = if matches!(action.kind.as_str(), "board" | "backlog") {
                 format!(
-                    "Move {} to {} on board {}.\n\nThis changes membership, not workflow status. Jira determines the destination Rank; refresh will show its authoritative position.",
+                    "Move {} to {} on board {}.\n\nThis changes membership, not workflow status. {} Refresh will show Jira's authoritative position.",
                     action.key,
                     if action.kind == "board" {
                         "Board"
                     } else {
                         "Backlog"
                     },
-                    action.value
+                    action.value,
+                    if action.kind == "board" {
+                        "The ticket will be ranked at the bottom of the Board."
+                    } else {
+                        "Jira determines the destination Rank."
+                    }
                 )
             } else if action.value.chars().count() > 1500 {
                 action.value.chars().take(1500).collect::<String>() + "…"

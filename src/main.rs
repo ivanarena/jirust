@@ -390,10 +390,15 @@ async fn main() -> Result<()> {
             return Ok(());
         };
         println!(
-            "Move {key}: {} → {} (Board {}). No workflow transition requested; Jira sets destination Rank.",
+            "Move {key}: {} → {} (Board {}). No workflow transition requested; {}.",
             to.source(),
             to.name(),
-            action.value
+            action.value,
+            if to == Destination::Board {
+                "rank at the bottom of the Board"
+            } else {
+                "Jira sets destination Rank"
+            }
         );
         let confirmed = if yes {
             true

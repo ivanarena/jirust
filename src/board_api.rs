@@ -557,14 +557,7 @@ impl BoardApi {
         self.workspace_progress(scope, estimate_fields, &|_| {})
             .await
     }
-    pub async fn workspace_progress(
-        &self,
-        scope: &str,
-        estimate_fields: &[String],
-        report: &(impl Fn(crate::refresh::Stage) + Send + Sync),
-    ) -> Result<Workspace> {
-        let (base, _) = crate::config::split_order(scope);
-        let jql = format!("({base}) ORDER BY Rank ASC");
+    async fn verified_membership(&self, base: &str) -> Result<BoardMembership> {
         // The public /board/issue resource is the whole saved-filter scope,
         // NOT membership in a team-managed page's Board section. Read the
         // actual manual issue-list and configured completed-item cutoff from
@@ -604,6 +597,18 @@ impl BoardApi {
                 .await?;
             confirm_unavailable_membership(&page)?;
         }
+        Ok(membership)
+    }
+    pub async fn workspace_progress(
+        &self,
+        scope: &str,
+        estimate_fields: &[String],
+        report: &(impl Fn(crate::refresh::Stage) + Send + Sync),
+    ) -> Result<Workspace> {
+        let (base, _) = crate::config::split_order(scope);
+        let jql = format!("({base}) ORDER BY Rank ASC");
+        let membership = self.verified_membership(base).await?;
+        let board_endpoint = format!("board/{}/issue", self.id);
         let backlog_endpoint = format!("board/{}/backlog", self.id);
         report(crate::refresh::Stage::Tickets);
         let (board, backlog) = tokio::try_join!(
@@ -618,7 +623,29 @@ impl BoardApi {
         merge_membership(board, backlog)
     }
     pub async fn move_ticket(&self, key: &str, to_board: bool) -> Result<()> {
-        let (endpoint, payload) = move_request(self.id, key, to_board)?;
+        data::require_key(key)?;
+        // Read the actual Board bottom, not a filtered/local sort or the whole
+        // saved-filter scope. Rank and membership change in the SAME single POST.
+        let after = if to_board {
+            let membership = self.verified_membership(&format!("key != {key}")).await?;
+            match board_bottom_parameters(&membership) {
+                Some(query) => {
+                    let page = self
+                        .request(
+                            Method::GET,
+                            &format!("board/{}/issue", self.id),
+                            &query,
+                            None,
+                        )
+                        .await?;
+                    board_bottom_key(&page, key)?
+                }
+                None => None, // Empty Board: no rank anchor is needed.
+            }
+        } else {
+            None
+        };
+        let (endpoint, payload) = move_request(self.id, key, to_board, after.as_deref())?;
         self.request(Method::POST, &endpoint, &[], Some(payload))
             .await?;
         Ok(())
@@ -763,7 +790,42 @@ fn decode_credential(bytes: &[u8], oauth: bool) -> Result<String> {
     );
     Ok(token)
 }
-fn move_request(id: u64, key: &str, to_board: bool) -> Result<(String, Value)> {
+fn board_bottom_parameters(membership: &BoardMembership) -> Option<Vec<(&'static str, String)>> {
+    let (base, _) = crate::config::split_order(membership.query.as_deref()?);
+    Some(vec![
+        ("jql", format!("{base} ORDER BY Rank DESC")),
+        ("fields", "key".into()),
+        ("startAt", "0".into()),
+        ("maxResults", "1".into()),
+    ])
+}
+fn board_bottom_key(page: &Value, moving: &str) -> Result<Option<String>> {
+    let issues = page["issues"]
+        .as_array()
+        .context("Missing Board bottom records; move cancelled")?;
+    let total = page["total"]
+        .as_u64()
+        .context("Missing Board bottom count; move cancelled")?;
+    if issues.is_empty() && total == 0 {
+        return Ok(None);
+    }
+    ensure!(
+        issues.len() == 1 && total > 0,
+        "Incomplete Board bottom response; move cancelled"
+    );
+    let key = issues[0]["key"]
+        .as_str()
+        .context("Missing Board bottom key; move cancelled")?;
+    data::require_key(key)?;
+    ensure!(key != moving, "Invalid Board rank anchor; move cancelled");
+    Ok(Some(key.to_owned()))
+}
+fn move_request(
+    id: u64,
+    key: &str,
+    to_board: bool,
+    after: Option<&str>,
+) -> Result<(String, Value)> {
     ensure!(id > 0, "Invalid board ID");
     data::require_key(key)?;
     let endpoint = if to_board {
@@ -771,7 +833,13 @@ fn move_request(id: u64, key: &str, to_board: bool) -> Result<(String, Value)> {
     } else {
         format!("backlog/{id}/issue")
     };
-    Ok((endpoint, json!({"issues":[key]})))
+    let mut payload = json!({"issues":[key]});
+    if let Some(after) = after {
+        data::require_key(after)?;
+        ensure!(to_board && after != key, "Invalid Board rank anchor");
+        payload["rankAfterIssue"] = json!(after);
+    }
+    Ok((endpoint, payload))
 }
 fn merge_membership(board: Vec<Ticket>, backlog: Vec<Ticket>) -> Result<Workspace> {
     let backlog_keys: std::collections::HashSet<_> =
@@ -994,15 +1062,75 @@ mod tests {
     #[test]
     fn moves_have_one_valid_key_and_correct_direction() {
         assert_eq!(
-            move_request(17, "DEV-9", true).unwrap(),
+            move_request(17, "DEV-9", true, None).unwrap(),
             ("board/17/issue".into(), json!({"issues":["DEV-9"]}))
         );
         assert_eq!(
-            move_request(17, "DEV-9", false).unwrap().0,
+            move_request(17, "DEV-9", false, None).unwrap().0,
             "backlog/17/issue"
         );
-        assert!(move_request(17, "DEV-1,DEV-2", true).is_err());
-        assert!(move_request(0, "DEV-1", false).is_err());
+        assert!(move_request(17, "DEV-1,DEV-2", true, None).is_err());
+        assert!(move_request(0, "DEV-1", false, None).is_err());
+    }
+    #[test]
+    fn board_moves_rank_after_the_actual_bottom_in_the_same_single_ticket_request() {
+        let membership = BoardMembership {
+            query: Some("(key != DEV-9) AND (issue IN (84,61)) ORDER BY Rank ASC".into()),
+            missing: Vec::new(),
+        };
+        let parameters = board_bottom_parameters(&membership).unwrap();
+        assert_eq!(
+            parameters,
+            vec![
+                (
+                    "jql",
+                    "(key != DEV-9) AND (issue IN (84,61)) ORDER BY Rank DESC".into()
+                ),
+                ("fields", "key".into()),
+                ("startAt", "0".into()),
+                ("maxResults", "1".into()),
+            ]
+        );
+        let page = json!({"issues":[{"key":"DEV-61"}],"total":2});
+        let after = board_bottom_key(&page, "DEV-9").unwrap();
+        assert_eq!(
+            move_request(17, "DEV-9", true, after.as_deref()).unwrap(),
+            (
+                "board/17/issue".into(),
+                json!({"issues":["DEV-9"],"rankAfterIssue":"DEV-61"})
+            )
+        );
+        assert!(move_request(17, "DEV-9", true, Some("DEV-9")).is_err());
+        assert!(move_request(17, "DEV-9", true, Some("DEV-1,DEV-2")).is_err());
+        assert!(move_request(17, "DEV-9", false, Some("DEV-61")).is_err());
+        assert_eq!(
+            move_request(17, "DEV-9", false, None).unwrap().1,
+            json!({"issues":["DEV-9"]})
+        );
+    }
+    #[test]
+    fn empty_board_needs_no_anchor_and_invalid_bottom_responses_fail_closed() {
+        let empty = BoardMembership {
+            query: None,
+            missing: Vec::new(),
+        };
+        assert!(board_bottom_parameters(&empty).is_none());
+        assert_eq!(
+            board_bottom_key(&json!({"issues":[],"total":0}), "DEV-9").unwrap(),
+            None
+        );
+        for page in [
+            json!({"issues":[],"total":1}),
+            json!({"issues":[{"key":"DEV-61"}],"total":0}),
+            json!({"issues":[{"key":"DEV-61"}]}),
+            json!({"issues":[{"key":"DEV-61"},{"key":"DEV-84"}],"total":2}),
+            json!({"issues":[{}],"total":1}),
+            json!({"issues":[{"key":"DEV-1,DEV-2"}],"total":1}),
+            json!({"issues":[{"key":"DEV-9"}],"total":1}),
+            json!({"total":0}),
+        ] {
+            assert!(board_bottom_key(&page, "DEV-9").is_err());
+        }
     }
     #[test]
     fn local_token_uses_site_origin_even_when_cli_profile_is_global_oauth() {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.2
+
+Jirust remains experimental.
+
+- Move tickets to the bottom of the Board instead of leaving placement to Jira. Read the actual Board's last visible ticket in Rank order, independent of local filters/sorting, and include `rankAfterIssue` in the same confirmed single-ticket move request.
+- Handle empty Boards without an anchor and reject malformed bottom-rank responses before attempting the move. Backlog moves retain Jira's default placement; workflow status is unchanged.
+- Update CLI/TUI confirmation text and add synthetic regression coverage. No live Jira mutations were performed; existing support limits remain unchanged.
+
 ## 0.18.1
 
 Jirust remains experimental.

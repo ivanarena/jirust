@@ -48,7 +48,7 @@ The status picker uses Jira-provided transition targets when available. Otherwis
 
 Forms use Tab, Ctrl+U to clear, Ctrl+S to review/save. The Markdown editor supports cursor/editing keys and bracketed paste. Description edits are **not lossless** for every ADF feature: mentions, embedded media and unsupported extensions may change. Review before confirming; use Jira web for those cases.
 
-Membership moves require a complete verified scope and re-fetch membership after confirmation. Already-at-destination is a no-op; epics cannot be moved. No status transition is requested; Jira chooses destination Rank.
+Membership moves require a complete verified scope and re-fetch membership after confirmation. Already-at-destination is a no-op; epics cannot be moved. No status transition is requested. Moves to Board explicitly rank the ticket after the last visible Board ticket in Jira Rank order (independent of local filters/sorting). An empty Board needs no rank anchor. Moves to Backlog retain Jira's default destination Rank.
 
 ```sh
 jirust move DEV-123 --to board
