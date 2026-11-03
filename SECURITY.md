@@ -22,4 +22,8 @@ Response is best-effort; there is no guaranteed response-time SLA.
 
 Pinned GitHub Actions run native Linux/macOS tests and a Rust 1.90 minimum-version job. A credential-free security job runs on pushes, PRs and weekly: checksum-verified Gitleaks history/tree scans, RustSec auditing with maintenance warnings denied, and reproducible third-party notice/source-inventory checks. No Jira account is used in CI.
 
+A daily dependency-refresh workflow proposes compatible Cargo updates (including transitive dependencies) together with regenerated notices/source inventory, then explicitly dispatches the full Check workflow on the proposed branch. It preserves the Rust 1.90 constraint during resolution; the actual minimum-version CI job remains authoritative. Updates require owner review and manual merge, never auto-merge or release publication. Repository setup and conflict recovery are documented in the [release checklist](docs/RELEASING.md#dependency-maintenance).
+
+New advisories can still fail CI between updates, and fixes outside compatible version ranges need manual changes. Do not suppress an advisory or weaken the audit to keep a badge green. Run `make audit` locally before pushing or releasing.
+
 A clean scanner result is not a security guarantee. Audit the exact proposed release revision and packaging output before distributing it. The [support matrix](docs/SUPPORT.md) distinguishes native CI from live integration coverage.

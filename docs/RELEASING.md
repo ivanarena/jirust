@@ -17,6 +17,28 @@ Jirust is a personal open-source project. Public source availability and local p
 4. Use the support matrix and read-only checklist. Document any unverified site/board/platform; do not convert CI success into a live compatibility claim.
 5. Review the diff and security review evidence, push to the owner's repository and verify native/minimum-version/security CI. Verify private vulnerability reporting and exact distribution eligibility. Uploading release artifacts is a separate explicit owner decision; never infer authorization from a public repository or a local package.
 
+## Dependency maintenance
+
+The `Refresh dependencies` workflow runs daily and supports manual dispatch on the default branch. It updates compatible direct/transitive versions, respects the package's minimum Rust version during resolution, fetches sources, and regenerates both third-party inventories. Changes go to one `automation/dependencies` PR for manual review. No release or automatic merge is performed.
+
+Repository setup: under **Settings → Actions → General → Workflow permissions**, enable **Allow GitHub Actions to create and approve pull requests** to permit PR creation with `GITHUB_TOKEN`. The workflow never approves PRs; its write permissions are scoped to the maintenance job. No PAT or Jira credential is needed. If this option is disabled by repository/organization policy, the PR-creation step will fail visibly; the owner must open the pushed branch's PR manually. The existing weekly audit still runs regardless.
+
+Bot-token pushes and PR creation do not trigger normal push/PR workflows, so maintenance explicitly dispatches `Check` on the update branch. Review its Linux/macOS, Rust 1.90, audit and inventory results before merging. The workflow does not bypass branch protection. Repeated runs reuse the branch/PR and preserve review commits without force-pushes. If merging the default branch conflicts, resolve the conflict on the maintenance branch and rerun the refresh workflow; no conflict is silently discarded.
+
+For a manual targeted fix:
+
+```sh
+cargo update -p <crate> --precise <patched-version>
+cargo fetch --locked
+make notices
+make notices-check
+make audit
+make check
+make build
+```
+
+When a direct dependency's minimum safe version changes, update its requirement in `Cargo.toml` too. Newly published advisories or incompatible upgrades still require timely owner attention; automation is not a promise that future security checks cannot fail.
+
 ## Local bundle
 
 From a clean, committed tree matching the binary version:

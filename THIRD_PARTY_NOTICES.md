@@ -148,7 +148,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | potential_utf | 0.1.6 | Unicode-3.0 |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 |
-| pulldown-cmark | 0.13.5 | MIT |
+| pulldown-cmark | 0.13.6 | MIT |
 | pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 |
 | quantette | 0.6.0 | MIT OR Apache-2.0 |
 | quick-error | 2.0.1 | MIT OR Apache-2.0 |
@@ -5528,7 +5528,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- pulldown-cmark 0.13.5
+- pulldown-cmark 0.13.6
 
 ```text
 The MIT License
