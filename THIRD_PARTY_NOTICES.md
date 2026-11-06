@@ -34,7 +34,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | byteorder-lite | 0.1.0 | Unlicense OR MIT |
 | bytes | 1.12.1 | MIT |
 | castaway | 0.2.4 | MIT |
-| cc | 1.11.0 | MIT OR Apache-2.0 |
+| cc | 1.11.1 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
 | clap | 4.6.7 | MIT OR Apache-2.0 |
 | clap_builder | 4.6.7 | MIT OR Apache-2.0 |
@@ -69,7 +69,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | fastrand | 2.5.0 | Apache-2.0 OR MIT |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |
-| flate2 | 1.1.10 | MIT OR Apache-2.0 |
+| flate2 | 1.1.11 | MIT OR Apache-2.0 |
 | foldhash | 0.2.0 | Zlib |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
 | funty | 2.0.0 | MIT |
@@ -2302,7 +2302,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- cc 1.11.0
+- cc 1.11.1
 - cfg-if 1.0.5
 - find-msvc-tools 0.1.15
 - js-sys 0.3.107
@@ -2447,7 +2447,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- flate2 1.1.10
+- flate2 1.1.11
 
 ```text
 Copyright (c) 2014-2026 Alex Crichton

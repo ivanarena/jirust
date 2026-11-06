@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "c3318c85a02839d8c32e21852f75edd6d12bf61e5486dd119e79cb60ea1fe3eb",
+  "cargo_lock_sha256": "b267a6de65b154a9a8fd057c169931b09598e51e31a7a7ac0d48e767a57e1c31",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -193,9 +193,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "cc",
-      "sha256": "375989decec1a0fa424442bed520fa12ede43a48475ce8c7417d2c69b32b5f6b",
-      "source": "https://crates.io/api/v1/crates/cc/1.11.0/download",
-      "version": "1.11.0"
+      "sha256": "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155",
+      "source": "https://crates.io/api/v1/crates/cc/1.11.1/download",
+      "version": "1.11.1"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -466,9 +466,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "flate2",
-      "sha256": "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb",
-      "source": "https://crates.io/api/v1/crates/flate2/1.1.10/download",
-      "version": "1.1.10"
+      "sha256": "626d4928326b646e70f65ed36fc7cf9f206bdb68a0019ee7c6b4709da4e084c4",
+      "source": "https://crates.io/api/v1/crates/flate2/1.1.11/download",
+      "version": "1.1.11"
     },
     {
       "license": "Zlib",
