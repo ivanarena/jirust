@@ -200,7 +200,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | simd-adler32 | 0.3.10 | MIT |
 | simdutf8 | 0.1.5 | MIT OR Apache-2.0 |
 | slab | 0.4.12 | MIT |
-| smallvec | 1.16.4 | MIT OR Apache-2.0 |
+| smallvec | 1.16.5 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
 | static_assertions | 1.1.0 | MIT OR Apache-2.0 |
@@ -3477,7 +3477,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- smallvec 1.16.4
+- smallvec 1.16.5
 
 ```text
 Copyright (c) 2018 The Servo Project Developers

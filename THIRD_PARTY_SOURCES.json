@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "b267a6de65b154a9a8fd057c169931b09598e51e31a7a7ac0d48e767a57e1c31",
+  "cargo_lock_sha256": "f345b077fbc7b78297991bd9633a4c1533f4bb9dbaeb7d862fe505599b69538e",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -1446,9 +1446,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "smallvec",
-      "sha256": "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8",
-      "source": "https://crates.io/api/v1/crates/smallvec/1.16.4/download",
-      "version": "1.16.4"
+      "sha256": "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46",
+      "source": "https://crates.io/api/v1/crates/smallvec/1.16.5/download",
+      "version": "1.16.5"
     },
     {
       "license": "MIT OR Apache-2.0",
