@@ -109,7 +109,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | ipnet | 2.12.2 | MIT OR Apache-2.0 |
 | is_terminal_polyfill | 1.70.2 | MIT OR Apache-2.0 |
 | itertools | 0.14.0 | MIT OR Apache-2.0 |
-| itoa | 1.0.18 | MIT OR Apache-2.0 |
+| itoa | 1.0.19 | MIT OR Apache-2.0 |
 | jirust | 0.18.2 | MIT |
 | js-sys | 0.3.107 | MIT OR Apache-2.0 |
 | kasuari | 0.4.13 | MIT OR Apache-2.0 |
@@ -209,7 +209,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | strum_macros | 0.28.0 | MIT |
 | subtle | 2.6.1 | BSD-3-Clause |
 | syn | 2.0.119 | MIT OR Apache-2.0 |
-| syn | 3.0.9 | MIT OR Apache-2.0 |
+| syn | 3.0.10 | MIT OR Apache-2.0 |
 | sync_wrapper | 1.0.2 | Apache-2.0 |
 | synstructure | 0.14.0 | MIT |
 | tap | 1.0.1 | MIT |
@@ -5438,7 +5438,7 @@ Used by:
 - displaydoc 0.2.7
 - fastrand 2.5.0
 - indoc 2.0.8
-- itoa 1.0.18
+- itoa 1.0.19
 - linux-raw-sys 0.12.1
 - linux-raw-sys 0.4.15
 - once_cell 1.21.4
@@ -5457,7 +5457,7 @@ Used by:
 - serde_derive 1.0.229
 - serde_json 1.0.154
 - syn 2.0.119
-- syn 3.0.9
+- syn 3.0.10
 - thiserror-impl 1.0.69
 - thiserror-impl 2.0.21
 - thiserror 1.0.69
