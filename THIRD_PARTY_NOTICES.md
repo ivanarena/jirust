@@ -46,7 +46,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | convert_case | 0.10.0 | MIT |
 | core_detect | 1.0.0 | MIT OR Apache-2.0 |
 | cpufeatures | 0.2.17 | MIT OR Apache-2.0 |
-| crc32fast | 1.5.4 | MIT OR Apache-2.0 |
+| crc32fast | 1.5.5 | MIT OR Apache-2.0 |
 | crossterm | 0.29.0 | MIT |
 | crossterm_winapi | 0.9.1 | MIT |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
@@ -4637,7 +4637,7 @@ SOFTWARE.
 ### MIT License
 
 Used by:
-- crc32fast 1.5.4
+- crc32fast 1.5.5
 
 ```text
 MIT License

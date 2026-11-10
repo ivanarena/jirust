@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "64058fecfe05f68512c3b5da1257cab1bcf5e45d325023b49ec266e6a517602e",
+  "cargo_lock_sha256": "daae3e41b5827d6f41780ba6716f8e0646cfe268ea5295e11d33938044e38285",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -298,9 +298,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "crc32fast",
-      "sha256": "5f97d3416d5337d15c4b0d78c8c91df922ca143f57ec20e2d1c188333047ef04",
-      "source": "https://crates.io/api/v1/crates/crc32fast/1.5.4/download",
-      "version": "1.5.4"
+      "sha256": "2b929dd2a135771f40afabd1073f85eed59c800b7c61901e5c254270497dad64",
+      "source": "https://crates.io/api/v1/crates/crc32fast/1.5.5/download",
+      "version": "1.5.5"
     },
     {
       "license": "MIT",
