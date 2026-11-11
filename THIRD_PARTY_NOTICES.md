@@ -178,7 +178,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | rustix | 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustix | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
-| rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 |
+| rustls-pki-types | 1.16.0 | MIT OR Apache-2.0 |
 | rustls-webpki | 0.103.16 | ISC |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 |
 | ryu | 1.0.23 | Apache-2.0 OR BSL-1.0 |
@@ -250,7 +250,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | wasm-bindgen-macro-support | 0.2.130 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.130 | MIT OR Apache-2.0 |
 | web-sys | 0.3.107 | MIT OR Apache-2.0 |
-| webpki-roots | 1.0.11 | CDLA-Permissive-2.0 |
+| webpki-roots | 1.0.12 | CDLA-Permissive-2.0 |
 | weezl | 0.1.12 | MIT OR Apache-2.0 |
 | wide | 1.7.1 | Zlib OR Apache-2.0 OR MIT |
 | winapi | 0.3.9 | MIT OR Apache-2.0 |
@@ -1426,7 +1426,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### Community Data License Agreement Permissive 2.0
 
 Used by:
-- webpki-roots 1.0.11
+- webpki-roots 1.0.12
 
 ```text
 # Community Data License Agreement - Permissive - Version 2.0
@@ -4204,7 +4204,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- rustls-pki-types 1.15.1
+- rustls-pki-types 1.16.0
 
 ```text
 Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl>
