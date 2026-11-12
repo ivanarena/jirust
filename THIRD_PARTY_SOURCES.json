@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "690a9197b0aef5b146b27b447e78e1aca2dd7b4675f811ef611e5e30b4a271b1",
+  "cargo_lock_sha256": "acea6a081bb336c1f0ed7f13911dea99630e141b1c36b1767865192c5f965288",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -25,9 +25,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "annotate-snippets",
-      "sha256": "b2a5b0a5ab8561c603f16c3b78c24a386b1f70e7fc1b1b1e8c15738828e4a176",
-      "source": "https://crates.io/api/v1/crates/annotate-snippets/0.12.17/download",
-      "version": "0.12.17"
+      "sha256": "0258346f92c78dbc5b336b9a5b27c64447aa10643bc64e651db2edb145361564",
+      "source": "https://crates.io/api/v1/crates/annotate-snippets/0.12.18/download",
+      "version": "0.12.18"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -438,9 +438,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "errno",
-      "sha256": "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb",
-      "source": "https://crates.io/api/v1/crates/errno/0.3.14/download",
-      "version": "0.3.14"
+      "sha256": "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776",
+      "source": "https://crates.io/api/v1/crates/errno/0.3.15/download",
+      "version": "0.3.15"
     },
     {
       "license": "Apache-2.0 OR MIT",

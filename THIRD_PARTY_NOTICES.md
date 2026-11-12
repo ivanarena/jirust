@@ -11,7 +11,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
 | aho-corasick | 1.1.5 | Unlicense OR MIT |
 | allocator-api2 | 0.2.21 | MIT OR Apache-2.0 |
-| annotate-snippets | 0.12.17 | MIT OR Apache-2.0 |
+| annotate-snippets | 0.12.18 | MIT OR Apache-2.0 |
 | anstream | 1.0.0 | MIT OR Apache-2.0 |
 | anstyle | 1.0.14 | MIT OR Apache-2.0 |
 | anstyle-parse | 1.0.0 | MIT OR Apache-2.0 |
@@ -65,7 +65,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | encoding_rs | 0.8.44 | (Apache-2.0 OR MIT) AND BSD-3-Clause |
 | encoding_rs_io | 0.1.8 | MIT OR Apache-2.0 |
 | equivalent | 1.0.3 | Apache-2.0 OR MIT |
-| errno | 0.3.14 | MIT OR Apache-2.0 |
+| errno | 0.3.15 | MIT OR Apache-2.0 |
 | fastrand | 2.5.0 | Apache-2.0 OR MIT |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |
@@ -2374,7 +2374,7 @@ THE SOFTWARE.
 ### MIT License
 
 Used by:
-- errno 0.3.14
+- errno 0.3.15
 
 ```text
 Copyright (c) 2014 Chris Wong
@@ -4266,7 +4266,7 @@ THE SOFTWARE.
 ### MIT License
 
 Used by:
-- annotate-snippets 0.12.17
+- annotate-snippets 0.12.18
 - anstream 1.0.0
 - anstyle-parse 1.0.0
 - anstyle-query 1.1.5
