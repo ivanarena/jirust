@@ -34,7 +34,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | byteorder-lite | 0.1.0 | Unlicense OR MIT |
 | bytes | 1.12.1 | MIT |
 | castaway | 0.2.4 | MIT |
-| cc | 1.11.1 | MIT OR Apache-2.0 |
+| cc | 1.11.2 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
 | clap | 4.6.7 | MIT OR Apache-2.0 |
 | clap_builder | 4.6.7 | MIT OR Apache-2.0 |
@@ -179,7 +179,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | rustix | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.16.0 | MIT OR Apache-2.0 |
-| rustls-webpki | 0.103.16 | ISC |
+| rustls-webpki | 0.103.17 | ISC |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 |
 | ryu | 1.0.23 | Apache-2.0 OR BSL-1.0 |
 | safe_arch | 1.2.0 | Zlib OR Apache-2.0 OR MIT |
@@ -2054,7 +2054,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ### ISC License
 
 Used by:
-- rustls-webpki 0.103.16
+- rustls-webpki 0.103.17
 
 ```text
 Except as otherwise noted, this project is licensed under the following
@@ -2302,7 +2302,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- cc 1.11.1
+- cc 1.11.2
 - cfg-if 1.0.5
 - find-msvc-tools 0.1.15
 - js-sys 0.3.107

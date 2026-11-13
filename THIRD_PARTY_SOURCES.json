@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "acea6a081bb336c1f0ed7f13911dea99630e141b1c36b1767865192c5f965288",
+  "cargo_lock_sha256": "76226b94631b693abb7b187efa2c025a1d7007358867169536d7027fabb17284",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -193,9 +193,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "cc",
-      "sha256": "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155",
-      "source": "https://crates.io/api/v1/crates/cc/1.11.1/download",
-      "version": "1.11.1"
+      "sha256": "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45",
+      "source": "https://crates.io/api/v1/crates/cc/1.11.2/download",
+      "version": "1.11.2"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -1299,9 +1299,9 @@
     {
       "license": "ISC",
       "name": "rustls-webpki",
-      "sha256": "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281",
-      "source": "https://crates.io/api/v1/crates/rustls-webpki/0.103.16/download",
-      "version": "0.103.16"
+      "sha256": "e3a0760a887c14823fca5a1c970b01d47c328c696c0c64829d1df50e8f853fd5",
+      "source": "https://crates.io/api/v1/crates/rustls-webpki/0.103.17/download",
+      "version": "0.103.17"
     },
     {
       "license": "MIT OR Apache-2.0",
