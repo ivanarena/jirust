@@ -27,7 +27,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | bitflags | 2.13.2 | MIT OR Apache-2.0 |
 | bitvec | 1.1.1 | MIT |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 |
-| bumpalo | 3.20.3 | MIT OR Apache-2.0 |
+| bumpalo | 3.20.4 | MIT OR Apache-2.0 |
 | by_address | 1.2.1 | MIT OR Apache-2.0 |
 | bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
 | bytemuck_derive | 1.12.1 | Zlib OR Apache-2.0 OR MIT |
@@ -127,7 +127,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | memchr | 2.8.3 | Unlicense OR MIT |
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
-| mio | 1.2.4 | MIT |
+| mio | 1.2.5 | MIT |
 | moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 |
 | multiversion_no_op | 1.0.0 | Apache-2.0 OR MIT |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 |
@@ -2346,7 +2346,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- mio 1.2.4
+- mio 1.2.5
 
 ```text
 Copyright (c) 2014 Carl Lerche and other MIO contributors
@@ -3866,7 +3866,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- bumpalo 3.20.3
+- bumpalo 3.20.4
 
 ```text
 Copyright (c) 2019 Nick Fitzgerald

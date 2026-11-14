@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "76226b94631b693abb7b187efa2c025a1d7007358867169536d7027fabb17284",
+  "cargo_lock_sha256": "4b57d381e6b7aa775b7794ca65c85bd5cd7ea07f34cdce490106fcf701e6c8d0",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -144,9 +144,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "bumpalo",
-      "sha256": "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649",
-      "source": "https://crates.io/api/v1/crates/bumpalo/3.20.3/download",
-      "version": "3.20.3"
+      "sha256": "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db",
+      "source": "https://crates.io/api/v1/crates/bumpalo/3.20.4/download",
+      "version": "3.20.4"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -872,9 +872,9 @@
     {
       "license": "MIT",
       "name": "mio",
-      "sha256": "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee",
-      "source": "https://crates.io/api/v1/crates/mio/1.2.4/download",
-      "version": "1.2.4"
+      "sha256": "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a",
+      "source": "https://crates.io/api/v1/crates/mio/1.2.5/download",
+      "version": "1.2.5"
     },
     {
       "license": "BSD-3-Clause OR Apache-2.0",
