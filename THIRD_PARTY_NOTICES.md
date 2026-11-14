@@ -11,7 +11,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
 | aho-corasick | 1.1.5 | Unlicense OR MIT |
 | allocator-api2 | 0.2.21 | MIT OR Apache-2.0 |
-| annotate-snippets | 0.12.16 | MIT OR Apache-2.0 |
+| annotate-snippets | 0.12.18 | MIT OR Apache-2.0 |
 | anstream | 1.0.0 | MIT OR Apache-2.0 |
 | anstyle | 1.0.14 | MIT OR Apache-2.0 |
 | anstyle-parse | 1.0.0 | MIT OR Apache-2.0 |
@@ -27,14 +27,14 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | bitflags | 2.13.2 | MIT OR Apache-2.0 |
 | bitvec | 1.1.1 | MIT |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 |
-| bumpalo | 3.20.3 | MIT OR Apache-2.0 |
+| bumpalo | 3.20.4 | MIT OR Apache-2.0 |
 | by_address | 1.2.1 | MIT OR Apache-2.0 |
 | bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
 | bytemuck_derive | 1.12.1 | Zlib OR Apache-2.0 OR MIT |
 | byteorder-lite | 0.1.0 | Unlicense OR MIT |
 | bytes | 1.12.1 | MIT |
 | castaway | 0.2.4 | MIT |
-| cc | 1.8.0 | MIT OR Apache-2.0 |
+| cc | 1.11.2 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
 | clap | 4.6.7 | MIT OR Apache-2.0 |
 | clap_builder | 4.6.7 | MIT OR Apache-2.0 |
@@ -46,7 +46,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | convert_case | 0.10.0 | MIT |
 | core_detect | 1.0.0 | MIT OR Apache-2.0 |
 | cpufeatures | 0.2.17 | MIT OR Apache-2.0 |
-| crc32fast | 1.5.2 | MIT OR Apache-2.0 |
+| crc32fast | 1.5.5 | MIT OR Apache-2.0 |
 | crossterm | 0.29.0 | MIT |
 | crossterm_winapi | 0.9.1 | MIT |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
@@ -62,14 +62,14 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | document-features | 0.2.12 | MIT OR Apache-2.0 |
 | dotenvy | 0.15.7 | MIT |
 | either | 1.19.0 | MIT OR Apache-2.0 |
-| encoding_rs | 0.8.42 | (Apache-2.0 OR MIT) AND BSD-3-Clause |
+| encoding_rs | 0.8.44 | (Apache-2.0 OR MIT) AND BSD-3-Clause |
 | encoding_rs_io | 0.1.8 | MIT OR Apache-2.0 |
-| equivalent | 1.0.2 | Apache-2.0 OR MIT |
-| errno | 0.3.14 | MIT OR Apache-2.0 |
+| equivalent | 1.0.3 | Apache-2.0 OR MIT |
+| errno | 0.3.15 | MIT OR Apache-2.0 |
 | fastrand | 2.5.0 | Apache-2.0 OR MIT |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 |
-| find-msvc-tools | 0.1.14 | MIT OR Apache-2.0 |
-| flate2 | 1.1.10 | MIT OR Apache-2.0 |
+| find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |
+| flate2 | 1.1.11 | MIT OR Apache-2.0 |
 | foldhash | 0.2.0 | Zlib |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
 | funty | 2.0.0 | MIT |
@@ -82,7 +82,6 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
 | gif | 0.14.2 | MIT OR Apache-2.0 |
 | granit-parser | 1.3.0 | MIT OR Apache-2.0 |
-| hashbrown | 0.16.1 | MIT OR Apache-2.0 |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 |
 | heck | 0.5.0 | MIT OR Apache-2.0 |
 | http | 1.5.0 | MIT OR Apache-2.0 |
@@ -92,50 +91,50 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | hyper | 1.12.0 | MIT |
 | hyper-rustls | 0.27.10 | Apache-2.0 OR ISC OR MIT |
 | hyper-util | 0.1.21 | MIT |
-| icu_collections | 2.3.0 | Unicode-3.0 |
-| icu_locale_core | 2.3.0 | Unicode-3.0 |
-| icu_normalizer | 2.3.0 | Unicode-3.0 |
-| icu_normalizer_data | 2.3.0 | Unicode-3.0 |
-| icu_properties | 2.3.0 | Unicode-3.0 |
-| icu_properties_data | 2.3.0 | Unicode-3.0 |
-| icu_provider | 2.3.1 | Unicode-3.0 |
+| icu_collections | 2.4.0 | Unicode-3.0 |
+| icu_locale_core | 2.4.0 | Unicode-3.0 |
+| icu_normalizer | 2.4.0 | Unicode-3.0 |
+| icu_normalizer_data | 2.4.0 | Unicode-3.0 |
+| icu_properties | 2.4.0 | Unicode-3.0 |
+| icu_properties_data | 2.4.0 | Unicode-3.0 |
+| icu_provider | 2.4.0 | Unicode-3.0 |
 | icy_sixel | 0.5.1 | MIT OR Apache-2.0 |
 | ident_case | 1.0.1 | MIT OR Apache-2.0 |
 | idna | 1.1.0 | MIT OR Apache-2.0 |
 | idna_adapter | 1.2.2 | Apache-2.0 OR MIT |
 | image | 0.25.10 | MIT OR Apache-2.0 |
 | image-webp | 0.2.4 | MIT OR Apache-2.0 |
-| indoc | 2.0.7 | MIT OR Apache-2.0 |
+| indoc | 2.0.8 | MIT OR Apache-2.0 |
 | instability | 0.3.14 | MIT |
 | ipnet | 2.12.2 | MIT OR Apache-2.0 |
 | is_terminal_polyfill | 1.70.2 | MIT OR Apache-2.0 |
 | itertools | 0.14.0 | MIT OR Apache-2.0 |
-| itoa | 1.0.18 | MIT OR Apache-2.0 |
+| itoa | 1.0.19 | MIT OR Apache-2.0 |
 | jirust | 0.18.2 | MIT |
-| js-sys | 0.3.106 | MIT OR Apache-2.0 |
-| kasuari | 0.4.12 | MIT OR Apache-2.0 |
-| libc | 0.2.190 | MIT OR Apache-2.0 |
+| js-sys | 0.3.107 | MIT OR Apache-2.0 |
+| kasuari | 0.4.13 | MIT OR Apache-2.0 |
+| libc | 0.2.191 | MIT OR Apache-2.0 |
 | libm | 0.2.16 | MIT |
 | libredox | 0.1.25 | MIT |
 | line-clipping | 0.3.8 | MIT OR Apache-2.0 |
 | linux-raw-sys | 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litemap | 0.8.3 | Unicode-3.0 |
-| litrs | 1.0.0 | MIT OR Apache-2.0 |
+| litrs | 1.0.1 | MIT OR Apache-2.0 |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 |
-| log | 0.4.34 | MIT OR Apache-2.0 |
+| log | 0.4.35 | MIT OR Apache-2.0 |
 | lru | 0.18.5 | MIT |
 | memchr | 2.8.3 | Unlicense OR MIT |
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
-| mio | 1.2.4 | MIT |
+| mio | 1.2.5 | MIT |
 | moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 |
 | multiversion_no_op | 1.0.0 | Apache-2.0 OR MIT |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 |
 | once_cell_polyfill | 1.70.2 | MIT OR Apache-2.0 |
 | option-ext | 0.2.0 | MPL-2.0 |
-| ordered-float | 5.4.0 | MIT |
+| ordered-float | 5.5.1 | MIT |
 | outref | 0.5.2 | MIT |
 | palette | 0.7.7 | MIT OR Apache-2.0 |
 | palette_derive | 0.7.7 | MIT OR Apache-2.0 |
@@ -177,10 +176,10 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | ring | 0.17.14 | Apache-2.0 AND ISC |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| rustix | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| rustix | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
-| rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 |
-| rustls-webpki | 0.103.16 | ISC |
+| rustls-pki-types | 1.16.0 | MIT OR Apache-2.0 |
+| rustls-webpki | 0.103.17 | ISC |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 |
 | ryu | 1.0.23 | Apache-2.0 OR BSL-1.0 |
 | safe_arch | 1.2.0 | Zlib OR Apache-2.0 OR MIT |
@@ -191,7 +190,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | serde-saphyr | 1.3.0 | MIT OR Apache-2.0 |
 | serde_core | 1.0.229 | MIT OR Apache-2.0 |
 | serde_derive | 1.0.229 | MIT OR Apache-2.0 |
-| serde_json | 1.0.151 | MIT OR Apache-2.0 |
+| serde_json | 1.0.154 | MIT OR Apache-2.0 |
 | serde_urlencoded | 0.7.1 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
 | shlex | 2.0.1 | MIT OR Apache-2.0 |
@@ -201,7 +200,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | simd-adler32 | 0.3.10 | MIT |
 | simdutf8 | 0.1.5 | MIT OR Apache-2.0 |
 | slab | 0.4.12 | MIT |
-| smallvec | 1.16.2 | MIT OR Apache-2.0 |
+| smallvec | 1.16.5 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
 | static_assertions | 1.1.0 | MIT OR Apache-2.0 |
@@ -210,7 +209,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | strum_macros | 0.28.0 | MIT |
 | subtle | 2.6.1 | BSD-3-Clause |
 | syn | 2.0.119 | MIT OR Apache-2.0 |
-| syn | 3.0.6 | MIT OR Apache-2.0 |
+| syn | 3.0.10 | MIT OR Apache-2.0 |
 | sync_wrapper | 1.0.2 | Apache-2.0 |
 | synstructure | 0.14.0 | MIT |
 | tap | 1.0.1 | MIT |
@@ -219,7 +218,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | thiserror | 2.0.21 | MIT OR Apache-2.0 |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 |
 | thiserror-impl | 2.0.21 | MIT OR Apache-2.0 |
-| tinystr | 0.8.4 | Unicode-3.0 |
+| tinystr | 0.8.5 | Unicode-3.0 |
 | tokio | 1.54.1 | MIT |
 | tokio-macros | 2.7.2 | MIT |
 | tokio-rustls | 0.26.6 | MIT OR Apache-2.0 |
@@ -232,25 +231,26 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | try-lock | 0.2.5 | MIT |
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 | unicase | 2.10.0 | MIT OR Apache-2.0 |
-| unicode-ident | 1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0 |
+| unicode-ident | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 |
 | unicode-truncate | 2.0.1 | MIT OR Apache-2.0 |
-| unicode-width | 0.2.2 | MIT OR Apache-2.0 |
+| unicode-width | 0.2.3 | MIT OR Apache-2.0 |
 | untrusted | 0.9.0 | ISC |
 | url | 2.5.8 | MIT OR Apache-2.0 |
-| utf8_iter | 1.0.4 | Apache-2.0 OR MIT |
+| utf8_iter | 1.1.0 | Apache-2.0 OR MIT |
 | utf8parse | 0.2.2 | Apache-2.0 OR MIT |
+| utf_types | 1.0.0 | Apache-2.0 OR MIT |
 | version_check | 0.9.5 | MIT OR Apache-2.0 |
 | vsimd | 0.8.0 | MIT |
 | want | 0.3.2 | MIT |
 | wasi | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wasm-bindgen | 0.2.129 | MIT OR Apache-2.0 |
-| wasm-bindgen-futures | 0.4.79 | MIT OR Apache-2.0 |
-| wasm-bindgen-macro | 0.2.129 | MIT OR Apache-2.0 |
-| wasm-bindgen-macro-support | 0.2.129 | MIT OR Apache-2.0 |
-| wasm-bindgen-shared | 0.2.129 | MIT OR Apache-2.0 |
-| web-sys | 0.3.106 | MIT OR Apache-2.0 |
-| webpki-roots | 1.0.11 | CDLA-Permissive-2.0 |
+| wasm-bindgen | 0.2.130 | MIT OR Apache-2.0 |
+| wasm-bindgen-futures | 0.4.80 | MIT OR Apache-2.0 |
+| wasm-bindgen-macro | 0.2.130 | MIT OR Apache-2.0 |
+| wasm-bindgen-macro-support | 0.2.130 | MIT OR Apache-2.0 |
+| wasm-bindgen-shared | 0.2.130 | MIT OR Apache-2.0 |
+| web-sys | 0.3.107 | MIT OR Apache-2.0 |
+| webpki-roots | 1.0.12 | CDLA-Permissive-2.0 |
 | weezl | 0.1.12 | MIT OR Apache-2.0 |
 | wide | 1.7.1 | Zlib OR Apache-2.0 OR MIT |
 | winapi | 0.3.9 | MIT OR Apache-2.0 |
@@ -277,15 +277,15 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 |
 | writeable | 0.6.4 | Unicode-3.0 |
 | wyz | 0.5.1 | MIT |
-| yoke | 0.8.3 | Unicode-3.0 |
+| yoke | 0.8.4 | Unicode-3.0 |
 | yoke-derive | 0.8.4 | Unicode-3.0 |
-| zerocopy | 0.8.62 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| zerocopy | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zerofrom | 0.1.8 | Unicode-3.0 |
 | zerofrom-derive | 0.1.8 | Unicode-3.0 |
 | zeroize | 1.9.1 | Apache-2.0 OR MIT |
 | zerotrie | 0.2.5 | Unicode-3.0 |
-| zerovec | 0.11.8 | Unicode-3.0 |
-| zerovec-derive | 0.11.6 | Unicode-3.0 |
+| zerovec | 0.11.9 | Unicode-3.0 |
+| zerovec-derive | 0.11.7 | Unicode-3.0 |
 | zmij | 1.0.23 | MIT |
 | zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib |
@@ -1290,7 +1290,7 @@ limitations under the License.
 ### BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License
 
 Used by:
-- encoding_rs 0.8.42
+- encoding_rs 0.8.44
 
 ```text
 // Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
@@ -1391,7 +1391,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License
 
 Used by:
-- encoding_rs 0.8.42
+- encoding_rs 0.8.44
 
 ```text
 Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
@@ -1426,7 +1426,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### Community Data License Agreement Permissive 2.0
 
 Used by:
-- webpki-roots 1.0.11
+- webpki-roots 1.0.12
 
 ```text
 # Community Data License Agreement - Permissive - Version 2.0
@@ -2054,7 +2054,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ### ISC License
 
 Used by:
-- rustls-webpki 0.103.16
+- rustls-webpki 0.103.17
 
 ```text
 Except as otherwise noted, this project is licensed under the following
@@ -2302,17 +2302,17 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- cc 1.8.0
+- cc 1.11.2
 - cfg-if 1.0.5
-- find-msvc-tools 0.1.14
-- js-sys 0.3.106
+- find-msvc-tools 0.1.15
+- js-sys 0.3.107
 - socket2 0.6.5
-- wasm-bindgen-futures 0.4.79
-- wasm-bindgen-macro-support 0.2.129
-- wasm-bindgen-macro 0.2.129
-- wasm-bindgen-shared 0.2.129
-- wasm-bindgen 0.2.129
-- web-sys 0.3.106
+- wasm-bindgen-futures 0.4.80
+- wasm-bindgen-macro-support 0.2.130
+- wasm-bindgen-macro 0.2.130
+- wasm-bindgen-shared 0.2.130
+- wasm-bindgen 0.2.130
+- web-sys 0.3.107
 
 ```text
 Copyright (c) 2014 Alex Crichton
@@ -2346,7 +2346,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- mio 1.2.4
+- mio 1.2.5
 
 ```text
 Copyright (c) 2014 Carl Lerche and other MIO contributors
@@ -2374,7 +2374,7 @@ THE SOFTWARE.
 ### MIT License
 
 Used by:
-- errno 0.3.14
+- errno 0.3.15
 
 ```text
 Copyright (c) 2014 Chris Wong
@@ -2409,7 +2409,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 - bitflags 2.13.2
-- log 0.4.34
+- log 0.4.35
 - num-traits 0.2.19
 - regex-automata 0.4.18
 - regex-syntax 0.8.11
@@ -2447,7 +2447,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- flate2 1.1.10
+- flate2 1.1.11
 
 ```text
 Copyright (c) 2014-2026 Alex Crichton
@@ -2573,7 +2573,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- ordered-float 5.4.0
+- ordered-float 5.5.1
 
 ```text
 Copyright (c) 2015 Jonathan Reem
@@ -2643,7 +2643,7 @@ DEALINGS IN THE SOFTWARE.
 Used by:
 - heck 0.5.0
 - unicode-segmentation 1.13.3
-- unicode-width 0.2.2
+- unicode-width 0.2.3
 
 ```text
 Copyright (c) 2015 The Rust Project Developers
@@ -2834,7 +2834,6 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- hashbrown 0.16.1
 - hashbrown 0.17.1
 
 ```text
@@ -3009,7 +3008,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- equivalent 1.0.2
+- equivalent 1.0.3
 
 ```text
 Copyright (c) 2016--2023
@@ -3478,7 +3477,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- smallvec 1.16.2
+- smallvec 1.16.5
 
 ```text
 Copyright (c) 2018 The Servo Project Developers
@@ -3867,7 +3866,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- bumpalo 3.20.3
+- bumpalo 3.20.4
 
 ```text
 Copyright (c) 2019 Nick Fitzgerald
@@ -4103,7 +4102,7 @@ SOFTWARE.
 ### MIT License
 
 Used by:
-- litrs 1.0.0
+- litrs 1.0.1
 
 ```text
 Copyright (c) 2020 Project Developers
@@ -4205,7 +4204,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- rustls-pki-types 1.15.1
+- rustls-pki-types 1.16.0
 
 ```text
 Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl>
@@ -4267,7 +4266,7 @@ THE SOFTWARE.
 ### MIT License
 
 Used by:
-- annotate-snippets 0.12.16
+- annotate-snippets 0.12.18
 - anstream 1.0.0
 - anstyle-parse 1.0.0
 - anstyle-query 1.1.5
@@ -4307,7 +4306,7 @@ SOFTWARE.
 ### MIT License
 
 Used by:
-- libc 0.2.190
+- libc 0.2.191
 
 ```text
 Copyright (c) The Rust Project Developers
@@ -4445,7 +4444,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- zerocopy 0.8.62
+- zerocopy 0.8.63
 
 ```text
 Copyright 2023 The Fuchsia Authors
@@ -4480,9 +4479,10 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- encoding_rs 0.8.42
+- encoding_rs 0.8.44
 - multiversion_no_op 1.0.0
-- utf8_iter 1.0.4
+- utf8_iter 1.1.0
+- utf_types 1.0.0
 
 ```text
 Copyright Mozilla Foundation
@@ -4637,7 +4637,7 @@ SOFTWARE.
 ### MIT License
 
 Used by:
-- crc32fast 1.5.2
+- crc32fast 1.5.5
 
 ```text
 MIT License
@@ -5437,8 +5437,8 @@ Used by:
 - atomic-waker 1.1.2
 - displaydoc 0.2.7
 - fastrand 2.5.0
-- indoc 2.0.7
-- itoa 1.0.18
+- indoc 2.0.8
+- itoa 1.0.19
 - linux-raw-sys 0.12.1
 - linux-raw-sys 0.4.15
 - once_cell 1.21.4
@@ -5448,21 +5448,21 @@ Used by:
 - ref-cast-impl 1.0.27
 - ref-cast 1.0.27
 - rustix 0.38.44
-- rustix 1.1.5
+- rustix 1.1.6
 - rustversion 1.0.23
 - semver 1.0.28
 - serde-saphyr 1.3.0
 - serde 1.0.229
 - serde_core 1.0.229
 - serde_derive 1.0.229
-- serde_json 1.0.151
+- serde_json 1.0.154
 - syn 2.0.119
-- syn 3.0.6
+- syn 3.0.10
 - thiserror-impl 1.0.69
 - thiserror-impl 2.0.21
 - thiserror 1.0.69
 - thiserror 2.0.21
-- unicode-ident 1.0.26
+- unicode-ident 1.0.27
 - wasi 0.11.1+wasi-snapshot-preview1
 - zmij 1.0.23
 
@@ -5805,7 +5805,7 @@ SOFTWARE.
 ### MIT License
 
 Used by:
-- kasuari 0.4.12
+- kasuari 0.4.13
 
 ```text
 The MIT License (MIT)
@@ -6525,7 +6525,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 ### Unicode License v3
 
 Used by:
-- unicode-ident 1.0.26
+- unicode-ident 1.0.27
 
 ```text
 UNICODE LICENSE V3
@@ -6573,24 +6573,24 @@ authorization of the copyright holder.
 ### Unicode License v3
 
 Used by:
-- icu_collections 2.3.0
-- icu_locale_core 2.3.0
-- icu_normalizer 2.3.0
-- icu_normalizer_data 2.3.0
-- icu_properties 2.3.0
-- icu_properties_data 2.3.0
-- icu_provider 2.3.1
+- icu_collections 2.4.0
+- icu_locale_core 2.4.0
+- icu_normalizer 2.4.0
+- icu_normalizer_data 2.4.0
+- icu_properties 2.4.0
+- icu_properties_data 2.4.0
+- icu_provider 2.4.0
 - litemap 0.8.3
 - potential_utf 0.1.6
-- tinystr 0.8.4
+- tinystr 0.8.5
 - writeable 0.6.4
 - yoke-derive 0.8.4
-- yoke 0.8.3
+- yoke 0.8.4
 - zerofrom-derive 0.1.8
 - zerofrom 0.1.8
 - zerotrie 0.2.5
-- zerovec-derive 0.11.6
-- zerovec 0.11.8
+- zerovec-derive 0.11.7
+- zerovec 0.11.9
 
 ```text
 UNICODE LICENSE V3
