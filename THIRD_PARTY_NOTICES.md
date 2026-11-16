@@ -155,7 +155,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
 | radium | 0.7.0 | MIT |
 | rand | 0.8.8 | MIT OR Apache-2.0 |
-| rand | 0.10.3 | MIT OR Apache-2.0 |
+| rand | 0.10.4 | MIT OR Apache-2.0 |
 | rand_chacha | 0.3.1 | MIT OR Apache-2.0 |
 | rand_core | 0.6.4 | MIT OR Apache-2.0 |
 | rand_core | 0.10.1 | MIT OR Apache-2.0 |
@@ -4406,7 +4406,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ### MIT License
 
 Used by:
-- rand 0.10.3
+- rand 0.10.4
 - rand 0.8.8
 - rand_chacha 0.3.1
 - rand_core 0.6.4
