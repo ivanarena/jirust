@@ -36,10 +36,10 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | castaway | 0.2.4 | MIT |
 | cc | 1.11.2 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
-| clap | 4.6.7 | MIT OR Apache-2.0 |
+| clap | 4.6.8 | MIT OR Apache-2.0 |
 | clap_builder | 4.6.7 | MIT OR Apache-2.0 |
-| clap_derive | 4.6.7 | MIT OR Apache-2.0 |
-| clap_lex | 1.1.1 | MIT OR Apache-2.0 |
+| clap_derive | 4.6.8 | MIT OR Apache-2.0 |
+| clap_lex | 1.1.2 | MIT OR Apache-2.0 |
 | color_quant | 1.1.0 | MIT |
 | colorchoice | 1.0.5 | MIT OR Apache-2.0 |
 | compact_str | 0.9.1 | MIT |
@@ -4272,10 +4272,10 @@ Used by:
 - anstyle-query 1.1.5
 - anstyle-wincon 3.0.11
 - anstyle 1.0.14
-- clap 4.6.7
+- clap 4.6.8
 - clap_builder 4.6.7
-- clap_derive 4.6.7
-- clap_lex 1.1.1
+- clap_derive 4.6.8
+- clap_lex 1.1.2
 - colorchoice 1.0.5
 - is_terminal_polyfill 1.70.2
 - once_cell_polyfill 1.70.2
