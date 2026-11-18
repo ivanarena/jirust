@@ -32,7 +32,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
 | bytemuck_derive | 1.12.1 | Zlib OR Apache-2.0 OR MIT |
 | byteorder-lite | 0.1.0 | Unlicense OR MIT |
-| bytes | 1.12.1 | MIT |
+| bytes | 1.12.2 | MIT |
 | castaway | 0.2.4 | MIT |
 | cc | 1.11.2 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
@@ -169,9 +169,9 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | redox_users | 0.5.3 | MIT |
 | ref-cast | 1.0.27 | MIT OR Apache-2.0 |
 | ref-cast-impl | 1.0.27 | MIT OR Apache-2.0 |
-| regex | 1.13.1 | MIT OR Apache-2.0 |
-| regex-automata | 0.4.18 | MIT OR Apache-2.0 |
-| regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
+| regex | 1.13.2 | MIT OR Apache-2.0 |
+| regex-automata | 0.4.19 | MIT OR Apache-2.0 |
+| regex-syntax | 0.8.12 | MIT OR Apache-2.0 |
 | reqwest | 0.12.28 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
@@ -200,7 +200,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | simd-adler32 | 0.3.10 | MIT |
 | simdutf8 | 0.1.5 | MIT OR Apache-2.0 |
 | slab | 0.4.12 | MIT |
-| smallvec | 1.16.5 | MIT OR Apache-2.0 |
+| smallvec | 1.16.6 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
 | static_assertions | 1.1.0 | MIT OR Apache-2.0 |
@@ -282,7 +282,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | zerocopy | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zerofrom | 0.1.8 | Unicode-3.0 |
 | zerofrom-derive | 0.1.8 | Unicode-3.0 |
-| zeroize | 1.9.1 | Apache-2.0 OR MIT |
+| zeroize | 1.9.2 | Apache-2.0 OR MIT |
 | zerotrie | 0.2.5 | Unicode-3.0 |
 | zerovec | 0.11.9 | Unicode-3.0 |
 | zerovec-derive | 0.11.7 | Unicode-3.0 |
@@ -2411,9 +2411,9 @@ Used by:
 - bitflags 2.13.2
 - log 0.4.35
 - num-traits 0.2.19
-- regex-automata 0.4.18
-- regex-syntax 0.8.11
-- regex 1.13.1
+- regex-automata 0.4.19
+- regex-syntax 0.8.12
+- regex 1.13.2
 
 ```text
 Copyright (c) 2014 The Rust Project Developers
@@ -3375,7 +3375,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- bytes 1.12.1
+- bytes 1.12.2
 
 ```text
 Copyright (c) 2018 Carl Lerche
@@ -3477,7 +3477,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- smallvec 1.16.5
+- smallvec 1.16.6
 
 ```text
 Copyright (c) 2018 The Servo Project Developers
@@ -3729,7 +3729,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- zeroize 1.9.1
+- zeroize 1.9.2
 
 ```text
 Copyright (c) 2018-2026 The RustCrypto Project Developers
