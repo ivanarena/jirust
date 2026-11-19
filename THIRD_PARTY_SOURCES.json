@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "ea9c65e1ab3eeb5430b2872f32af80905a844a4df576077be89ef88e37f8ff55",
+  "cargo_lock_sha256": "31b6a829414a19b752e2b98bfd15973cc3fcff14502d5444147f4f9258330f0b",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -1145,16 +1145,16 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "rand_pcg",
-      "sha256": "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a",
-      "source": "https://crates.io/api/v1/crates/rand_pcg/0.10.2/download",
-      "version": "0.10.2"
+      "sha256": "eb95882a1e14462c69aea9984bb261293ccfe6022ef8de0eda18bd5afb0052df",
+      "source": "https://crates.io/api/v1/crates/rand_pcg/0.10.3/download",
+      "version": "0.10.3"
     },
     {
       "license": "MIT OR Apache-2.0",
       "name": "rand_xoshiro",
-      "sha256": "662effc7698e08ea324d3acccf8d9d7f7bf79b9785e270a174ea36e56900c91d",
-      "source": "https://crates.io/api/v1/crates/rand_xoshiro/0.8.1/download",
-      "version": "0.8.1"
+      "sha256": "905ba3ffb2d41441ed3382287a8c9d7cde1bdf49c33db808956e9f01ebb13436",
+      "source": "https://crates.io/api/v1/crates/rand_xoshiro/0.8.2/download",
+      "version": "0.8.2"
     },
     {
       "license": "MIT",

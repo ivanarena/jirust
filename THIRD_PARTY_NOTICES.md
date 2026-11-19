@@ -159,7 +159,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | rand_chacha | 0.3.1 | MIT OR Apache-2.0 |
 | rand_core | 0.6.4 | MIT OR Apache-2.0 |
 | rand_core | 0.10.1 | MIT OR Apache-2.0 |
-| rand_xoshiro | 0.8.1 | MIT OR Apache-2.0 |
+| rand_xoshiro | 0.8.2 | MIT OR Apache-2.0 |
 | ratatui | 0.30.2 | MIT |
 | ratatui-core | 0.1.2 | MIT |
 | ratatui-crossterm | 0.1.2 | MIT |
@@ -3409,7 +3409,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- rand_xoshiro 0.8.1
+- rand_xoshiro 0.8.2
 
 ```text
 Copyright (c) 2018 Developers of the Rand project
