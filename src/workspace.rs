@@ -110,7 +110,7 @@ impl SearchRow {
     ) -> bool {
         if !self.backlog_ticket
             || view == config::MINE && !mine
-            || view == config::AVAILABLE && !self.unassigned
+            || view == config::AVAILABLE && (!self.unassigned || self.status != "to do")
         {
             return false;
         }
@@ -220,7 +220,21 @@ impl Workspace {
     pub fn update(&mut self, ticket: &Ticket) -> bool {
         self.update_with_limit(ticket, crate::limits::WORKSPACE_BYTES)
     }
+    /// Hydrate a detail without spending bytes needed to restore a pending edit.
+    /// Reserve only the saved row's growth over its current preview; omit it after
+    /// completion so the normal workspace budget is available again.
+    pub(crate) fn update_preserving(&mut self, ticket: &Ticket, rollback: Option<&Ticket>) -> bool {
+        self.update_preserving_with_limit(ticket, rollback, crate::limits::WORKSPACE_BYTES)
+    }
     fn update_with_limit(&mut self, ticket: &Ticket, limit: usize) -> bool {
+        self.update_preserving_with_limit(ticket, None, limit)
+    }
+    fn update_preserving_with_limit(
+        &mut self,
+        ticket: &Ticket,
+        rollback: Option<&Ticket>,
+        limit: usize,
+    ) -> bool {
         if self.index.len() != self.items.len() || self.encoded_bytes == 0 {
             self.reindex();
         }
@@ -241,6 +255,8 @@ impl Workspace {
                 "labels",
                 "description",
                 "parent",
+                "comment",
+                "issuelinks",
             ] {
                 row.fields[field] = ticket.fields[field].clone();
             }
@@ -253,7 +269,22 @@ impl Workspace {
                 .encoded_bytes
                 .saturating_sub(previous)
                 .saturating_add(size);
-            if used > limit {
+            let reserve = if let Some(original) = rollback {
+                let Ok(original_size) = crate::limits::size(original, limit) else {
+                    return false;
+                };
+                let current_size = if row.key == original.key {
+                    size
+                } else {
+                    self.index
+                        .get(&original.key)
+                        .map_or(original_size, |r| r.encoded_bytes)
+                };
+                original_size.saturating_sub(current_size)
+            } else {
+                0
+            };
+            if used.saturating_add(reserve) > limit {
                 return false;
             }
             self.index
@@ -262,6 +293,125 @@ impl Workspace {
             self.encoded_bytes = used;
         }
         true
+    }
+    /// Reflect a user-confirmed write locally before the remote request completes.
+    /// The caller owns rollback and must not persist an unacknowledged snapshot.
+    /// Only explicit moves alter Board membership; status names never do.
+    pub fn apply_confirmed(
+        &mut self,
+        action: &crate::backend::Action,
+        jira: bool,
+    ) -> Option<Ticket> {
+        use serde_json::{Value, json};
+        let mut ticket = self.ticket(&action.key)?.clone();
+        let mut mine = None;
+        match action.kind.as_str() {
+            "assign" => {
+                let known = self.items.iter().find(|t| {
+                    if action.value == "@me" {
+                        self.mine.contains(&t.key) && !t.fields["assignee"].is_null()
+                    } else {
+                        t.user("assignee").identity(jira) == action.value
+                    }
+                });
+                mine = Some(
+                    action.value == "@me" || known.is_some_and(|t| self.mine.contains(&t.key)),
+                );
+                ticket.fields["assignee"] = if action.value == "unassigned" {
+                    mine = Some(false);
+                    Value::Null
+                } else if let Some(known) = known {
+                    known.fields["assignee"].clone()
+                } else if action.value == "@me" {
+                    // No cached self identity: do not invent an account ID.
+                    json!({"displayName":"Me"})
+                } else {
+                    let mut user = json!({"displayName":action.value});
+                    user[if action.value.contains('@') {
+                        "emailAddress"
+                    } else if jira {
+                        "name"
+                    } else {
+                        "accountId"
+                    }] = json!(action.value);
+                    user
+                };
+            }
+            "status" => {
+                ticket.fields["status"] = ticket
+                    .transitions
+                    .iter()
+                    .map(|t| &t["to"])
+                    .chain(self.items.iter().map(|t| &t.fields["status"]))
+                    .find(|s| s["name"].as_str() == Some(&action.value))
+                    .cloned()
+                    .unwrap_or_else(|| json!({"name":action.value}));
+            }
+            "summary" => ticket.fields["summary"] = json!(action.value),
+            "description" => ticket.fields["description"] = crate::markdown::to_adf(&action.value),
+            "labels" => {
+                ticket.fields["labels"] =
+                    json!(action.value.split(',').map(str::trim).collect::<Vec<_>>())
+            }
+            "comment" => {
+                let mut comments = ticket.fields["comment"]["comments"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                let total = ticket.fields["comment"]["total"]
+                    .as_u64()
+                    .unwrap_or(comments.len() as u64);
+                // No fabricated server ID or account identity.
+                comments.push(json!({
+                    "author":{"displayName":"You (pending sync)"},
+                    "body":crate::markdown::to_adf(&action.value)
+                }));
+                ticket.fields["comment"] =
+                    json!({"total":total.saturating_add(1),"comments":comments});
+            }
+            "link" => {
+                let mut links = ticket.fields["issuelinks"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                links.push(json!({
+                    "type":{"outward":action.extra},
+                    "outwardIssue":{"key":action.value}
+                }));
+                ticket.fields["issuelinks"] = json!(links);
+            }
+            "board" | "backlog" => {}
+            _ => return None,
+        }
+        // Reserve bounded membership growth as well as the updated ticket bytes.
+        // The next server snapshot replaces this conservative accounting.
+        let reserve = 2 * (action.key.len() + 3);
+        if !self.update_with_limit(
+            &ticket,
+            crate::limits::WORKSPACE_BYTES.saturating_sub(reserve),
+        ) {
+            return None;
+        }
+        if let Some(mine) = mine {
+            if mine {
+                self.mine.insert(action.key.clone());
+            } else {
+                self.mine.remove(&action.key);
+            }
+        }
+        if let Some(board) = &mut self.board {
+            match action.kind.as_str() {
+                "board" => {
+                    board.insert(action.key.clone());
+                }
+                "backlog" => {
+                    board.remove(&action.key);
+                }
+                _ => {}
+            }
+        }
+        self.encoded_bytes = self.encoded_bytes.saturating_add(reserve);
+        Some(ticket)
     }
     /// True Jira/view membership count, independent of search and filters.
     pub fn view_count(&self, view: usize) -> usize {
@@ -294,6 +444,185 @@ pub fn valid_items(items: &[Ticket]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn available_requires_unassigned_to_do_in_cached_and_unindexed_rows() {
+        use serde_json::json;
+        let mut w = Workspace {
+            items: [
+                ("DEV-1", Some("To Do"), false),
+                ("DEV-2", Some("to do"), false),
+                ("DEV-3", Some("To Do"), true),
+                ("DEV-4", Some("In Progress"), false),
+                ("DEV-5", Some("Done"), false),
+                ("DEV-6", Some("Refinement"), false),
+                ("DEV-7", None, false),
+            ]
+            .into_iter()
+            .map(|(key, status, assigned)| Ticket {
+                key: key.into(),
+                fields: json!({"status":{"name":status},"assignee":if assigned { json!({"accountId":"sam"}) } else { json!(null) }}),
+                ..Default::default()
+            })
+            .collect(),
+            board: Some(["DEV-1".into(), "DEV-4".into(), "DEV-5".into()].into()),
+            ..Default::default()
+        };
+        for indexed in [false, true] {
+            if indexed {
+                // Derived indexes are rebuilt from persisted fields on load.
+                w = serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();
+                w.reindex();
+            }
+            assert_eq!(w.view_count(config::AVAILABLE), 2);
+            let keys = w
+                .items
+                .iter()
+                .filter(|t| w.matches(t, config::AVAILABLE, "", "", ""))
+                .map(|t| t.key.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(keys, ["DEV-1", "DEV-2"]);
+            assert!(w.items.iter().all(|t| !w.matches(
+                t,
+                config::AVAILABLE,
+                "",
+                "In Progress",
+                ""
+            )));
+            assert_eq!(w.view_count(config::BOARD), 3);
+            assert_eq!(w.view_count(config::BACKLOG), 4);
+        }
+        let mut detail = w.ticket("DEV-1").unwrap().clone();
+        detail.fields["status"] = json!({"name":"In Progress"});
+        assert!(w.update(&detail));
+        assert_eq!(w.view_count(config::AVAILABLE), 1);
+        w.apply_confirmed(
+            &crate::backend::Action::new("status", "DEV-1", "To Do"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(w.view_count(config::AVAILABLE), 2);
+        assert!(w.board.as_ref().unwrap().contains("DEV-1"));
+    }
+    #[test]
+    fn confirmed_assignment_updates_membership_and_reuses_known_identity() {
+        use crate::backend::Action;
+        let mut w = Workspace {
+            items: data::demo_tickets(),
+            mine: ["DEV-101".into()].into(),
+            board: Some(["DEV-101".into()].into()),
+            ..Default::default()
+        };
+        w.reindex();
+        let assignee = w.ticket("DEV-101").unwrap().fields["assignee"].clone();
+        w.apply_confirmed(&Action::new("assign", "DEV-102", "@me"), false)
+            .unwrap();
+        assert!(w.mine.contains("DEV-102"));
+        assert_eq!(w.ticket("DEV-102").unwrap().fields["assignee"], assignee);
+        assert_eq!(w.view_count(config::AVAILABLE), 0);
+        w.apply_confirmed(&Action::new("assign", "DEV-102", "sam"), false)
+            .unwrap();
+        assert!(!w.mine.contains("DEV-102"));
+        assert_eq!(w.ticket("DEV-102").unwrap().user("assignee").id, "sam");
+        let id = w.ticket("DEV-101").unwrap().user("assignee").id;
+        w.apply_confirmed(&Action::new("assign", "DEV-102", &id), false)
+            .unwrap();
+        assert!(w.mine.contains("DEV-102"));
+        w.apply_confirmed(&Action::new("assign", "DEV-102", "unassigned"), false)
+            .unwrap();
+        assert!(!w.mine.contains("DEV-102"));
+        assert_eq!(w.view_count(config::AVAILABLE), 1);
+        assert_eq!(
+            w.board.as_ref().unwrap(),
+            &HashSet::from(["DEV-101".into()])
+        );
+    }
+    #[test]
+    fn confirmed_self_assignment_without_cached_identity_does_not_invent_account_id() {
+        let mut w = Workspace {
+            items: data::demo_tickets(),
+            ..Default::default()
+        };
+        w.reindex();
+        w.apply_confirmed(
+            &crate::backend::Action::new("assign", "DEV-102", "@me"),
+            false,
+        )
+        .unwrap();
+        let row = w.ticket("DEV-102").unwrap();
+        assert!(w.matches(row, config::MINE, "@me", "", ""));
+        assert!(!w.matches(row, config::AVAILABLE, "", "", ""));
+        assert!(row.user("assignee").id.is_empty());
+    }
+    #[test]
+    fn confirmed_status_never_guesses_category_or_board_membership() {
+        use crate::backend::Action;
+        let mut w = Workspace {
+            items: data::demo_tickets(),
+            board: Some(["DEV-101".into()].into()),
+            ..Default::default()
+        };
+        w.reindex();
+        w.apply_confirmed(&Action::new("status", "DEV-102", "Unknown state"), false)
+            .unwrap();
+        assert_eq!(w.ticket("DEV-102").unwrap().status(), "Unknown state");
+        assert!(w.ticket("DEV-102").unwrap().fields["status"]["statusCategory"].is_null());
+        assert_eq!(
+            w.board.as_ref().unwrap(),
+            &HashSet::from(["DEV-101".into()])
+        );
+        w.apply_confirmed(&Action::new("board", "DEV-102", "1"), false)
+            .unwrap();
+        assert!(w.board.as_ref().unwrap().contains("DEV-102"));
+        w.apply_confirmed(&Action::new("backlog", "DEV-102", "1"), false)
+            .unwrap();
+        assert!(!w.board.as_ref().unwrap().contains("DEV-102"));
+        assert_eq!(w.ticket("DEV-102").unwrap().status(), "Unknown state");
+    }
+    #[test]
+    fn unrelated_details_must_leave_room_for_the_original_row_on_rollback() {
+        use serde_json::json;
+        let mut w = Workspace {
+            items: data::demo_tickets(),
+            mine: ["DEV-102".into()].into(),
+            board: Some(["DEV-102".into()].into()),
+            ..Default::default()
+        };
+        w.items[1].fields["description"] = json!("x".repeat(4096));
+        w.reindex();
+        // Use a scaled-down aggregate budget rather than allocating 64 MiB.
+        let limit = w.encoded_bytes + 512;
+        let original = w.items[1].clone();
+        let mut preview = original.clone();
+        preview.fields["description"] = json!("small preview");
+        assert!(w.update_with_limit(&preview, limit));
+        let mut other = w.items[2].clone();
+        other.fields["summary"] = json!("fits without consuming rollback space");
+        assert!(w.update_preserving_with_limit(&other, Some(&original), limit));
+        let accepted = w.items[2].clone();
+        other.fields["description"] = json!("y".repeat(1024));
+        assert!(
+            w.encoded_bytes + 1024 < limit,
+            "growth fits the optimistic snapshot alone"
+        );
+        assert!(!w.update_preserving_with_limit(&other, Some(&original), limit));
+        assert_eq!(w.items[2].fields, accepted.fields);
+        assert!(w.matches(&w.items[2], config::BACKLOG, "", "", "rollback space"));
+
+        let mut committed = w.clone();
+        // A successful write releases the need to reserve the original row.
+        assert!(committed.update_preserving_with_limit(&other, None, limit));
+        assert!(crate::limits::size(&committed, limit).is_ok());
+
+        // A failed write can restore the exact old row, membership and index
+        // without evicting unrelated accepted reads or exceeding the budget.
+        w.items[1] = original.clone();
+        w.reindex();
+        assert!(crate::limits::size(&w, limit).is_ok());
+        assert_eq!(w.ticket("DEV-102").unwrap().fields, original.fields);
+        assert_eq!(w.items[2].fields, accepted.fields);
+        assert!(w.mine.contains("DEV-102"));
+        assert!(w.board.as_ref().unwrap().contains("DEV-102"));
+    }
     #[test]
     fn full_detail_updates_cannot_grow_the_shared_snapshot_past_its_budget() {
         let mut w = Workspace {

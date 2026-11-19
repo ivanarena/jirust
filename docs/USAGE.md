@@ -7,13 +7,13 @@
 | View | Contents |
 |---|---|
 | Mine | Current CLI user's assigned tickets across Board and Backlog |
-| Available | Unassigned tickets across both sections |
+| Available | Unassigned tickets with status **To Do** across both sections |
 | Board | Verified Board membership, including returned completed tickets |
 | Backlog | Verified Backlog membership |
 
 Use Ctrl+1…4, Alt+1…4, F1…F4, tabs or browsing ←/→. All views share one cached dataset. Mine/Available keep Board before Backlog, preserving Jira Rank within each section.
 
-Exact membership requires a supported Board ID (`JIRA_BOARD_ID` / `--board`). The bridge recognizes team-managed manual `ISSUE_LIST` metadata and completed-ticket visibility rules; it never guesses membership from statuses/sprints. Unsupported, overlapping or truncated responses fail closed and retain useful cached data. Without a Board, the unfinished CLI scope remains browsable, but exact Board membership/moves are unavailable. The legacy jira-cli adapter is partial/capped at 100; acli paginates within resource limits.
+Exact membership requires a supported Board ID (`JIRA_BOARD_ID` / `--board`). The bridge recognizes team-managed manual `ISSUE_LIST` metadata and completed-ticket visibility rules; it never guesses membership from statuses/sprints. Unsupported, overlapping or truncated responses fail closed and retain useful cached data. Stale manual-list IDs without records are ignored only after the Board API confirms no accessible matching tickets in the selected scope; visible tickets with missing completion metadata still fail closed. Without a Board, the unfinished CLI scope remains browsable, but exact Board membership/moves are unavailable. The legacy jira-cli adapter is partial/capped at 100; acli paginates within resource limits.
 
 **E / Shift+e** toggles the current view's Rank/Epic sort. Epic order groups explicit parent epics alphabetically by name/key, no parent last, with stable Rank within groups and Board still before Backlog. Epic tickets have no inferred parent group. Sort is local, retained through refresh/filter changes, and reset on scope change/restart; selection/reading position are preserved where possible. Lowercase e still edits.
 
@@ -22,15 +22,19 @@ Exact membership requires a supported Board ID (`JIRA_BOARD_ID` / `--board`). Th
 - **/** searches the local index, including descriptions, type and explicit parent-epic labels. It does not fetch Jira or rebuild documents/sort on every keystroke.
 - **Digits** search `<prefix>-<number>` immediately in cached data; unknown numbers debounce a CLI lookup. Enter focuses details; Esc restores the view.
 - **f**, **A** or **S** opens Status/Assignee filters. Space/click toggles; Tab/←→ switches lists; Enter/Ctrl+S applies; Esc cancels. Ctrl+U clears a column; Ctrl+R stages resetting both. Other adds an exact custom value; commas are literal.
-- Values are **OR within a field, AND across fields/text**. Mine/Available assignment presets and Board/Backlog membership still apply. Each view retains independent runtime filters/search.
+- Values are **OR within a field, AND across fields/text**. Mine/Available presets (including Available's exact **To Do** status) and Board/Backlog membership still apply. Each view retains independent runtime filters/search.
 - **Double-click** a rendered status, assignee or epic label in a row/detail metadata to replace only that field's current-view filter. Other filters/text/sort remain. Assignees use exact identities, statuses full names, epics explicit keys—not equal display labels. Description words do not become filter gestures.
 - An Epic filter includes that epic and explicitly parented tickets already in scope, never guessed/linked members. **v** clears only Epic; **F6 / browsing x** clears all current-view filters/search while preserving sort. Changing scope resets all views' runtime filters.
+
+At startup and each refresh, the acli backend fetches all statuses configured for the selected project, across issue types. This includes unused statuses such as Discarded; matching cached tickets are not required. The read-only lookup uses the pinned Cloud metadata connection and does not require a Board ID. Set a project explicitly for custom-JQL scopes; Jirust does not infer additional projects from JQL.
+
+Status suggestions also remember names seen on tickets, returned transition targets and custom status filters that you apply. They remain available after refreshes, filter resets and restarts, even when no ticket currently uses them. History is private per account and project, bounded to 4,096 names, and saved best-effort with the cache. `--no-cache` still fetches project statuses but keeps history in memory only. Cancelled filter changes are not remembered. If metadata is unavailable or the backend does not support it, cached suggestions remain available and **!** shows the lookup error. Remembered names are suggestions, not proof that a ticket can transition to that status.
 
 An empty filtered view does not imply deleted tickets: compare shown/scope counts and try F6. Filters/search/sort never write Jira.
 
 ## Navigation, links and clipboard
 
-Tab switches panes; arrows/j/k, Page Up/Down and mouse navigate. **l** lists links/attachments, **O** opens Jira, **C** loads comments, **!** shows the last safe error, **?** opens help, **q** quits.
+Tab switches panes; arrows/j/k, Page Up/Down and mouse navigate. **l** lists links/attachments, **o** opens Jira, **C** loads comments, **!** shows the last safe error, **?** opens help, **q** quits.
 
 A row click selects and copies its full browse link. The second field click filters without another copy. Keyboard/scroll/tabs/dialogs never copy. `--no-copy-on-click` disables these clipboard writes. Native helpers use stdin: macOS pbcopy, Wayland wl-copy, or X11 xclip/xsel; SSH/missing helpers use terminal OSC52, which requires host support. The application never reads clipboard contents.
 
@@ -40,9 +44,11 @@ Internal ticket links open in the client; Esc goes back. Single detail-parent-ep
 
 **a** assigns, **s** changes status (t remains an alias), **e** edits, **c** comments, **L** links tickets, **m** reviews a Board/Backlog move. Every update targets one validated ticket and requires **y** confirmation; n/Esc cancels. Read-only mode blocks both entry and confirmation.
 
+The status picker uses Jira-provided transition targets when available. Otherwise it offers remembered status suggestions; Jira still validates the workflow. Successful status updates also remember their destination. Remembered suggestions never determine Board/Backlog membership.
+
 Forms use Tab, Ctrl+U to clear, Ctrl+S to review/save. The Markdown editor supports cursor/editing keys and bracketed paste. Description edits are **not lossless** for every ADF feature: mentions, embedded media and unsupported extensions may change. Review before confirming; use Jira web for those cases.
 
-Membership moves require a complete verified scope and re-fetch membership after confirmation. Already-at-destination is a no-op; epics cannot be moved. No status transition is requested; Jira chooses destination Rank.
+Membership moves require a complete verified scope and re-fetch membership after confirmation. Already-at-destination is a no-op; epics cannot be moved. No status transition is requested. Moves to Board explicitly rank the ticket after the last visible Board ticket in Jira Rank order (independent of local filters/sorting). An empty Board needs no rank anchor. Moves to Backlog retain Jira's default destination Rank.
 
 ```sh
 jirust move DEV-123 --to board
@@ -51,9 +57,13 @@ jirust move DEV-123 --to backlog
 
 Replace the synthetic key with one intended ticket. CLI moves ask you to type the key; `--yes` is explicit single-ticket confirmation for noninteractive use. Read-only blocks them too. **Never automatically retry an uncertain write**: reload first. A server change between the final membership read and POST remains possible.
 
-Successful writes fully refresh **all four views**, fence older reads, preserve filters/search and retain selection/reading position where possible. Failed writes or failed follow-up refreshes never repeat the mutation.
+After **y confirmation**, assignments, status/summary/description/labels edits, comments, links and membership moves appear locally **before Jira responds**. For example, assigning yourself a Backlog ticket makes it visible in Mine immediately (unless filters hide it). A pending-sync notice distinguishes this in-memory preview from a remote success; unacknowledged changes are never written to the ticket cache. Only explicit moves change Board/Backlog membership. Older reads cannot overwrite a pending edit, and another write or scope change must wait for completion. Every successful write fully refreshes **all four views** in the background, preserving filters/search and selection/reading position where possible. A failed or uncertain write restores the previous local values and reloads both membership and details; it is **never automatically retried**. Failed follow-up refreshes retain the current local snapshot.
 
 ## Ticket fields and images
+
+Press **?** for the in-app symbol legend at the top of Help; use ↑/↓ to scroll and Esc to close.
+
+Issue-type icons appear beside ticket keys in both list layouts and beside the full type name in details: ● Bug, □ Task, ≡ Story, ✎ Design, ϟ Epic, ⊟ Sub-task, ↗ Improvement, ◆ Feature, ◇ Spike. Custom or missing types use ◈; the exact server type name remains in details. These are Unicode symbols; no Nerd Font is required.
 
 Only explicit **parent epic labels** are colored—not epic rows/titles. Colors are distinct and persist per account/key across views and renames. Missing/non-epic parent relationships are not guessed. Done badges are green/✓, Discarded red/✕; other statuses have distinct readable colors. Styling never determines workflow or membership.
 

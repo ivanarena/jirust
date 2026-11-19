@@ -1,4 +1,4 @@
-//! Visual status/parent-epic badges; colors never determine membership or order.
+//! Visual issue-type icons and status/parent-epic badges; never determine membership or order.
 use crate::data::Ticket;
 use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};
@@ -324,6 +324,35 @@ pub fn epic_label_style(key: &str) -> Style {
     });
     style_rgb(epic_background(16 + hash % 4096))
 }
+/// Single-cell Unicode symbols, without emoji or a Nerd Font dependency.
+/// Custom names get a neutral fallback; never infer type from summary/status.
+pub fn issue_type_icon(ticket: &Ticket) -> (&'static str, Color) {
+    if ticket.is_epic() {
+        return ("ϟ", Color::Magenta);
+    }
+    if ticket.fields["issuetype"]["subtask"].as_bool() == Some(true) {
+        return ("⊟", Color::Cyan);
+    }
+    match ticket.kind().trim().to_lowercase().as_str() {
+        "bug" => ("●", Color::Red),
+        "task" => ("□", Color::Blue),
+        "story" => ("≡", Color::Green),
+        "design" => ("✎", Color::Magenta),
+        "sub-task" | "subtask" | "sub task" => ("⊟", Color::Cyan),
+        "improvement" => ("↗", Color::Cyan),
+        "feature" | "new feature" => ("◆", Color::Green),
+        "spike" => ("◇", Color::Yellow),
+        _ => ("◈", Color::Gray),
+    }
+}
+pub fn ticket_key(ticket: &Ticket) -> ratatui::text::Line<'static> {
+    use ratatui::text::{Line, Span};
+    let (icon, color) = issue_type_icon(ticket);
+    Line::from(vec![
+        Span::styled(format!("{icon} "), Style::default().fg(color)),
+        Span::raw(ticket.key.clone()),
+    ])
+}
 pub fn ticket_summary(ticket: &Ticket, width: u16) -> ratatui::text::Line<'static> {
     let style = ticket
         .parent_epic()
@@ -455,6 +484,44 @@ mod tests {
         let line = ticket_summary(&t, 30);
         assert_eq!(line.spans.len(), 1);
         assert!(line.spans[0].style.bg.is_none());
+    }
+    #[test]
+    fn type_icons_are_single_cell_explicit_and_have_a_custom_fallback() {
+        use unicode_width::UnicodeWidthStr;
+        let mut t = ticket("Done");
+        let mut icons = BTreeSet::new();
+        for kind in [
+            "Bug",
+            "Task",
+            "Story",
+            "Design",
+            "Epic",
+            "Sub-task",
+            "Improvement",
+            "New Feature",
+            "Spike",
+            "Custom type",
+            "",
+        ] {
+            t.fields["issuetype"] = json!({"name":kind});
+            let before = t.fields.clone();
+            let (icon, _) = issue_type_icon(&t);
+            assert_eq!(icon.width(), 1, "{kind}");
+            assert_eq!(ticket_key(&t).width(), t.key.width() + 2);
+            assert_eq!(t.fields, before);
+            if !kind.is_empty() {
+                assert!(icons.insert(icon), "{kind}");
+            }
+        }
+        t.fields["issuetype"] = json!({"name":"  bUg  "});
+        assert_eq!(issue_type_icon(&t).0, "●");
+        t.fields["issuetype"] = json!({"name":"Localized child", "subtask":true});
+        assert_eq!(issue_type_icon(&t).0, "⊟");
+        t.fields["issuetype"] = json!({"name":"Localized epic", "hierarchyLevel":1});
+        assert_eq!(issue_type_icon(&t).0, "ϟ");
+        t.fields["issuetype"] = serde_json::Value::Null;
+        t.fields["summary"] = json!("Bug in a design task");
+        assert_eq!(issue_type_icon(&t).0, "◈");
     }
     #[test]
     fn completion_icons_are_visual_only_not_status_category_guesses() {

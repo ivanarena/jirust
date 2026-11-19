@@ -19,7 +19,7 @@ For the short install/connect/run sequence, start with the [README](../README.md
 
 The destination follows the dotenv selection order below. If no file exists, Jirust creates the personal configuration `.env`. An explicitly selected absent file is permitted for `auth` only. Jirust preserves unrelated settings and comments. It saves the values that you enter and the values from the file in a private `0600` file. It does not save exported variables, which still take precedence. The confirmation prompt names the keys that Jirust will save. If the file changes before Jirust saves it, Jirust stops and saves nothing. Cancellation saves nothing. Without a terminal, incomplete credentials cause an error instead of a prompt.
 
-**Reuse a CLI login:** leave all three authentication variables empty and skip `jirust auth`. Ordinary operations use that login. The optional Board/image/field HTTP bridges can reuse the active acli keyring entry on **Linux only**, with `secret-tool` installed. Some OAuth grants lack Jira Software scopes even if ordinary issue reads work; use the explicit token setup if needed. **macOS HTTP bridges require the private token setup**; Jirust does not read macOS Keychain.
+**Reuse a CLI login:** leave all three authentication variables empty and skip `jirust auth`. Ordinary operations use that login. The optional Board/image and read-only field/status HTTP bridges can reuse the active acli keyring entry on **Linux only**, with `secret-tool` installed. Some OAuth grants lack Jira Software scopes even if ordinary issue reads work; use the explicit token setup if needed. **macOS HTTP bridges require the private token setup**; Jirust does not read macOS Keychain.
 
 Startup never silently switches accounts. CLI authentication must match the configured site/email; restart after changing authentication. Conflicting acli metadata in standard/native config locations fails closed instead of guessing. Direct HTTP remains restricted to the approved pinned Cloud endpoints; browser overrides do not change authentication.
 
@@ -31,7 +31,7 @@ Press `r` to retry or refresh the list. Select **Enter a project or JQL manually
 
 ## Precedence and profiles
 
-Explicit CLI flags win over exported environment variables, then the selected dotenv file, then saved/default settings. An empty exported variable or an empty dotenv value supplies no override. Scope/project/prefix/JQL/board/name/view settings may be remembered for later TUI launches; credentials, browser overrides and refresh intervals are not written to settings. `--check`, subcommands and demo do not save those settings.
+Explicit CLI flags win over exported environment variables, then the selected dotenv file, then saved/default settings. An empty exported variable or an empty dotenv value supplies no override. Scope/project/prefix/JQL/board/name/view and workflow-order settings may be remembered for later TUI launches; credentials, browser overrides and refresh intervals are not written to settings. `--check`, subcommands and demo do not save those settings.
 
 Select a dotenv file in this order:
 
@@ -59,7 +59,7 @@ Profiles select settings, **not accounts**. Jirust never silently switches the C
 | Linux | `${XDG_CONFIG_HOME:-~/.config}/jirust` | `${XDG_CACHE_HOME:-~/.cache}/jirust/rust/<account-hash>` |
 | macOS | `~/Library/Application Support/jirust` | `~/Library/Caches/jirust/rust/<account-hash>` |
 
-Settings are `config.json`; the optional private env is `.env`. Account/site determines cache identity; unknown identity disables persistence. Files are private and directories owned/private. `--no-cache` disables ticket/image persistence; demo does not save settings/cache or migrate personal configuration. When upgrading from the former app name, quit the old process first; safe migration never overwrites an existing new directory. See [storage/security boundaries](../SECURITY.md).
+Settings are `config.json`; the optional private env is `.env`. Account/site determines cache identity; unknown identity disables persistence. Files are private and directories owned/private. `--no-cache` disables ticket/image and status-history persistence; demo does not save settings/cache or migrate personal configuration. When upgrading from the former app name, quit the old process first; safe migration never overwrites an existing new directory. See [storage/security boundaries](../SECURITY.md).
 
 ## Settings reference
 
@@ -75,6 +75,7 @@ Settings are `config.json`; the optional private env is `.env`. Account/site det
 | `JIRA_JQL` | `--jql` | Optional custom scope JQL. Jira remains authoritative for membership. |
 | `JIRA_SCOPE_NAME` | `--scope-name` | Optional scope display label, at most 128 bytes without controls; does not change JQL/membership. |
 | `JIRA_VIEW` | `--view` | `mine`, `available`, `board`, `backlog`; otherwise restore saved view. |
+| `JIRA_STATUS_ORDER` | — | Optional per-project JSON map of forward status preferences; overrides matching projects in saved `status_order`. See below. |
 | `JIRA_BACKEND` | `--backend` | `auto` (default), `acli`, `jira`, `demo`. |
 | `JIRA_CLI_BIN` | `--cli-bin` | Optional executable path; otherwise native discovery/PATH. Do not copy Linux paths to macOS. |
 | `JIRA_READ_ONLY` | `--read-only` | Block update entry and confirmation; default false. |
@@ -91,6 +92,32 @@ Boolean values: `true`/`false`, `1`/`0`. Invalid values fail without echoing dot
 
 Refresh intervals only affect periodic reads. F5 and successful confirmed writes still fully refresh all four views immediately. Existing read-only, confirmation and no-automatic-write-retry behavior is unchanged.
 
+## Preferred next status
+
+By default the **s** status-change picker stays alphabetical. To prefer the next natural step, add `status_order` to your existing `config.json`, keeping its other fields:
+
+```json
+{
+  "status_order": {
+    "DEV": ["To Do", "In Progress", "Code Review", "Staging", "PO Testing", "Production", "Done"]
+  }
+}
+```
+
+Or put the same map in your private dotenv profile (this survives saves by an older running Jirust):
+
+```dotenv
+JIRA_STATUS_ORDER='{"DEV":["To Do","In Progress","Code Review","Staging","PO Testing","Production","Done"]}'
+```
+
+Restart Jirust after editing. Each project can have a different order; a profile overrides only the projects it names. Use `[]` for a project to disable its saved preference. Preferences may be remembered in settings on subsequent TUI saves. Demo ignores personal preferences.
+
+For a ticket **In Progress**, **Code Review** appears first and is selected. If that choice is absent, the next available later step is preferred. Remaining forward steps follow the configured order, with backwards/unconfigured choices retaining their alphabetical fallback. Unknown current states, a project's missing/empty order and the final configured state keep the original alphabetical order; there is no wraparound from Done to To Do.
+
+Names match case-insensitively, but actions retain Jira's exact spelling. Use your actual workflow names (for example, `Ready for Staging` rather than `Staging` if that is what Jira calls it). This only **reorders existing choices**: ticket-specific transition targets remain authoritative; suggestion-only backends still rely on Jira validation. Configured names never create statuses or authorize transitions. Filters remain alphabetical, linked tickets use their own project's preference, and Enter still opens the separate **y** confirmation.
+
+Orders support at most 64 projects and 128 unique names per project; names must be nonempty, at most 1024 bytes, and contain no control characters or noncanonical whitespace. Project/name duplicates differing only by case are rejected. Settings and the environment JSON value are bounded to 64 KiB; errors redact values.
+
 ## Browser links are not API configuration
 
 Examples:
@@ -103,7 +130,7 @@ JIRA_BROWSE_URL=https://example.atlassian.net
 
 The second example generates `https://jira.example.org/jira/browse/DEV-123` for a synthetic ticket. HTTP(S), optional port and plain context paths are supported; credentials, query strings, fragments and encoded context paths are rejected. Prefer HTTPS. The override applies consistently to generated open-ticket/attachment links and row-click copies, including cached tickets; it is session-only and not serialized in ticket caches. Original descriptions and unrelated external links are not rewritten.
 
-No token, OAuth bearer or attachment request is ever sent to this browser base. Board/image/field HTTP remains pinned to the independently validated CLI/token site, with fixed approved endpoints, no redirects and existing bounds. Without an override, server `/jira/rest/...` metadata preserves `/jira` in browser links. OAuth gateway URLs are not guessed into browser links; use the pinned profile site or supply the browser base.
+No token, OAuth bearer or attachment request is ever sent to this browser base. Board/image/field/status HTTP remains pinned to the independently validated CLI/token site, with fixed approved endpoints, no redirects and existing bounds. Without an override, server `/jira/rest/...` metadata preserves `/jira` in browser links. OAuth gateway URLs are not guessed into browser links; use the pinned profile site or supply the browser base.
 
 A custom browser host/context is **not** support for arbitrary authenticated API hosts, Jira Data Center membership, other board strategies or universal terminal/macOS parity. See the [support matrix](SUPPORT.md).
 
@@ -117,4 +144,5 @@ A custom browser host/context is **not** support for arbitrary authenticated API
 | Account mismatch / HTTP 401 | Check the three authentication settings and permissions. Run `jirust auth` only for the intended account, then restart. OAuth can lack Software scopes. |
 | Unsupported Board metadata | Check the actual Board ID and support matrix; never substitute status guesses for membership. |
 | Empty list after filtering | F6 clears the current view; shown/scope counts distinguish filtering from missing data. |
+| Missing status suggestions | Set the intended project and use acli with the pinned Cloud metadata connection. Startup/F5 fetches all configured project statuses; **!** shows lookup errors while cached suggestions remain usable. |
 | Image/clipboard trouble | Try `--image-protocol halfblocks`, `--no-images` or `--no-copy-on-click`; see [usage](USAGE.md). |

@@ -267,6 +267,28 @@ impl Backend {
         api.check_identity()?;
         Ok(bytes)
     }
+    pub async fn project_statuses(&self, project: &str) -> Result<Vec<String>> {
+        anyhow::ensure!(
+            crate::statuses::valid_project(project),
+            "Invalid project key for status metadata"
+        );
+        if self.kind == Kind::Demo {
+            return Ok([
+                "To Do",
+                "In Progress",
+                "Code Review",
+                "Ready for Staging",
+                "Done",
+                "Discarded",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect());
+        }
+        let api = self.image_api.read().unwrap().clone()
+            .context("Project statuses require an authenticated acli Cloud profile; cached suggestions remain available")?;
+        api.project_statuses(project).await
+    }
     async fn estimate_fields(&self) -> Vec<String> {
         self.estimate_fields
             .get_or_init(|| async {
@@ -369,9 +391,9 @@ impl Backend {
                 let re =
                     regex::Regex::new(&format!(r#"(?i)\b{}\s*[=~]\s*(\"(?:\\.|[^\"])*\")"#, field))
                         .unwrap();
-                if let Some(value) = re
-                    .captures(query)
-                    .and_then(|c| serde_json::from_str::<String>(&c[1]).ok())
+                for value in re
+                    .captures_iter(query)
+                    .filter_map(|c| serde_json::from_str::<String>(&c[1]).ok())
                 {
                     tickets.retain(|t| match field {
                         "text" => format!("{} {} {}", t.key, t.summary(), t.description())
@@ -1158,6 +1180,16 @@ mod tests {
             board_unassigned.key = "DEV-104".into();
             board_unassigned.fields["status"]["name"] = json!("To Do");
             tickets.insert(board_unassigned.key.clone(), board_unassigned);
+            for (key, status) in [
+                ("DEV-106", "In Progress"),
+                ("DEV-107", "Done"),
+                ("DEV-108", "Refinement"),
+            ] {
+                let mut unavailable = tickets["DEV-102"].clone();
+                unavailable.key = key.into();
+                unavailable.fields["status"]["name"] = json!(status);
+                tickets.insert(unavailable.key.clone(), unavailable);
+            }
             let mut backlog_mine = tickets["DEV-101"].clone();
             backlog_mine.key = "DEV-105".into();
             backlog_mine.fields["status"]["name"] = json!("Refinement");
@@ -1187,7 +1219,23 @@ mod tests {
             available.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(),
             ["DEV-102", "DEV-104"]
         );
-        assert_eq!(backlog.len(), 5);
+        assert_eq!(backlog.len(), 8);
+        for board_id in [None, Some(17)] {
+            let settings = crate::config::Settings {
+                board_id,
+                ..s.clone()
+            };
+            for status in ["In Progress", "Done", "Refinement"] {
+                let q = settings
+                    .query(crate::config::AVAILABLE, "", "", status)
+                    .unwrap();
+                assert!(b.search(&q, 500).await.unwrap().is_empty());
+            }
+            let q = settings
+                .query(crate::config::AVAILABLE, "", "", "")
+                .unwrap();
+            assert_eq!(b.search(&q, 500).await.unwrap().len(), 2);
+        }
     }
     #[cfg(unix)]
     #[tokio::test]

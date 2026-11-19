@@ -1,4 +1,4 @@
-//! Opt-in Jira Software API bridge. Existing acli authentication is reused;
+//! Approved Jira Software, image and read-only metadata bridges. Existing acli authentication is reused;
 //! OAuth login/refresh stays in acli. Never serialize or debug credentials.
 use crate::{
     data::{self, Ticket},
@@ -179,8 +179,8 @@ async fn profile_credential(
     );
     decode_credential(&stdout, p.is_oauth())
 }
-/// Approved read-only attachment-content bridge; never follows content URLs,
-/// redirects, or external image links, and never sends credentials to a CDN.
+/// Approved read-only attachment-content and field/project-status metadata bridge.
+/// Never follows redirects or external media links, or sends credentials to a CDN.
 pub struct ImageApi {
     profile: Profile,
     credentials: Option<std::sync::Arc<crate::environment::Credentials>>,
@@ -209,7 +209,7 @@ impl ImageApi {
     pub fn check_identity(&self) -> Result<()> {
         ensure!(
             profile()? == self.profile,
-            "Jira account/site/authentication changed; restart jirust before downloading images"
+            "Jira account/site/authentication changed; restart jirust"
         );
         Ok(())
     }
@@ -224,13 +224,34 @@ impl ImageApi {
         }
     }
     pub async fn estimate_fields(&self) -> Result<Vec<String>> {
+        let url = Url::parse(&format!("{}/rest/api/3/field", self.origin()))
+            .map_err(|_| anyhow::anyhow!("Invalid field metadata URL"))?;
+        crate::estimates::fields(&self.metadata(url).await?)
+    }
+    fn project_statuses_url(&self, project: &str) -> Result<Url> {
+        ensure!(
+            crate::statuses::valid_project(project),
+            "Invalid project key for status metadata"
+        );
+        Url::parse(&format!(
+            "{}/rest/api/3/project/{project}/statuses",
+            self.origin()
+        ))
+        .map_err(|_| anyhow::anyhow!("Invalid project status metadata URL"))
+    }
+    pub async fn project_statuses(&self, project: &str) -> Result<Vec<String>> {
+        let url = self.project_statuses_url(project)?;
+        crate::statuses::project_names(&self.metadata(url).await?)
+    }
+    async fn metadata(&self, url: Url) -> Result<Value> {
         let _permit = self.slots.acquire().await?;
         self.check_identity()?;
         let token = profile_credential(&self.profile, self.credentials.as_ref()).await?;
         let request = self
             .client
-            .get(format!("{}/rest/api/3/field", self.origin()))
-            .header("Accept", "application/json");
+            .get(url)
+            .header("Accept", "application/json")
+            .header("Cache-Control", "no-cache");
         let request = if self.credentials.is_none() && self.profile.is_oauth() {
             request.bearer_auth(token)
         } else {
@@ -239,34 +260,32 @@ impl ImageApi {
         let mut response = request
             .send()
             .await
-            .map_err(|_| anyhow::anyhow!("Field metadata request failed (details redacted)"))?;
+            .map_err(|_| anyhow::anyhow!("Jira metadata request failed (details redacted)"))?;
         ensure!(
             response.status().as_u16() == 200,
-            "Field metadata HTTP {} (details redacted)",
+            "Jira metadata HTTP {} (details redacted)",
             response.status().as_u16()
         );
         ensure!(
             response
                 .content_length()
                 .is_none_or(|n| n <= 2 * 1024 * 1024),
-            "Field metadata exceeds limit"
+            "Jira metadata exceeds limit"
         );
         let mut bytes = Vec::new();
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|_| anyhow::anyhow!("Field metadata response interrupted"))?
+            .map_err(|_| anyhow::anyhow!("Jira metadata response interrupted"))?
         {
             ensure!(
                 bytes.len() + chunk.len() <= 2 * 1024 * 1024,
-                "Field metadata exceeds limit"
+                "Jira metadata exceeds limit"
             );
             bytes.extend_from_slice(&chunk);
         }
         self.check_identity()?;
-        let metadata: Value = serde_json::from_slice(&bytes)
-            .map_err(|_| anyhow::anyhow!("Invalid field metadata JSON"))?;
-        crate::estimates::fields(&metadata)
+        serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("Invalid Jira metadata JSON"))
     }
     fn url(&self, id: &str) -> Result<Url> {
         ensure!(crate::images::valid_id(id), "Invalid image attachment ID");
@@ -538,14 +557,7 @@ impl BoardApi {
         self.workspace_progress(scope, estimate_fields, &|_| {})
             .await
     }
-    pub async fn workspace_progress(
-        &self,
-        scope: &str,
-        estimate_fields: &[String],
-        report: &(impl Fn(crate::refresh::Stage) + Send + Sync),
-    ) -> Result<Workspace> {
-        let (base, _) = crate::config::split_order(scope);
-        let jql = format!("({base}) ORDER BY Rank ASC");
+    async fn verified_membership(&self, base: &str) -> Result<BoardMembership> {
         // The public /board/issue resource is the whole saved-filter scope,
         // NOT membership in a team-managed page's Board section. Read the
         // actual manual issue-list and configured completed-item cutoff from
@@ -569,13 +581,39 @@ impl BoardApi {
             model["id"].as_u64() == Some(self.id),
             "Board metadata identity mismatch"
         );
-        let board_query = membership_query(&model, &plan, base)?;
+        let membership = membership_query(&model, &plan, base)?;
+        let board_endpoint = format!("board/{}/issue", self.id);
+        // Jira can retain deleted/inaccessible IDs in the manual list after
+        // omitting their records. Ignore them ONLY if the board resource proves
+        // they cannot be returned in this scope. Never infer their done marker.
+        for ids in membership.missing.chunks(100) {
+            let page = self
+                .request(
+                    Method::GET,
+                    &board_endpoint,
+                    &missing_membership_parameters(base, ids),
+                    None,
+                )
+                .await?;
+            confirm_unavailable_membership(&page)?;
+        }
+        Ok(membership)
+    }
+    pub async fn workspace_progress(
+        &self,
+        scope: &str,
+        estimate_fields: &[String],
+        report: &(impl Fn(crate::refresh::Stage) + Send + Sync),
+    ) -> Result<Workspace> {
+        let (base, _) = crate::config::split_order(scope);
+        let jql = format!("({base}) ORDER BY Rank ASC");
+        let membership = self.verified_membership(base).await?;
         let board_endpoint = format!("board/{}/issue", self.id);
         let backlog_endpoint = format!("board/{}/backlog", self.id);
         report(crate::refresh::Stage::Tickets);
         let (board, backlog) = tokio::try_join!(
             async {
-                match board_query {
+                match membership.query {
                     Some(q) => self.issues(&board_endpoint, &q, estimate_fields).await,
                     None => Ok(Vec::new()),
                 }
@@ -585,7 +623,29 @@ impl BoardApi {
         merge_membership(board, backlog)
     }
     pub async fn move_ticket(&self, key: &str, to_board: bool) -> Result<()> {
-        let (endpoint, payload) = move_request(self.id, key, to_board)?;
+        data::require_key(key)?;
+        // Read the actual Board bottom, not a filtered/local sort or the whole
+        // saved-filter scope. Rank and membership change in the SAME single POST.
+        let after = if to_board {
+            let membership = self.verified_membership(&format!("key != {key}")).await?;
+            match board_bottom_parameters(&membership) {
+                Some(query) => {
+                    let page = self
+                        .request(
+                            Method::GET,
+                            &format!("board/{}/issue", self.id),
+                            &query,
+                            None,
+                        )
+                        .await?;
+                    board_bottom_key(&page, key)?
+                }
+                None => None, // Empty Board: no rank anchor is needed.
+            }
+        } else {
+            None
+        };
+        let (endpoint, payload) = move_request(self.id, key, to_board, after.as_deref())?;
         self.request(Method::POST, &endpoint, &[], Some(payload))
             .await?;
         Ok(())
@@ -595,7 +655,30 @@ impl BoardApi {
 /// cutoff. Evaluate `updated` in JQL on the SERVER, not against a local clock.
 /// This read-only web metadata is version-sensitive: fail closed on unknown
 /// shapes/strategies rather than substitute guessed statuses or all project work.
-fn membership_query(model: &Value, plan: &Value, base: &str) -> Result<Option<String>> {
+struct BoardMembership {
+    query: Option<String>,
+    missing: Vec<u64>,
+}
+fn missing_membership_parameters(base: &str, ids: &[u64]) -> Vec<(&'static str, String)> {
+    let ids = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    vec![
+        ("jql", format!("({base}) AND issue IN ({ids})")),
+        // Strict JQL validation rejects deleted IDs with HTTP 400. Disabling
+        // validation does not broaden this numeric-ID intersection or permissions.
+        ("validateQuery", "false".into()),
+        ("fields", "status".into()),
+        ("startAt", "0".into()),
+        ("maxResults", "1".into()),
+    ]
+}
+fn confirm_unavailable_membership(page: &Value) -> Result<()> {
+    ensure!(
+        page["issues"].as_array().is_some_and(Vec::is_empty) && page["total"].as_u64() == Some(0),
+        "Incomplete Board membership records; cannot verify missing tickets are unavailable"
+    );
+    Ok(())
+}
+fn membership_query(model: &Value, plan: &Value, base: &str) -> Result<BoardMembership> {
     ensure!(
         model["isSimpleBoard"].as_bool() == Some(true)
             && model["backlogStrategy"].as_str() == Some("ISSUE_LIST"),
@@ -646,10 +729,8 @@ fn membership_query(model: &Value, plan: &Value, base: &str) -> Result<Option<St
             active.push(n.to_string());
         }
     }
-    ensure!(
-        seen.len() == ids.len(),
-        "Incomplete Board membership records"
-    );
+    let mut missing: Vec<_> = ids.difference(&seen).copied().collect();
+    missing.sort_unstable();
     let mut clauses = Vec::new();
     if !active.is_empty() {
         clauses.push(format!("issue IN ({})", active.join(",")));
@@ -671,13 +752,9 @@ fn membership_query(model: &Value, plan: &Value, base: &str) -> Result<Option<St
             done.join(",")
         ));
     }
-    if clauses.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(format!(
-        "({base}) AND ({}) ORDER BY Rank ASC",
-        clauses.join(" OR ")
-    )))
+    let query = (!clauses.is_empty())
+        .then(|| format!("({base}) AND ({}) ORDER BY Rank ASC", clauses.join(" OR ")));
+    Ok(BoardMembership { query, missing })
 }
 fn decode_credential(bytes: &[u8], oauth: bool) -> Result<String> {
     ensure!(bytes.len() < 1024 * 1024, "Credential envelope too large");
@@ -713,7 +790,42 @@ fn decode_credential(bytes: &[u8], oauth: bool) -> Result<String> {
     );
     Ok(token)
 }
-fn move_request(id: u64, key: &str, to_board: bool) -> Result<(String, Value)> {
+fn board_bottom_parameters(membership: &BoardMembership) -> Option<Vec<(&'static str, String)>> {
+    let (base, _) = crate::config::split_order(membership.query.as_deref()?);
+    Some(vec![
+        ("jql", format!("{base} ORDER BY Rank DESC")),
+        ("fields", "key".into()),
+        ("startAt", "0".into()),
+        ("maxResults", "1".into()),
+    ])
+}
+fn board_bottom_key(page: &Value, moving: &str) -> Result<Option<String>> {
+    let issues = page["issues"]
+        .as_array()
+        .context("Missing Board bottom records; move cancelled")?;
+    let total = page["total"]
+        .as_u64()
+        .context("Missing Board bottom count; move cancelled")?;
+    if issues.is_empty() && total == 0 {
+        return Ok(None);
+    }
+    ensure!(
+        issues.len() == 1 && total > 0,
+        "Incomplete Board bottom response; move cancelled"
+    );
+    let key = issues[0]["key"]
+        .as_str()
+        .context("Missing Board bottom key; move cancelled")?;
+    data::require_key(key)?;
+    ensure!(key != moving, "Invalid Board rank anchor; move cancelled");
+    Ok(Some(key.to_owned()))
+}
+fn move_request(
+    id: u64,
+    key: &str,
+    to_board: bool,
+    after: Option<&str>,
+) -> Result<(String, Value)> {
     ensure!(id > 0, "Invalid board ID");
     data::require_key(key)?;
     let endpoint = if to_board {
@@ -721,7 +833,13 @@ fn move_request(id: u64, key: &str, to_board: bool) -> Result<(String, Value)> {
     } else {
         format!("backlog/{id}/issue")
     };
-    Ok((endpoint, json!({"issues":[key]})))
+    let mut payload = json!({"issues":[key]});
+    if let Some(after) = after {
+        data::require_key(after)?;
+        ensure!(to_board && after != key, "Invalid Board rank anchor");
+        payload["rankAfterIssue"] = json!(after);
+    }
+    Ok((endpoint, payload))
 }
 fn merge_membership(board: Vec<Ticket>, backlog: Vec<Ticket>) -> Result<Workspace> {
     let backlog_keys: std::collections::HashSet<_> =
@@ -814,9 +932,9 @@ mod tests {
     fn board_membership_uses_actual_issue_list_and_configured_cutoff_not_status_names() {
         let model = json!({"isSimpleBoard":true,"backlogStrategy":"ISSUE_LIST","boardIssueList":{"key":"synthetic-list"},"oldDoneIssuesCutoff":"-7d"});
         let plan = json!({"isTruncated":false,"isIssueLimitExceeded":false,"workViewIssueListKey":"synthetic-list","boardIssueIds":["84",9],"issues":[{"id":"61","done":false},{"id":"84","done":false},{"id":"9","done":true}]});
-        let q = membership_query(&model, &plan, "project = DEV")
-            .unwrap()
-            .unwrap();
+        let membership = membership_query(&model, &plan, "project = DEV").unwrap();
+        assert!(membership.missing.is_empty());
+        let q = membership.query.unwrap();
         assert_eq!(
             q,
             "(project = DEV) AND (issue IN (84) OR (issue IN (9) AND updated >= -7d)) ORDER BY Rank ASC"
@@ -832,9 +950,69 @@ mod tests {
         let mut bad = plan.clone();
         bad["workViewIssueListKey"] = json!("another-board");
         assert!(membership_query(&model, &bad, "project = DEV").is_err());
-        let mut bad = plan.clone();
-        bad["boardIssueIds"] = json!([84, 9, 12]);
-        assert!(membership_query(&model, &bad, "project = DEV").is_err());
+        let mut missing = plan.clone();
+        missing["boardIssueIds"] = json!([84, 9, 12]);
+        let membership = membership_query(&model, &missing, "project = DEV").unwrap();
+        assert_eq!(membership.missing, [12]);
+        assert_eq!(membership.query.as_deref(), Some(q.as_str()));
+        // Missing records do not relax validation of records that ARE present.
+        for invalid in [json!(null), json!("false")] {
+            missing["issues"][1]["done"] = invalid;
+            assert!(membership_query(&model, &missing, "project = DEV").is_err());
+        }
+    }
+    #[test]
+    fn missing_membership_probe_is_scoped_and_handles_deleted_ids_without_strict_jql_validation() {
+        let parameters = missing_membership_parameters("project = DEV OR labels = test", &[12, 34]);
+        assert_eq!(
+            parameters,
+            vec![
+                (
+                    "jql",
+                    "(project = DEV OR labels = test) AND issue IN (12,34)".into()
+                ),
+                ("validateQuery", "false".into()),
+                ("fields", "status".into()),
+                ("startAt", "0".into()),
+                ("maxResults", "1".into()),
+            ]
+        );
+        assert!(confirm_unavailable_membership(&json!({"issues":[],"total":0})).is_ok());
+        for page in [
+            json!({"issues":[{"id":"12"}],"total":1}),
+            json!({"issues":[{"id":"12"}],"total":0}),
+            json!({"issues":[],"total":1}),
+            json!({"issues":[],"isLast":false}),
+            json!({"issues":[],"total":"0"}),
+            json!({"total":0}),
+            json!({"issues":null,"total":0}),
+            json!({}),
+        ] {
+            assert!(confirm_unavailable_membership(&page).is_err());
+        }
+    }
+    #[test]
+    fn all_missing_records_still_require_verification_and_never_query_the_whole_board() {
+        let model = json!({"isSimpleBoard":true,"backlogStrategy":"ISSUE_LIST","boardIssueList":{"key":"synthetic-list"}});
+        let mut plan = json!({"isTruncated":false,"isIssueLimitExceeded":false,"workViewIssueListKey":"synthetic-list","boardIssueIds":[34,"12"],"issues":[]});
+        let membership = membership_query(&model, &plan, "project = DEV").unwrap();
+        assert_eq!(membership.missing, [12, 34]);
+        assert!(membership.query.is_none());
+        for invalid in [
+            json!(0),
+            json!("12 OR project = DEV"),
+            json!(-1),
+            json!(null),
+        ] {
+            plan["boardIssueIds"] = json!([invalid]);
+            assert!(membership_query(&model, &plan, "project = DEV").is_err());
+        }
+    }
+    #[test]
+    fn duplicate_records_remain_invalid_even_with_missing_membership() {
+        let model = json!({"isSimpleBoard":true,"backlogStrategy":"ISSUE_LIST","boardIssueList":{"key":"synthetic-list"}});
+        let plan = json!({"isTruncated":false,"isIssueLimitExceeded":false,"workViewIssueListKey":"synthetic-list","boardIssueIds":[12,34],"issues":[{"id":12,"done":false},{"id":"12","done":false}]});
+        assert!(membership_query(&model, &plan, "project = DEV").is_err());
     }
     #[test]
     fn actual_epic_membership_keeps_rank_and_is_not_inferred_from_type() {
@@ -861,6 +1039,7 @@ mod tests {
         assert!(
             membership_query(&model, &plan, "project = DEV")
                 .unwrap()
+                .query
                 .is_none()
         );
     }
@@ -883,15 +1062,75 @@ mod tests {
     #[test]
     fn moves_have_one_valid_key_and_correct_direction() {
         assert_eq!(
-            move_request(17, "DEV-9", true).unwrap(),
+            move_request(17, "DEV-9", true, None).unwrap(),
             ("board/17/issue".into(), json!({"issues":["DEV-9"]}))
         );
         assert_eq!(
-            move_request(17, "DEV-9", false).unwrap().0,
+            move_request(17, "DEV-9", false, None).unwrap().0,
             "backlog/17/issue"
         );
-        assert!(move_request(17, "DEV-1,DEV-2", true).is_err());
-        assert!(move_request(0, "DEV-1", false).is_err());
+        assert!(move_request(17, "DEV-1,DEV-2", true, None).is_err());
+        assert!(move_request(0, "DEV-1", false, None).is_err());
+    }
+    #[test]
+    fn board_moves_rank_after_the_actual_bottom_in_the_same_single_ticket_request() {
+        let membership = BoardMembership {
+            query: Some("(key != DEV-9) AND (issue IN (84,61)) ORDER BY Rank ASC".into()),
+            missing: Vec::new(),
+        };
+        let parameters = board_bottom_parameters(&membership).unwrap();
+        assert_eq!(
+            parameters,
+            vec![
+                (
+                    "jql",
+                    "(key != DEV-9) AND (issue IN (84,61)) ORDER BY Rank DESC".into()
+                ),
+                ("fields", "key".into()),
+                ("startAt", "0".into()),
+                ("maxResults", "1".into()),
+            ]
+        );
+        let page = json!({"issues":[{"key":"DEV-61"}],"total":2});
+        let after = board_bottom_key(&page, "DEV-9").unwrap();
+        assert_eq!(
+            move_request(17, "DEV-9", true, after.as_deref()).unwrap(),
+            (
+                "board/17/issue".into(),
+                json!({"issues":["DEV-9"],"rankAfterIssue":"DEV-61"})
+            )
+        );
+        assert!(move_request(17, "DEV-9", true, Some("DEV-9")).is_err());
+        assert!(move_request(17, "DEV-9", true, Some("DEV-1,DEV-2")).is_err());
+        assert!(move_request(17, "DEV-9", false, Some("DEV-61")).is_err());
+        assert_eq!(
+            move_request(17, "DEV-9", false, None).unwrap().1,
+            json!({"issues":["DEV-9"]})
+        );
+    }
+    #[test]
+    fn empty_board_needs_no_anchor_and_invalid_bottom_responses_fail_closed() {
+        let empty = BoardMembership {
+            query: None,
+            missing: Vec::new(),
+        };
+        assert!(board_bottom_parameters(&empty).is_none());
+        assert_eq!(
+            board_bottom_key(&json!({"issues":[],"total":0}), "DEV-9").unwrap(),
+            None
+        );
+        for page in [
+            json!({"issues":[],"total":1}),
+            json!({"issues":[{"key":"DEV-61"}],"total":0}),
+            json!({"issues":[{"key":"DEV-61"}]}),
+            json!({"issues":[{"key":"DEV-61"},{"key":"DEV-84"}],"total":2}),
+            json!({"issues":[{}],"total":1}),
+            json!({"issues":[{"key":"DEV-1,DEV-2"}],"total":1}),
+            json!({"issues":[{"key":"DEV-9"}],"total":1}),
+            json!({"total":0}),
+        ] {
+            assert!(board_bottom_key(&page, "DEV-9").is_err());
+        }
     }
     #[test]
     fn local_token_uses_site_origin_even_when_cli_profile_is_global_oauth() {
@@ -946,7 +1185,27 @@ mod tests {
         assert_eq!(url.path(), "/rest/api/3/attachment/content/23");
         assert_eq!(url.query(), Some("redirect=false"));
         assert!(api.url("https://example.invalid/").is_err());
+        let status_url = api.project_statuses_url("DEV").unwrap();
+        assert_eq!(status_url.host_str(), Some("synthetic.atlassian.net"));
+        assert_eq!(status_url.path(), "/rest/api/3/project/DEV/statuses");
+        assert!(status_url.query().is_none());
+        for invalid in [
+            "",
+            "../field",
+            "DEV?token=secret",
+            "DEV/other",
+            "https://other.invalid",
+            "DEV\n",
+        ] {
+            assert!(api.project_statuses_url(invalid).is_err());
+        }
         api.credentials = None;
+        let status_url = api.project_statuses_url("DEV").unwrap();
+        assert_eq!(status_url.host_str(), Some("api.atlassian.com"));
+        assert_eq!(
+            status_url.path(),
+            "/ex/jira/synthetic-cloud/rest/api/3/project/DEV/statuses"
+        );
         let url = api.url("23").unwrap();
         assert_eq!(url.host_str(), Some("api.atlassian.com"));
         assert!(

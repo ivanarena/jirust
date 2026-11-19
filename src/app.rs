@@ -25,6 +25,7 @@ pub enum Job {
     },
     Sync {
         generation: u64,
+        project: String,
         base: String,
         mine: String,
         changed: Option<String>,
@@ -37,7 +38,10 @@ pub enum Job {
         background: bool,
         cancel: Option<tokio::sync::watch::Receiver<bool>>,
     },
-    Comments(String),
+    Comments {
+        key: String,
+        revision: u64,
+    },
     Write(Action),
     Move {
         action: Action,
@@ -66,6 +70,11 @@ pub enum Message {
         generation: u64,
         result: Result<Vec<crate::backend::Project>>,
     },
+    ProjectStatuses {
+        generation: u64,
+        project: String,
+        result: Result<Vec<String>>,
+    },
     SyncProgress {
         generation: u64,
         stage: crate::refresh::Stage,
@@ -84,6 +93,7 @@ pub enum Message {
     },
     Comments {
         key: String,
+        revision: u64,
         result: Result<Vec<serde_json::Value>>,
     },
     Written {
@@ -186,7 +196,18 @@ pub struct ViewFilters {
     status: Selection,
     text: String,
 }
+/// Only the changed ticket is saved: unrelated reads and navigation survive rollback.
+struct PendingWrite {
+    action: Action,
+    row: Option<Ticket>,
+    mine: bool,
+    board: Option<bool>,
+    item: Option<Ticket>,
+    detail: Option<(Ticket, u64)>,
+}
 pub struct App {
+    pending_write: Option<PendingWrite>,
+    status_history: crate::statuses::History,
     pub status_colors: crate::appearance::StatusColors,
     pub epic_colors: crate::appearance::EpicColors,
     view_filters: [ViewFilters; 4],
@@ -302,8 +323,15 @@ impl App {
             .map(|(c, _)| c)
             .filter(crate::appearance::EpicColors::valid)
             .unwrap_or_default();
+        let status_history = cache
+            .get::<crate::statuses::History>(crate::statuses::CACHE_KEY)
+            .map(|(history, _)| history)
+            .filter(crate::statuses::History::valid)
+            .unwrap_or_default();
         let cache_writer = crate::cache_writer::CacheWriter::new(cache.clone());
         Self {
+            pending_write: None,
+            status_history,
             status_colors,
             epic_colors,
             view_filters: std::array::from_fn(|_| ViewFilters::default()),
@@ -684,7 +712,7 @@ impl App {
         self.sync_workspace_mode(false)
     }
     fn sync_workspace_mode(&mut self, full: bool) -> Vec<Job> {
-        if self.syncing {
+        if self.syncing || self.writing {
             return vec![];
         }
         let Ok(mine) = self.settings.query(config::MINE, "", "", "") else {
@@ -708,12 +736,14 @@ impl App {
         self.next_sync = Some(Instant::now() + self.refresh_interval);
         vec![Job::Sync {
             generation: self.generation,
+            project: self.settings.project.clone(),
             base: self.last_query.clone(),
             mine,
             changed,
         }]
     }
     fn set_items(&mut self, items: Vec<Ticket>) {
+        self.remember_ticket_statuses(&items);
         let key = self.selected_ticket().map(|t| t.key.clone());
         self.items = items;
         self.epic_order = None;
@@ -854,6 +884,7 @@ impl App {
                 }
             }
             self.backend.decorate_ticket(&mut t);
+            self.remember_ticket_statuses([&t]);
             if self.status_colors.register([&t]) {
                 self.cache_writer.put(
                     crate::appearance::STATUS_COLORS_CACHE.into(),
@@ -876,7 +907,9 @@ impl App {
             let old = self
                 .details
                 .iter()
-                .filter(|(k, _)| k.as_str() != keep && *k != &self.detail_key)
+                .filter(|(k, _)| {
+                    k.as_str() != keep && *k != &self.detail_key && !self.write_targets(k)
+                })
                 .min_by_key(|(_, (_, time))| *time)
                 .map(|(k, _)| k.clone());
             if let Some(old) = old {
@@ -887,6 +920,9 @@ impl App {
         }
     }
     fn detail_job(&mut self, key: String, lookup: Option<u64>, force: bool) -> Vec<Job> {
+        if self.write_targets(&key) {
+            return vec![];
+        }
         let force = force
             || self
                 .workspace
@@ -1151,6 +1187,33 @@ impl App {
                 });
                 self.dirty = true;
             }
+            Message::ProjectStatuses {
+                generation,
+                project,
+                result,
+            } => {
+                if generation != self.generation
+                    || !project.eq_ignore_ascii_case(&self.settings.project)
+                {
+                    return vec![];
+                }
+                match result {
+                    Ok(names) => {
+                        let mut changed = false;
+                        for name in names {
+                            changed |= self.status_history.remember(&project, &name);
+                        }
+                        if changed {
+                            self.save_status_history();
+                            self.refresh_filter_lists();
+                        }
+                    }
+                    Err(e) => self.notice(
+                        format!("Project status lookup failed; cached suggestions retained: {e}"),
+                        true,
+                    ),
+                }
+            }
             Message::SyncProgress { generation, stage } => {
                 if self.syncing && generation == self.generation {
                     self.refresh_stage = stage;
@@ -1158,7 +1221,7 @@ impl App {
                 }
             }
             Message::Synced { generation, result } => {
-                if generation != self.generation {
+                if generation != self.generation || self.writing {
                     return vec![];
                 }
                 self.syncing = false;
@@ -1179,6 +1242,7 @@ impl App {
                         if workspace.index.is_empty() || count != workspace.items.len() {
                             workspace.reindex();
                         }
+                        self.remember_ticket_statuses(&workspace.items);
                         if self.status_colors.register(&workspace.items) {
                             self.cache_writer.put(
                                 crate::appearance::STATUS_COLORS_CACHE.into(),
@@ -1277,7 +1341,9 @@ impl App {
                 result,
             } => {
                 self.background.remove(&(key.clone(), revision));
-                if revision != *self.detail_revisions.get(&key).unwrap_or(&0) {
+                if self.write_targets(&key)
+                    || revision != *self.detail_revisions.get(&key).unwrap_or(&0)
+                {
                     return vec![];
                 }
                 self.pending.remove(&key);
@@ -1299,6 +1365,7 @@ impl App {
                         }
                         self.filter_hits.clear();
                         let selected_key = self.selected_ticket().map(|t| t.key.clone());
+                        self.remember_ticket_statuses([&ticket]);
                         if self.status_colors.register([&ticket]) {
                             self.cache_writer.put(
                                 crate::appearance::STATUS_COLORS_CACHE.into(),
@@ -1317,10 +1384,11 @@ impl App {
                         self.dirty_details.remove(&key);
                         self.full_ready.insert(key.clone());
                         self.save_dirty();
+                        let rollback = self.pending_write.as_ref().and_then(|p| p.row.as_ref());
                         let accepted = self
                             .workspace
                             .as_mut()
-                            .is_none_or(|workspace| workspace.update(&ticket));
+                            .is_none_or(|workspace| workspace.update_preserving(&ticket, rollback));
                         if !accepted {
                             self.notice("Detail exceeds workspace budget; previous indexed snapshot retained", true);
                         }
@@ -1369,8 +1437,17 @@ impl App {
                     }
                 }
             }
-            Message::Comments { key, result } => {
-                self.pending.remove(&format!("comments:{key}"));
+            Message::Comments {
+                key,
+                revision,
+                result,
+            } => {
+                self.pending.remove(&format!("comments:{revision}:{key}"));
+                if self.write_targets(&key)
+                    || revision != *self.detail_revisions.get(&key).unwrap_or(&0)
+                {
+                    return vec![];
+                }
                 match result {
                     Ok(comments) => {
                         if let Some((ticket, time)) = self.details.get_mut(&key) {
@@ -1386,8 +1463,22 @@ impl App {
                 }
             }
             Message::Written { action, result } => {
+                if !self.writing
+                    || self
+                        .pending_write
+                        .as_ref()
+                        .is_some_and(|p| p.action != action)
+                {
+                    return vec![];
+                }
                 self.writing = false;
-                self.details.remove(&action.key);
+                let previous = self.pending_write.take();
+                let optimistic = previous.is_some();
+                if result.is_err()
+                    && let Some(previous) = previous
+                {
+                    self.rollback_write(previous);
+                }
                 self.doc_dirty = true;
                 self.cache_writer.remove(format!("detail:{}", action.key));
                 self.cache_writer.remove(full_cache_key(&action.key));
@@ -1402,6 +1493,15 @@ impl App {
                     .remove(format!("list:{}:{}", self.limit, self.last_query));
                 match result {
                     Ok(()) => {
+                        if !optimistic {
+                            self.apply_write_locally(&action);
+                        }
+                        if action.kind == "status"
+                            && let Some((project, _)) = action.key.rsplit_once('-')
+                            && self.status_history.remember(project, &action.value)
+                        {
+                            self.save_status_history();
+                        }
                         // Every confirmed successful write uses the same full,
                         // unfiltered shared refresh as F5, not a view/detail-only
                         // or incremental refresh. This also fences stale reads.
@@ -1433,7 +1533,12 @@ impl App {
                             text: self.error.clone(),
                             scroll: 0,
                         });
-                        return self.detail_job(action.key, None, true);
+                        // A failed command can still have reached Jira. Reconcile
+                        // membership as well as details; never retry the mutation.
+                        let mut jobs = self.refresh_all();
+                        self.notice("Update failed or outcome unknown · local change rolled back; reloading", false);
+                        jobs.extend(self.detail_job(action.key, None, true));
+                        return jobs;
                     }
                 }
             }
@@ -1979,15 +2084,23 @@ impl App {
                     }
                     KeyCode::Char('r') => return self.refresh_all(),
                     KeyCode::Char('l') => self.links(),
-                    KeyCode::Char('O') => {
+                    KeyCode::Char('o')
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
                         if let Some(url) = self.active_ticket().and_then(Ticket::web_url) {
                             return vec![Job::Browser(url)];
                         }
                     }
                     KeyCode::Char('C') => {
                         let key = self.detail_key.clone();
-                        if !key.is_empty() && self.pending.insert(format!("comments:{key}")) {
-                            return vec![Job::Comments(key)];
+                        let revision = *self.detail_revisions.get(&key).unwrap_or(&0);
+                        if !key.is_empty()
+                            && !self.write_targets(&key)
+                            && self.pending.insert(format!("comments:{revision}:{key}"))
+                        {
+                            return vec![Job::Comments { key, revision }];
                         }
                     }
                     KeyCode::Char('a' | 's' | 't' | 'e' | 'c' | 'L' | 'm')
@@ -2024,7 +2137,7 @@ impl App {
                     }
                     KeyCode::Char('?') => {
                         self.dialog = Some(Dialog::Info {
-                            title: "Simple Jira workspace".into(),
+                            title: "Help · symbols and shortcuts".into(),
                             text: HELP.into(),
                             scroll: 0,
                         })
@@ -2356,6 +2469,38 @@ impl App {
             .map(|(items, _)| items)
             .unwrap_or_default()
     }
+    fn save_status_history(&self) {
+        self.cache_writer.metadata(
+            crate::statuses::CACHE_KEY.into(),
+            self.status_history.clone(),
+        );
+    }
+    fn remember_ticket_statuses<'a>(&mut self, tickets: impl IntoIterator<Item = &'a Ticket>) {
+        // Reprojecting a numeric lookup/tab can feed optimistic rows back here.
+        // Only a receipt (or independent server metadata/another ticket) may
+        // turn a pending transition into a persistent workflow suggestion.
+        let pending_status = self
+            .pending_write
+            .as_ref()
+            .filter(|p| p.action.kind == "status")
+            .map(|p| p.action.key.as_str());
+        if self.status_history.register(
+            tickets
+                .into_iter()
+                .filter(|t| Some(t.key.as_str()) != pending_status),
+        ) {
+            self.save_status_history();
+        }
+    }
+    fn remember_status_filters(&mut self) {
+        let mut changed = false;
+        for name in self.status_filter.values() {
+            changed |= self.status_history.remember(&self.settings.project, name);
+        }
+        if changed {
+            self.save_status_history();
+        }
+    }
     pub fn known_statuses(&self) -> Vec<String> {
         let backlog = self.cached_backlog();
         let mut a: Vec<_> = self
@@ -2365,8 +2510,9 @@ impl App {
             .map(Ticket::status)
             .filter(|s| !s.is_empty())
             .collect();
-        a.sort();
-        a.dedup();
+        a.extend(self.status_history.names(&self.settings.project));
+        a.sort_by_key(|name| name.to_lowercase());
+        a.dedup_by(|a, b| a.to_lowercase() == b.to_lowercase());
         a
     }
     fn manual_project_choice() -> Choice {
@@ -2377,6 +2523,10 @@ impl App {
         }
     }
     fn scope_dialog(&mut self) -> Vec<Job> {
+        if self.writing {
+            self.notice("Wait for the in-flight update before changing scope", true);
+            return vec![];
+        }
         if self.settings.project.is_empty() && self.settings.scope_jql.is_empty() {
             self.generation += 1;
             self.dialog = Some(Dialog::Picker {
@@ -2553,6 +2703,7 @@ impl App {
         self.search_due = None;
         self.lookup_generation += 1;
         [self.assignee_filter, self.status_filter] = checked;
+        self.remember_status_filters();
         // Filters intersect the selected preset/membership view, never switch it.
         self.reload()
     }
@@ -2687,6 +2838,13 @@ impl App {
         };
         statuses.sort();
         statuses.dedup();
+        if !filter
+            && let Some(ticket) = self.active_ticket()
+            && let Some((project, _)) = ticket.key.rsplit_once('-')
+            && let Some(order) = self.settings.status_order.get(&project.to_uppercase())
+        {
+            crate::statuses::prefer_next(&mut statuses, &ticket.status(), order);
+        }
         let mut choices = Vec::new();
         if filter {
             choices.push(Choice {
@@ -2870,6 +3028,168 @@ impl App {
                 key,
             })
         }
+    }
+    fn write_targets(&self, key: &str) -> bool {
+        self.pending_write
+            .as_ref()
+            .is_some_and(|p| p.action.key == key)
+    }
+    fn begin_write(&mut self, action: &Action) {
+        self.load_cached_detail(&action.key);
+        let workspace = self.workspace.as_ref();
+        self.pending_write = Some(PendingWrite {
+            action: action.clone(),
+            row: workspace.and_then(|w| w.ticket(&action.key)).cloned(),
+            mine: workspace.is_some_and(|w| w.mine.contains(&action.key)),
+            board: workspace
+                .and_then(|w| w.board.as_ref())
+                .map(|b| b.contains(&action.key)),
+            item: self.items.iter().find(|t| t.key == action.key).cloned(),
+            detail: self.details.get(&action.key).cloned(),
+        });
+        self.writing = true;
+        // Fence requests started before confirmation, not just before the receipt.
+        self.generation += 1;
+        self.syncing = false;
+        self.full_sync = false;
+        self.refresh_pending = false;
+        self.refresh_started = None;
+        self.loading = false;
+        self.cancel_background_reads();
+        *self.detail_revisions.entry(action.key.clone()).or_default() += 1;
+        self.pending.remove(&action.key);
+        self.full_ready.remove(&action.key);
+        self.dirty_details.insert(action.key.clone());
+        self.save_dirty();
+        // Optimistic values remain memory-only, including across cache eviction.
+        self.cache_writer.remove(format!("detail:{}", action.key));
+        self.cache_writer.remove(full_cache_key(&action.key));
+        self.apply_write_locally(action);
+        self.notice(
+            format!("Syncing {} · local change pending", action.key),
+            false,
+        );
+    }
+    fn apply_write_locally(&mut self, action: &Action) {
+        let source = self
+            .details
+            .get(&action.key)
+            .map(|(t, _)| t.clone())
+            .or_else(|| self.items.iter().find(|t| t.key == action.key).cloned());
+        let scoped = self
+            .workspace
+            .as_ref()
+            .is_some_and(|w| w.ticket(&action.key).is_some());
+        let ticket = if scoped && !matches!(action.kind.as_str(), "comment" | "link") {
+            self.workspace
+                .as_mut()
+                .and_then(|w| w.apply_confirmed(action, self.backend.kind == Kind::Jira))
+        } else if let Some(source) = source {
+            // Linked/numeric lookups need not be in the shared scope. Never add them.
+            let mut local = Workspace {
+                items: vec![source],
+                ..Default::default()
+            };
+            let ticket = local.apply_confirmed(action, self.backend.kind == Kind::Jira);
+            if let Some(ticket) = &ticket
+                && let Some(workspace) = self.workspace.as_mut()
+                && let Some(mut row) = workspace.ticket(&action.key).cloned()
+            {
+                // A full detail can be older than the latest list snapshot.
+                // A comment/link must not undo unrelated fields in that snapshot.
+                let field = if action.kind == "comment" {
+                    "comment"
+                } else {
+                    "issuelinks"
+                };
+                row.fields[field] = ticket.fields[field].clone();
+                if !workspace.update(&row) {
+                    return;
+                }
+            }
+            ticket
+        } else {
+            None
+        };
+        let Some(ticket) = ticket else { return };
+        let field = match action.kind.as_str() {
+            "assign" => Some("assignee"),
+            "status" => Some("status"),
+            "summary" => Some("summary"),
+            "description" => Some("description"),
+            "labels" => Some("labels"),
+            "comment" => Some("comment"),
+            "link" => Some("issuelinks"),
+            _ => None,
+        };
+        let selected = self.selected_ticket().map(|t| t.key.clone());
+        for item in &mut self.items {
+            if item.key == action.key
+                && let Some(field) = field
+            {
+                item.fields[field] = ticket.fields[field].clone();
+            }
+        }
+        let (detail, _) = self
+            .details
+            .entry(action.key.clone())
+            .or_insert_with(|| (ticket.clone(), config::now()));
+        if let Some(field) = field {
+            detail.fields[field] = ticket.fields[field].clone();
+        }
+        if action.kind == "status" {
+            detail.transitions.clear();
+        }
+        self.local_write_changed(selected);
+    }
+    fn local_write_changed(&mut self, selected: Option<String>) {
+        self.reset_click();
+        self.filter_hits.clear();
+        self.epic_order = None;
+        self.rebuild_visible();
+        self.restore_sort_selection(selected);
+        self.refresh_filter_lists();
+        self.doc_dirty = true;
+    }
+    fn rollback_write(&mut self, previous: PendingWrite) {
+        let key = &previous.action.key;
+        let selected = self.selected_ticket().map(|t| t.key.clone());
+        if let Some(workspace) = &mut self.workspace {
+            if let Some(row) = previous.row
+                && let Some(current) = workspace.items.iter_mut().find(|t| t.key == *key)
+            {
+                *current = row;
+            }
+            if previous.mine {
+                workspace.mine.insert(key.clone());
+            } else {
+                workspace.mine.remove(key);
+            }
+            if let Some(was_board) = previous.board
+                && let Some(board) = &mut workspace.board
+            {
+                if was_board {
+                    board.insert(key.clone());
+                } else {
+                    board.remove(key);
+                }
+            }
+            workspace.reindex();
+        }
+        // The user may have switched views or opened another lookup meanwhile.
+        if let Some(item) = self.items.iter_mut().find(|t| t.key == *key)
+            && let Some(original) = previous
+                .item
+                .or_else(|| self.workspace.as_ref().and_then(|w| w.ticket(key)).cloned())
+        {
+            *item = original;
+        }
+        if let Some(detail) = previous.detail {
+            self.details.insert(key.clone(), detail);
+        } else {
+            self.details.remove(key);
+        }
+        self.local_write_changed(selected);
     }
     fn confirm(&mut self, action: Action) {
         if data::require_key(&action.key).is_err()
@@ -3128,8 +3448,7 @@ impl App {
                         );
                         return vec![];
                     }
-                    self.writing = true;
-                    self.notice(format!("Updating {}…", action.key), false);
+                    self.begin_write(action);
                     return vec![if matches!(action.kind.as_str(), "board" | "backlog") {
                         Job::Move {
                             action: action.clone(),
@@ -3213,6 +3532,7 @@ impl App {
                         }
                         Purpose::StatusFilter => {
                             self.status_filter = choice.value.into();
+                            self.remember_status_filters();
                             return self.reload();
                         }
                         Purpose::Edit => {
@@ -3288,6 +3608,7 @@ impl App {
                         "filters" => {
                             self.apply_assignee_filter(values[0].trim().into());
                             self.status_filter = values[1].trim().into();
+                            self.remember_status_filters();
                             return self.reload();
                         }
                         "assignee_filter" => {
@@ -3296,6 +3617,7 @@ impl App {
                         }
                         "status_filter" => {
                             self.status_filter = values[0].trim().into();
+                            self.remember_status_filters();
                             return self.reload();
                         }
                         "jql" => {
@@ -3364,7 +3686,7 @@ impl App {
 fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
-pub const HELP: &str = "LAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Double-click an assignee/status/epic label in rows or ticket metadata to filter that field only (other filters remain). Exact IDs/epic keys, current view only. v clears Epic; F6 clears all current filters. Single detail-epic links wait 350 ms for a double-click. Mouse opens other detail links immediately. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each by default. E toggles local Rank/Epic sorting for this view: parent epic alphabetically, no epic last, Rank within groups. Sort is cached, never rebuilt per search keystroke; changing scope resets it.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · s status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · O opens Jira · C loads all comments\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / S or dropdowns open the same popup (T remains an alias). Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels. Every successful update automatically fully refreshes all four views, retaining their filters.\n--read-only blocks changes. ! shows safe error details; raw CLI output is suppressed.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Phase and elapsed time are shown. Details warm only near selection with bounded concurrency; obsolete background reads are cancelled. Cache writes run off the UI thread. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
+pub const HELP: &str = "SYMBOL LEGEND\n● Bug · □ Task · ≡ Story · ✎ Design\nϟ Epic · ⊟ Sub-task · ↗ Improvement\n◆ Feature · ◇ Spike · ◈ Other/unknown type\n✓ Done · ✕ Discarded\nColored labels: parent epics. SP: story points.\nBlank SP means unknown/unset, not zero.\n\nLAYOUT\nTickets | Ticket. Tab changes focus. Click a ticket row to select it and copy its Jira link. Double-click an assignee/status/epic label in rows or ticket metadata to filter that field only (other filters remain). Exact IDs/epic keys, current view only. v clears Epic; F6 clears all current filters. Single detail-epic links wait 350 ms for a double-click. Mouse opens other detail links immediately. Unassigned person fields are blank.\n\nFOUR PREDEFINED VIEWS\nLeft/Right arrows switch views (except while editing text).\nCtrl+1 Mine: assigned to you.\nCtrl+2 Available: unassigned AND status To Do.\nCtrl+3 Board: actual Board membership, including completed rows.\nCtrl+4 Backlog: actual Backlog membership.\nMine and Available cover both sections, Board first, Rank within each by default. E toggles local Rank/Epic sorting for this view: parent epic alphabetically, no epic last, Rank within groups. Sort is cached, never rebuilt per search keystroke; changing scope resets it.\nClick tabs or use Alt+1…4 / F1…F4.\n--board <id> enables the opt-in Jira Software API; no guessed status mapping.\n\nSEARCH\nType digits: project prefix inferred, lookup automatic across the scope.\n/ instantly searches the locally cached view, including descriptions.\nEnter submits immediately; Esc clears search/restores the view.\n\nTICKETS\n↑↓ / j k navigate; Enter focuses details; Esc returns from linked ticket.\na assign · s status · e edit · c comment · L link tickets\nm move ONE ticket between Board and Backlog (y confirms)\nl links/attachments · o opens Jira · C loads all comments\nOptional per-project status_order / JIRA_STATUS_ORDER puts the next available forward status first. Only reorders choices; Jira validates transitions and y still confirms.\n\nFILTERS\nf shows multi-select assignee + status lists from the shared cache.\nStartup/refresh fetches all project statuses with acli; ! shows metadata errors.\nSeen/applied custom statuses are remembered per account/project (unless --no-cache).\nSpace / click toggles checks; ↑↓ moves cursor; Tab / ←→ changes column.\nEnter / Ctrl+S applies both lists; Esc cancels all staged changes.\nStatus first, then Assignee. OR within lists, AND between lists and text.\nEach view remembers only its own filters/search; returning restores them.\nAll/Any clears one list; Ctrl+U clears active; Ctrl+R resets both (Apply commits).\nA / S or dropdowns open the same popup (T remains an alias). Other adds an exact value without replacing checks.\ng / Ctrl+G opens optional advanced project/JQL settings.\nF6 / browsing x clears only this view's filters/search; other views stay unchanged.\n0 shown with N in the view means filters hide those tickets, not lost refresh data.\nTickets show their assigned parent epic as a distinct, per-epic colored label before the title when Jira provides it. Epic tickets themselves have no special coloring; / epic searches their type. SP shows story points (blank when unknown/unset; no child-ticket sum). Status badges are visual only. Done ✓ / Discarded ✕; full names remain in workflow/filter actions.\n\nATTACHMENTS\nPNG/JPEG/GIF/WebP images load inline, read-only, at the ticket pane width. Tall images scroll vertically; l opens a tab-wide preview.\ni jumps to images/retries; l opens a larger preview; I chooses a local file.\nNo external media or redirects; authenticated downloads are bounded and account-pinned.\n--no-inline-images disables automatic loading.\nKitty/other native graphics where supported, otherwise Unicode half-blocks.\n\nSAFETY\nUpdates target one ticket and need y confirmation. n/Esc cancels. Confirmed changes appear locally before remote sync (memory-only until acknowledged). Failures restore the previous values and reload; uncertain writes are never retried. Every successful update automatically fully refreshes all four views, retaining their filters.\n--read-only blocks changes. ! shows safe error details; raw CLI output is suppressed.\nF5 / Ctrl+R / r fully reload the scope and revalidate all scoped details. Cached data stays visible; tab/filters/order/selection are retained. Phase and elapsed time are shown. Details warm only near selection with bounded concurrency; obsolete background reads are cancelled. Cache writes run off the UI thread. In Filters, Ctrl+R still resets pending filters.\nq quits (wait for writes to finish).";
 
 #[cfg(test)]
 mod tests {
@@ -3514,6 +3836,7 @@ mod tests {
             let mut t = data::demo_tickets()[0].clone();
             t.key = key.into();
             t.fields["assignee"] = serde_json::Value::Null;
+            t.fields["status"] = serde_json::json!({"name":"To Do","statusCategory":{"key":"new"}});
             t.fields["parent"] = epic.map(|(key, name)| serde_json::json!({"key":key,"fields":{"summary":name,"issuetype":{"name":"Epic"}}})).unwrap_or_default();
             items.push(t);
         }
@@ -3849,6 +4172,58 @@ mod tests {
         a.event(key('j', KeyModifiers::NONE));
         a.advance();
         assert_ne!(a.detail_key, "DEV-901");
+    }
+    #[test]
+    fn lowercase_o_opens_the_active_ticket_in_either_pane_even_when_read_only() {
+        for read_only in [false, true] {
+            for focus in [Focus::Tickets, Focus::Ticket] {
+                let mut a = app();
+                a.read_only = read_only;
+                let selected = a.selected_ticket().unwrap().key.clone();
+                a.detail_key = a
+                    .details
+                    .keys()
+                    .find(|key| **key != selected)
+                    .unwrap()
+                    .clone();
+                a.focus = focus;
+                let expected = a.active_ticket().unwrap().web_url().unwrap();
+                for (c, modifiers) in [
+                    ('O', KeyModifiers::SHIFT),
+                    ('O', KeyModifiers::NONE),
+                    ('o', KeyModifiers::CONTROL),
+                    ('o', KeyModifiers::ALT),
+                ] {
+                    assert!(a.event(key(c, modifiers)).is_empty());
+                }
+                let jobs = a.event(key('o', KeyModifiers::NONE));
+                assert!(matches!(&jobs[..], [Job::Browser(url)] if url == &expected));
+                assert_eq!(a.copy_generation, 0);
+            }
+        }
+        assert!(HELP.contains("o opens Jira"));
+        assert!(!HELP.contains("O opens Jira"));
+    }
+    #[test]
+    fn lowercase_o_does_not_open_a_browser_while_searching_or_in_a_dialog() {
+        let mut a = app();
+        a.event(key('/', KeyModifiers::NONE));
+        assert!(a.event(key('o', KeyModifiers::NONE)).is_empty());
+        assert_eq!(a.search, "o");
+        let mut a = app();
+        a.event(key('?', KeyModifiers::NONE));
+        assert!(a.dialog.is_some());
+        assert!(a.event(key('o', KeyModifiers::NONE)).is_empty());
+        assert!(a.dialog.is_some());
+    }
+    #[test]
+    fn lowercase_o_never_opens_an_unsafe_or_missing_ticket_link() {
+        let mut a = app();
+        a.focus = Focus::Tickets;
+        a.items[a.visible[a.selected]].self_url = "javascript:alert(1)".into();
+        assert!(a.event(key('o', KeyModifiers::NONE)).is_empty());
+        a.visible.clear();
+        assert!(a.event(key('o', KeyModifiers::NONE)).is_empty());
     }
     #[test]
     fn copy_on_click_opt_out_retains_selection_and_does_not_touch_clipboard() {
@@ -4280,6 +4655,312 @@ mod tests {
         assert!(restarted.status_colors.valid());
     }
     #[test]
+    fn remembered_statuses_survive_refresh_filter_reset_and_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        a.cache = Cache {
+            directory: Some(dir.path().into()),
+        };
+        a.cache_writer = crate::cache_writer::CacheWriter::new(a.cache.clone());
+        a.filters_dialog();
+        toggle_filter(&mut a, 1, "__other");
+        a.event(Event::Paste("Ready for Staging".into()));
+        a.event(key('s', KeyModifiers::CONTROL));
+        assert!(a.status_filter.contains("Ready for Staging"));
+        assert!(!a.writing);
+        a.message(Message::ProjectStatuses {
+            generation: a.generation,
+            project: "DEV".into(),
+            result: Ok(vec!["Discarded".into()]),
+        });
+        let mut workspace = a.workspace.clone().unwrap();
+        workspace.items[0].fields["status"] = serde_json::json!({"name": "PO Testing"});
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((workspace, vec![])),
+        });
+        a.message(Message::Synced {
+            generation: a.generation,
+            result: Ok((Workspace::default(), vec![])),
+        });
+        a.event(Event::Key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE)));
+        assert!(a.status_filter.is_empty());
+        for view in 0..4 {
+            a.switch_view(view);
+            let choices = a.status_choices(true).0;
+            for name in ["Ready for Staging", "PO Testing", "Discarded"] {
+                assert!(choices.iter().any(|c| c.value == name));
+            }
+        }
+        a.cache_writer.flush();
+        let mut restarted = App::new(
+            a.backend.clone(),
+            a.cache.clone(),
+            a.settings.clone(),
+            true,
+            500,
+            PathBuf::new(),
+        );
+        assert!(restarted.items.is_empty());
+        assert!(restarted.status_filter.is_empty());
+        let (choices, suggestions) = restarted.status_choices(false);
+        assert!(suggestions);
+        for name in ["Ready for Staging", "PO Testing", "Discarded"] {
+            assert!(choices.iter().any(|c| c.value == name));
+        }
+        restarted.settings.project = "OTHER".into();
+        assert!(restarted.known_statuses().is_empty());
+        let other_account = App::new(
+            a.backend.clone(),
+            Cache { directory: None },
+            a.settings.clone(),
+            true,
+            500,
+            PathBuf::new(),
+        );
+        assert!(other_account.known_statuses().is_empty());
+    }
+    #[test]
+    fn project_status_metadata_is_fenced_and_updates_open_filters_without_losing_checks() {
+        let mut a = app();
+        a.filters_dialog();
+        toggle_filter(&mut a, 1, "To Do");
+        for (generation, project) in [(a.generation + 1, "DEV"), (a.generation, "OTHER")] {
+            a.message(Message::ProjectStatuses {
+                generation,
+                project: project.into(),
+                result: Ok(vec!["Stale status".into()]),
+            });
+        }
+        assert!(!a.known_statuses().contains(&"Stale status".into()));
+        a.message(Message::ProjectStatuses {
+            generation: a.generation,
+            project: "DEV".into(),
+            result: Ok(vec!["Discarded".into()]),
+        });
+        let Some(Dialog::Filters {
+            choices, checked, ..
+        }) = &a.dialog
+        else {
+            panic!()
+        };
+        assert!(choices[1].iter().any(|c| c.value == "Discarded"));
+        assert!(checked[1].contains("To Do"));
+        let keys = a.workspace.as_ref().unwrap().keys();
+        a.message(Message::ProjectStatuses {
+            generation: a.generation,
+            project: "DEV".into(),
+            result: Err(anyhow::anyhow!("Synthetic metadata failure")),
+        });
+        assert!(a.known_statuses().contains(&"Discarded".into()));
+        assert_eq!(a.workspace.as_ref().unwrap().keys(), keys);
+        assert!(a.error.contains("cached suggestions retained"));
+    }
+    #[test]
+    fn configured_workflow_preselects_the_next_available_status_but_keeps_confirmation() {
+        let mut a = app();
+        let order: Vec<String> = [
+            "To Do",
+            "In Progress",
+            "Code Review",
+            "Staging",
+            "PO Testing",
+            "Production",
+            "Done",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        a.settings.status_order.insert("DEV".into(), order.clone());
+        a.focus = Focus::Tickets;
+        a.selected = 0;
+        a.items[0].transitions = order
+            .iter()
+            .chain(["On Hold".to_string()].iter())
+            .rev()
+            .map(|name| serde_json::json!({"to":{"name":name}}))
+            .collect();
+        for pair in order.windows(2) {
+            a.items[0].fields["status"] = serde_json::json!({"name":pair[0]});
+            a.status_picker(false);
+            let Some(Dialog::Picker {
+                choices, selected, ..
+            }) = &a.dialog
+            else {
+                panic!()
+            };
+            assert_eq!(*selected, 0);
+            assert_eq!(choices[0].value, pair[1]);
+            assert_eq!(choices.last().unwrap().value, "__other");
+            let mut inventory: Vec<_> = choices
+                .iter()
+                .filter(|c| c.value != "__other")
+                .map(|c| c.value.clone())
+                .collect();
+            inventory.sort();
+            let mut expected = order.clone();
+            expected.push("On Hold".into());
+            expected.sort();
+            assert_eq!(inventory, expected);
+            // Enter only prepares a confirmation; it never submits a transition.
+            assert!(
+                a.event(Event::Key(KeyEvent::new(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE
+                )))
+                .is_empty()
+            );
+            assert!(
+                matches!(&a.dialog, Some(Dialog::Confirm(action)) if action.key == "DEV-101" && action.kind == "status" && action.value == pair[1])
+            );
+            assert!(!a.writing);
+            a.event(key('n', KeyModifiers::NONE));
+            assert_eq!(a.items[0].status(), pair[0]);
+        }
+    }
+    #[test]
+    fn workflow_preferences_do_not_add_transitions_change_filters_or_affect_other_projects() {
+        let mut a = app();
+        a.focus = Focus::Tickets;
+        a.selected = 0;
+        a.items[0].fields["status"] = serde_json::json!({"name":"In Progress"});
+        a.items[0].transitions = ["Done", "On Hold", "cOdE rEvIeW"]
+            .into_iter()
+            .map(|name| serde_json::json!({"to":{"name":name}}))
+            .collect();
+        let baseline: Vec<_> = a
+            .status_choices(false)
+            .0
+            .into_iter()
+            .map(|c| c.value)
+            .collect();
+        let filters: Vec<_> = a
+            .status_choices(true)
+            .0
+            .into_iter()
+            .map(|c| c.value)
+            .collect();
+        a.settings.status_order.insert(
+            "DEV".into(),
+            vec![
+                "In Progress".into(),
+                "Not an allowed transition".into(),
+                "Code Review".into(),
+                "Done".into(),
+            ],
+        );
+        let (choices, suggestions) = a.status_choices(false);
+        assert!(!suggestions);
+        assert_eq!(choices[0].value, "cOdE rEvIeW");
+        assert!(
+            !choices
+                .iter()
+                .any(|c| c.value == "Not an allowed transition")
+        );
+        assert_eq!(
+            a.status_choices(true)
+                .0
+                .into_iter()
+                .map(|c| c.value)
+                .collect::<Vec<_>>(),
+            filters
+        );
+        for current in ["Unconfigured status", "Done"] {
+            a.items[0].fields["status"] = serde_json::json!({"name":current});
+            assert_eq!(
+                a.status_choices(false)
+                    .0
+                    .into_iter()
+                    .map(|c| c.value)
+                    .collect::<Vec<_>>(),
+                baseline
+            );
+        }
+        a.settings.status_order.clear();
+        a.settings.status_order.insert(
+            "OTHER".into(),
+            vec!["In Progress".into(), "Done".into(), "Code Review".into()],
+        );
+        a.items[0].fields["status"] = serde_json::json!({"name":"In Progress"});
+        assert_eq!(
+            a.status_choices(false)
+                .0
+                .into_iter()
+                .map(|c| c.value)
+                .collect::<Vec<_>>(),
+            baseline
+        );
+        // A linked ticket uses its own key's project, not the current scope's.
+        let mut linked = a.items[0].clone();
+        linked.key = "DEV-999".into();
+        a.details.insert(linked.key.clone(), (linked, 0));
+        a.detail_key = "DEV-999".into();
+        a.focus = Focus::Ticket;
+        a.settings.project = "OTHER".into();
+        a.settings.status_order.insert(
+            "DEV".into(),
+            vec!["In Progress".into(), "Code Review".into(), "Done".into()],
+        );
+        assert_eq!(a.status_choices(false).0[0].value, "cOdE rEvIeW");
+    }
+    #[test]
+    fn workflow_order_also_prioritizes_existing_suggestions_without_inventing_states() {
+        let mut a = app();
+        a.focus = Focus::Tickets;
+        a.selected = 0;
+        a.items[0].transitions.clear();
+        a.items[0].fields["status"] = serde_json::json!({"name":"In Progress"});
+        for name in ["Done", "Code Review", "On Hold"] {
+            a.status_history.remember("DEV", name);
+        }
+        a.settings.status_order.insert(
+            "DEV".into(),
+            vec![
+                "In Progress".into(),
+                "Missing configured state".into(),
+                "Code Review".into(),
+                "Done".into(),
+            ],
+        );
+        let (choices, suggestions) = a.status_choices(false);
+        assert!(suggestions);
+        assert_eq!(choices[0].value, "Code Review");
+        assert!(
+            !choices
+                .iter()
+                .any(|c| c.value == "Missing configured state")
+        );
+        assert_eq!(choices.last().unwrap().value, "__other");
+    }
+    #[test]
+    fn remembered_suggestions_do_not_override_server_transition_targets() {
+        let mut a = app();
+        a.apply_filter_selections([Selection::default(), "Ready for Staging".into()]);
+        let mut ticket = data::demo_tickets().remove(0);
+        ticket.transitions = vec![serde_json::json!({"to": {"name": "Allowed target"}})];
+        a.set_items(vec![ticket]);
+        a.focus = Focus::Tickets;
+        a.status_filter.clear();
+        a.rebuild_visible();
+        let (choices, suggestions) = a.status_choices(false);
+        assert!(!suggestions);
+        assert!(choices.iter().any(|c| c.value == "Allowed target"));
+        assert!(!choices.iter().any(|c| c.value == "Ready for Staging"));
+    }
+    #[test]
+    fn cancelling_custom_status_does_not_remember_it() {
+        let mut a = app();
+        a.filters_dialog();
+        toggle_filter(&mut a, 1, "__other");
+        a.event(Event::Paste("Cancelled status".into()));
+        a.event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        a.event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!a.known_statuses().iter().any(|s| s == "Cancelled status"));
+    }
+    #[test]
     fn changing_scope_resets_all_views_filters_without_changing_palette() {
         let mut a = app();
         a.status_filter = "To Do".into();
@@ -4307,7 +4988,7 @@ mod tests {
             (
                 config::BACKLOG,
                 vec!["unassigned"],
-                vec!["Refinement"],
+                vec!["To Do"],
                 "Enter",
                 "DEV-102",
             ),
@@ -4321,7 +5002,7 @@ mod tests {
             (
                 config::AVAILABLE,
                 vec!["unassigned"],
-                vec!["Refinement"],
+                vec!["To Do"],
                 "Enter",
                 "DEV-102",
             ),
@@ -4352,7 +5033,7 @@ mod tests {
             assert_eq!(a.selected_ticket().unwrap().key, key);
         }
         a.switch_view(config::BACKLOG);
-        assert_eq!(a.status_filter, "Refinement");
+        assert_eq!(a.status_filter, "To Do");
         assert_eq!(a.remote_search, "Enter");
         assert_eq!(a.assignee_filter, "unassigned");
         assert!(a.clear_filters().is_empty());
@@ -4373,7 +5054,7 @@ mod tests {
         assert!(a.remote_search.is_empty());
         assert!(a.assignee_filter.is_empty());
         a.switch_view(config::AVAILABLE);
-        assert_eq!(a.status_filter, "Refinement");
+        assert_eq!(a.status_filter, "To Do");
         assert_eq!(a.remote_search, "Enter");
     }
     #[test]
@@ -4609,6 +5290,515 @@ mod tests {
                 .any(|c| c.text.contains("ready locally"))
         );
     }
+    fn confirm_write(a: &mut App, action: &Action) -> Vec<Job> {
+        a.confirm(action.clone());
+        a.event(key('y', KeyModifiers::NONE))
+    }
+    #[test]
+    fn pending_status_navigation_does_not_persist_rejected_suggestions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        a.cache = Cache {
+            directory: Some(dir.path().into()),
+        };
+        a.cache_writer = crate::cache_writer::CacheWriter::new(a.cache.clone());
+        a.save_status_history();
+        let action = Action::new("status", "DEV-102", "Rejected synthetic status");
+        assert!(!a.status_history.names("DEV").contains(&action.value));
+        confirm_write(&mut a, &action);
+        // Numeric lookup followed by a tab change reprojects workspace rows via
+        // set_items, which also learns and persists observed ticket statuses.
+        a.event(Event::Paste("102".into()));
+        assert!(!a.items_are_workspace);
+        a.switch_view(config::MINE);
+        assert!(!a.status_history.names("DEV").contains(&action.value));
+        a.cache_writer.flush();
+        let (pending, _) = a
+            .cache
+            .get::<crate::statuses::History>(crate::statuses::CACHE_KEY)
+            .unwrap();
+        assert!(!pending.names("DEV").contains(&action.value));
+        a.message(Message::Written {
+            action: action.clone(),
+            result: Err(anyhow::anyhow!("synthetic workflow rejection")),
+        });
+        a.cache_writer.flush();
+        assert!(!a.known_statuses().contains(&action.value));
+        let (persisted, _) = a
+            .cache
+            .get::<crate::statuses::History>(crate::statuses::CACHE_KEY)
+            .unwrap();
+        assert!(!persisted.names("DEV").contains(&action.value));
+        assert!(persisted.names("DEV").contains(&"To Do".to_string()));
+        let restarted = App::new(
+            a.backend.clone(),
+            a.cache.clone(),
+            a.settings.clone(),
+            false,
+            500,
+            PathBuf::new(),
+        );
+        assert!(!restarted.known_statuses().contains(&action.value));
+    }
+    #[test]
+    fn successful_status_is_remembered_only_after_receipt_and_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        a.cache = Cache {
+            directory: Some(dir.path().into()),
+        };
+        a.cache_writer = crate::cache_writer::CacheWriter::new(a.cache.clone());
+        a.save_status_history();
+        let action = Action::new("status", "DEV-102", "Confirmed synthetic status");
+        confirm_write(&mut a, &action);
+        a.event(Event::Paste("102".into()));
+        a.switch_view(config::BACKLOG);
+        assert!(!a.status_history.names("DEV").contains(&action.value));
+        a.message(Message::Written {
+            action: action.clone(),
+            result: Ok(()),
+        });
+        a.cache_writer.flush();
+        let restarted = App::new(
+            a.backend.clone(),
+            a.cache.clone(),
+            a.settings.clone(),
+            false,
+            500,
+            PathBuf::new(),
+        );
+        assert!(restarted.known_statuses().contains(&action.value));
+    }
+    #[test]
+    fn pending_status_does_not_discard_independently_verified_statuses() {
+        for from_metadata in [false, true] {
+            let mut a = app();
+            let action = Action::new("status", "DEV-102", "Server verified synthetic status");
+            confirm_write(&mut a, &action);
+            if from_metadata {
+                a.message(Message::ProjectStatuses {
+                    generation: a.generation,
+                    project: "DEV".into(),
+                    result: Ok(vec![action.value.clone()]),
+                });
+            } else {
+                let mut ticket = a.details["DEV-103"].0.clone();
+                ticket.fields["status"] = serde_json::json!({"name":action.value});
+                a.message(Message::Detail {
+                    revision: *a.detail_revisions.get(&ticket.key).unwrap_or(&0),
+                    key: ticket.key.clone(),
+                    lookup: None,
+                    background: false,
+                    result: Ok(ticket),
+                });
+            }
+            a.message(Message::Written {
+                action: action.clone(),
+                result: Err(anyhow::anyhow!("synthetic rejection")),
+            });
+            assert!(a.status_history.names("DEV").contains(&action.value));
+        }
+    }
+    #[test]
+    fn pending_description_reserves_rollback_space_without_losing_other_detail_reads() {
+        let mut a = app();
+        a.workspace.as_mut().unwrap().items[1].fields["description"] =
+            serde_json::json!("x".repeat(4096));
+        a.workspace.as_mut().unwrap().reindex();
+        let original = a
+            .workspace
+            .as_ref()
+            .unwrap()
+            .ticket("DEV-102")
+            .unwrap()
+            .clone();
+        let action = Action::new("description", "DEV-102", "small preview");
+        confirm_write(&mut a, &action);
+        // Account for a near-full remainder of the scope without allocating a
+        // 64 MiB test fixture. The preview still has 8 KiB of aggregate headroom.
+        a.workspace.as_mut().unwrap().encoded_bytes = crate::limits::WORKSPACE_BYTES - 8192;
+        let before = a
+            .workspace
+            .as_ref()
+            .unwrap()
+            .ticket("DEV-103")
+            .unwrap()
+            .clone();
+        let mut other = before.clone();
+        other.fields["description"] = serde_json::json!("y".repeat(6000));
+        let revision = *a.detail_revisions.get(&other.key).unwrap_or(&0);
+        a.message(Message::Detail {
+            key: other.key.clone(),
+            lookup: None,
+            revision,
+            background: false,
+            result: Ok(other.clone()),
+        });
+        assert_eq!(
+            a.workspace
+                .as_ref()
+                .unwrap()
+                .ticket("DEV-103")
+                .unwrap()
+                .fields,
+            before.fields
+        );
+        // A full read remains usable; only its growth of the shared index is
+        // refused until the pending write releases the rollback reservation.
+        assert_eq!(a.details["DEV-103"].0.fields, other.fields);
+        assert!(a.full_ready.contains("DEV-103"));
+        a.message(Message::Written {
+            action,
+            result: Err(anyhow::anyhow!("synthetic rejection")),
+        });
+        let workspace = a.workspace.as_ref().unwrap();
+        assert_eq!(workspace.ticket("DEV-102").unwrap().fields, original.fields);
+        assert_eq!(workspace.ticket("DEV-103").unwrap().fields, before.fields);
+        assert!(crate::limits::size(workspace, crate::limits::WORKSPACE_BYTES).is_ok());
+        let revision = *a.detail_revisions.get(&other.key).unwrap_or(&0);
+        a.message(Message::Detail {
+            key: other.key.clone(),
+            lookup: None,
+            revision,
+            background: false,
+            result: Ok(other.clone()),
+        });
+        assert_eq!(
+            a.workspace
+                .as_ref()
+                .unwrap()
+                .ticket("DEV-103")
+                .unwrap()
+                .description(),
+            other.description()
+        );
+    }
+    #[test]
+    fn confirmation_previews_every_mutation_and_failure_restores_exact_previous_values() {
+        for (kind, key, value, field) in [
+            ("assign", "DEV-102", "@me", Some("assignee")),
+            ("status", "DEV-102", "Synthetic state", Some("status")),
+            ("summary", "DEV-102", "Immediate summary", Some("summary")),
+            (
+                "description",
+                "DEV-102",
+                "Immediate **description**",
+                Some("description"),
+            ),
+            ("labels", "DEV-102", "instant, synthetic", Some("labels")),
+            (
+                "comment",
+                "DEV-101",
+                "Immediate **comment**",
+                Some("comment"),
+            ),
+            ("link", "DEV-101", "DEV-103", Some("issuelinks")),
+            ("board", "DEV-102", "17", None),
+            ("backlog", "DEV-101", "17", None),
+        ] {
+            let mut a = app();
+            a.settings.board_id = Some(17);
+            a.workspace.as_mut().unwrap().board =
+                Some(HashSet::from(["DEV-101".into(), "DEV-103".into()]));
+            let before = a.workspace.as_ref().unwrap().cache_snapshot();
+            let detail = a.details[key].clone();
+            let items = a.items.clone();
+            a.detail_key = key.into();
+            a.scroll = 7;
+            let mut action = Action::new(kind, key, value);
+            action.extra = "blocks".into();
+            let jobs = confirm_write(&mut a, &action);
+            // Do not dispatch the remote job: all assertions precede any write.
+            assert_eq!(jobs.len(), 1);
+            assert!(matches!(&jobs[0], Job::Write(_) | Job::Move { .. }));
+            assert!(a.writing && a.pending_write.is_some());
+            assert!(a.status.contains("local change pending"));
+            let w = a.workspace.as_ref().unwrap();
+            if let Some(field) = field {
+                assert_ne!(
+                    w.ticket(key).unwrap().fields[field],
+                    before.ticket(key).unwrap().fields[field],
+                    "{kind}"
+                );
+                assert_eq!(
+                    a.details[key].0.fields[field],
+                    w.ticket(key).unwrap().fields[field]
+                );
+                assert_eq!(
+                    a.items.iter().find(|t| t.key == key).unwrap().fields[field],
+                    w.ticket(key).unwrap().fields[field]
+                );
+            } else {
+                assert_ne!(w.board, before.board);
+                assert_eq!(
+                    w.ticket(key).unwrap().status(),
+                    before.ticket(key).unwrap().status()
+                );
+            }
+            if kind == "assign" {
+                assert!(w.mine.contains(key));
+                assert_eq!(w.view_count(config::MINE), 2);
+                assert_eq!(w.view_count(config::AVAILABLE), 0);
+            }
+            assert_eq!(a.detail_key, key);
+            assert_eq!(a.scroll, 7);
+            let jobs = a.message(Message::Written {
+                action,
+                result: Err(anyhow::anyhow!("synthetic failure")),
+            });
+            let w = a.workspace.as_ref().unwrap();
+            assert_eq!(w.mine, before.mine);
+            assert_eq!(w.board, before.board);
+            assert_eq!(
+                w.ticket(key).unwrap().fields,
+                before.ticket(key).unwrap().fields
+            );
+            assert_eq!(a.details[key].0.fields, detail.0.fields);
+            assert_eq!(a.details[key].0.transitions, detail.0.transitions);
+            for (current, original) in a.items.iter().zip(&items) {
+                assert_eq!(current.fields, original.fields);
+            }
+            assert!(!a.writing && a.pending_write.is_none());
+            assert!(
+                jobs.iter()
+                    .any(|j| matches!(j, Job::Sync { changed: None, .. }))
+            );
+            assert!(
+                jobs.iter()
+                    .all(|j| matches!(j, Job::Sync { .. } | Job::Detail { .. }))
+            );
+            assert!(matches!(a.dialog, Some(Dialog::Info { .. })));
+            assert!(a.error.contains("synthetic failure"));
+        }
+    }
+    #[test]
+    fn pending_edits_fence_old_sync_detail_and_comment_reads_until_reconciliation() {
+        let mut a = app();
+        let action = Action::new("comment", "DEV-101", "Pending comment");
+        let old_workspace = a.workspace.clone().unwrap();
+        let old_detail = a.details["DEV-101"].0.clone();
+        let generation = a.generation;
+        let revision = *a.detail_revisions.get("DEV-101").unwrap_or(&0);
+        a.syncing = true;
+        confirm_write(&mut a, &action);
+        let pending = a.details["DEV-101"].0.fields.clone();
+        a.message(Message::Synced {
+            generation,
+            result: Ok((old_workspace, vec![])),
+        });
+        a.message(Message::Detail {
+            key: action.key.clone(),
+            lookup: None,
+            revision,
+            background: false,
+            result: Ok(old_detail),
+        });
+        a.message(Message::Comments {
+            key: action.key.clone(),
+            revision,
+            result: Ok(vec![]),
+        });
+        assert_eq!(a.details["DEV-101"].0.fields, pending);
+        assert!(a.sync_workspace().is_empty());
+        assert!(a.detail_job(action.key.clone(), None, true).is_empty());
+        assert!(a.event(key('C', KeyModifiers::NONE)).is_empty());
+        assert!(a.refresh_all().is_empty());
+        a.scope_dialog();
+        assert!(a.dialog.is_none());
+        a.message(Message::Written {
+            action: action.clone(),
+            result: Ok(()),
+        });
+        // Success must not append an optimistic comment a second time.
+        assert_eq!(a.details["DEV-101"].0.fields, pending);
+        a.message(Message::Comments {
+            key: action.key.clone(),
+            revision,
+            result: Ok(vec![]),
+        });
+        assert_eq!(a.details["DEV-101"].0.fields, pending);
+        assert!(
+            a.message(Message::Written {
+                action,
+                result: Ok(())
+            })
+            .is_empty()
+        );
+    }
+    #[test]
+    fn stale_comment_completion_does_not_block_or_clear_a_newer_comment_request() {
+        let mut a = app();
+        a.detail_key = "DEV-101".into();
+        let old = a.event(key('C', KeyModifiers::NONE));
+        assert!(matches!(&old[..], [Job::Comments { revision: 0, .. }]));
+        a.refresh_all();
+        let current = a.event(key('C', KeyModifiers::NONE));
+        let [Job::Comments { revision, .. }] = &current[..] else {
+            panic!()
+        };
+        assert!(*revision > 0);
+        a.message(Message::Comments {
+            key: "DEV-101".into(),
+            revision: 0,
+            result: Ok(vec![]),
+        });
+        assert!(!a.pending.contains("comments:0:DEV-101"));
+        assert!(a.pending.contains(&format!("comments:{revision}:DEV-101")));
+        assert!(a.event(key('C', KeyModifiers::NONE)).is_empty());
+        a.message(Message::Comments {
+            key: "DEV-101".into(),
+            revision: *revision,
+            result: Ok(vec![]),
+        });
+        assert!(!a.event(key('C', KeyModifiers::NONE)).is_empty());
+    }
+    #[test]
+    fn rollback_preserves_other_ticket_reads_and_navigation_and_lookup_scope() {
+        let mut a = app();
+        let mut outside = data::demo_tickets().remove(1);
+        outside.key = "DEV-999".into();
+        a.lookup_active = true;
+        a.show_lookup(outside.clone());
+        a.details.insert(outside.key.clone(), (outside.clone(), 1));
+        let action = Action::new("summary", "DEV-999", "Outside edit");
+        confirm_write(&mut a, &action);
+        assert_eq!(a.items[0].summary(), "Outside edit");
+        assert!(a.workspace.as_ref().unwrap().ticket("DEV-999").is_none());
+        a.lookup_active = false;
+        a.items_are_workspace = false;
+        a.switch_view(config::MINE);
+        let mut other = a.details["DEV-101"].0.clone();
+        other.fields["summary"] = serde_json::json!("Concurrent other ticket read");
+        a.message(Message::Detail {
+            key: other.key.clone(),
+            lookup: None,
+            revision: *a.detail_revisions.get(&other.key).unwrap_or(&0),
+            background: false,
+            result: Ok(other),
+        });
+        let view = a.view;
+        let selected = a.selected_ticket().unwrap().key.clone();
+        a.scroll = 4;
+        a.message(Message::Written {
+            action,
+            result: Err(anyhow::anyhow!("synthetic failure")),
+        });
+        assert_eq!(a.details["DEV-999"].0.summary(), outside.summary());
+        assert_eq!(
+            a.workspace
+                .as_ref()
+                .unwrap()
+                .ticket("DEV-101")
+                .unwrap()
+                .summary(),
+            "Concurrent other ticket read"
+        );
+        assert_eq!(a.view, view);
+        assert_eq!(a.selected_ticket().unwrap().key, selected);
+        assert_eq!(a.scroll, 4);
+        assert!(a.workspace.as_ref().unwrap().ticket("DEV-999").is_none());
+    }
+    #[test]
+    fn optimistic_values_never_enter_ticket_caches_even_after_stale_reads_and_eviction() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        a.cache = Cache {
+            directory: Some(dir.path().into()),
+        };
+        a.cache_writer = crate::cache_writer::CacheWriter::new(a.cache.clone());
+        let original = a.workspace.clone().unwrap();
+        a.cache.put(&a.workspace_key(), &original).unwrap();
+        a.cache
+            .put(&full_cache_key("DEV-102"), &a.details["DEV-102"].0)
+            .unwrap();
+        a.cache
+            .put("detail:DEV-102", &a.details["DEV-102"].0)
+            .unwrap();
+        let action = Action::new("summary", "DEV-102", "Memory only pending edit");
+        confirm_write(&mut a, &action);
+        a.message(Message::Comments {
+            key: action.key.clone(),
+            revision: 0,
+            result: Ok(vec![]),
+        });
+        for i in 200..275 {
+            let mut t = data::demo_tickets().remove(0);
+            t.key = format!("DEV-{i}");
+            a.details.insert(t.key.clone(), (t, 0));
+        }
+        a.trim_details("DEV-274");
+        assert_eq!(a.details["DEV-102"].0.summary(), action.value);
+        a.cache_writer.flush();
+        assert!(!a.cache.exists(&full_cache_key("DEV-102")));
+        assert!(!a.cache.exists("detail:DEV-102"));
+        let (cached, _) = a.cache.get::<Workspace>(&a.workspace_key()).unwrap();
+        assert_eq!(
+            cached.ticket("DEV-102").unwrap().summary(),
+            original.ticket("DEV-102").unwrap().summary()
+        );
+    }
+    #[test]
+    fn cancellation_read_only_and_second_confirmation_never_apply_another_preview() {
+        for cancel in ['n', '\u{1b}'] {
+            let mut a = app();
+            let before = a.items[1].summary();
+            a.confirm(Action::new("summary", "DEV-102", "Not confirmed"));
+            let event = if cancel == '\u{1b}' {
+                Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            } else {
+                key(cancel, KeyModifiers::NONE)
+            };
+            assert!(a.event(event).is_empty());
+            assert_eq!(a.items[1].summary(), before);
+            assert!(a.pending_write.is_none());
+        }
+        let mut a = app();
+        let before = a.items[1].summary();
+        a.read_only = true;
+        assert!(confirm_write(&mut a, &Action::new("summary", "DEV-102", "Blocked")).is_empty());
+        assert_eq!(a.items[1].summary(), before);
+        assert!(a.pending_write.is_none());
+        a.read_only = false;
+        let first = Action::new("summary", "DEV-102", "First confirmed");
+        confirm_write(&mut a, &first);
+        assert!(
+            confirm_write(&mut a, &Action::new("summary", "DEV-102", "Second blocked")).is_empty()
+        );
+        assert_eq!(a.items[1].summary(), first.value);
+        assert_eq!(a.pending_write.as_ref().unwrap().action, first);
+        assert!(
+            a.message(Message::Written {
+                action: Action::new("summary", "DEV-101", "Wrong receipt"),
+                result: Ok(())
+            })
+            .is_empty()
+        );
+        assert!(a.writing);
+    }
+    #[test]
+    fn comment_preview_does_not_overwrite_newer_workspace_fields_with_old_detail_values() {
+        let mut a = app();
+        a.workspace.as_mut().unwrap().items[0].fields["summary"] =
+            serde_json::json!("Newer list summary");
+        a.workspace.as_mut().unwrap().reindex();
+        confirm_write(&mut a, &Action::new("comment", "DEV-101", "Comment only"));
+        assert_eq!(
+            a.workspace
+                .as_ref()
+                .unwrap()
+                .ticket("DEV-101")
+                .unwrap()
+                .summary(),
+            "Newer list summary"
+        );
+        assert_eq!(
+            a.details["DEV-101"].0.fields["comment"]["comments"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
     #[test]
     fn every_successful_write_fully_refreshes_all_views_and_fences_prewrite_reads() {
         for kind in [
@@ -4700,14 +5890,35 @@ mod tests {
             (Action::new("board", "DEV-102", "1"), [2, 0, 3, 0]),
         ] {
             assert_eq!(a.backend.kind, crate::backend::Kind::Demo);
-            let result = a.backend.apply(&action).await;
-            a.writing = true;
+            let remote_jobs = confirm_write(&mut a, &action);
+            assert_eq!(remote_jobs.len(), 1);
+            let key = action.key.clone();
+            let kind = action.kind.clone();
+            // No remote jobs have run: every view already reflects confirmation.
+            for (view, count) in counts.into_iter().enumerate() {
+                assert!(a.switch_view(view).is_empty());
+                assert_eq!(
+                    a.visible.len(),
+                    count,
+                    "view {view} must update before sync"
+                );
+                if kind == "assign" && view == config::MINE {
+                    assert!(a.visible.iter().any(|n| a.items[*n].key == key));
+                }
+            }
+            // Execute only the synthetic/demo backend after checking the preview.
+            let result = if matches!(kind.as_str(), "board" | "backlog") {
+                crate::movement::confirmed(&a.backend, &a.settings, &action, false).await
+            } else {
+                a.backend.apply(&action).await
+            };
             let jobs = a.message(Message::Written { action, result });
             let Job::Sync {
                 generation,
                 base,
                 mine,
                 changed,
+                ..
             } = jobs
                 .into_iter()
                 .find(|j| matches!(j, Job::Sync { .. }))
@@ -4743,7 +5954,64 @@ mod tests {
                 .ticket("DEV-102")
                 .unwrap()
                 .status(),
-            "Refinement"
+            "To Do"
+        );
+    }
+    #[test]
+    fn confirmed_edits_update_rows_details_and_search_before_any_network_read() {
+        for (kind, value, field) in [
+            ("assign", "@me", "assignee"),
+            ("status", "Synthetic state", "status"),
+            ("summary", "Instant synthetic summary", "summary"),
+            (
+                "description",
+                "Instant synthetic description",
+                "description",
+            ),
+            ("labels", "instant, synthetic", "labels"),
+        ] {
+            let mut a = app();
+            a.detail_key = "DEV-102".into();
+            a.scroll = 7;
+            a.writing = true;
+            let jobs = a.message(Message::Written {
+                action: Action::new(kind, "DEV-102", value),
+                result: Ok(()),
+            });
+            assert!(jobs.iter().any(|job| matches!(job, Job::Sync { .. })));
+            let workspace = a.workspace.as_ref().unwrap();
+            let row = workspace.ticket("DEV-102").unwrap();
+            assert_eq!(a.details["DEV-102"].0.fields[field], row.fields[field]);
+            assert_eq!(
+                a.items.iter().find(|t| t.key == "DEV-102").unwrap().fields[field],
+                row.fields[field]
+            );
+            assert_eq!(a.detail_key, "DEV-102");
+            assert_eq!(a.scroll, 7);
+            if kind == "assign" {
+                assert!(workspace.matches(row, config::MINE, "@me", "", ""));
+                assert!(!workspace.matches(row, config::AVAILABLE, "", "", ""));
+            } else {
+                let needle = if kind == "labels" { "instant" } else { value };
+                assert!(workspace.matches(row, config::BACKLOG, "", "", needle));
+            }
+        }
+    }
+    #[test]
+    fn failed_assignment_does_not_change_local_fields_or_membership() {
+        let mut a = app();
+        let before = a.workspace.as_ref().unwrap().cache_snapshot();
+        a.writing = true;
+        a.message(Message::Written {
+            action: Action::new("assign", "DEV-102", "@me"),
+            result: Err(anyhow::anyhow!("synthetic failure")),
+        });
+        let after = a.workspace.as_ref().unwrap();
+        assert_eq!(after.mine, before.mine);
+        assert_eq!(after.board, before.board);
+        assert_eq!(
+            after.ticket("DEV-102").unwrap().fields,
+            before.ticket("DEV-102").unwrap().fields
         );
     }
     #[test]
@@ -4758,10 +6026,10 @@ mod tests {
         a.view_filters[config::AVAILABLE] = ViewFilters {
             epic: None,
             assignee: "unassigned".into(),
-            status: "Refinement".into(),
+            status: "To Do".into(),
             text: "digits".into(),
         };
-        a.status_filter = "Refinement".into();
+        a.status_filter = "To Do".into();
         a.local_search = "digits".into();
         a.remote_search = "digits".into();
         a.rebuild_visible();
@@ -4785,7 +6053,7 @@ mod tests {
         assert_eq!(a.view, config::BACKLOG);
         assert_eq!(a.detail_key, "DEV-102");
         assert_eq!(a.scroll, 7);
-        assert_eq!(a.status_filter.single(), "Refinement");
+        assert_eq!(a.status_filter.single(), "To Do");
         assert_eq!(a.remote_search, "digits");
         assert_eq!(a.view_filters[config::MINE].text, "terminal");
         assert_eq!(a.view_filters[config::AVAILABLE].text, "digits");
@@ -4798,7 +6066,11 @@ mod tests {
             action: Action::new("status", "DEV-101", "Done"),
             result: Err(anyhow::anyhow!("synthetic uncertain outcome")),
         });
-        assert!(jobs.iter().all(|j| matches!(j, Job::Detail { .. })));
+        assert!(jobs.iter().any(|j| matches!(j, Job::Sync { .. })));
+        assert!(
+            jobs.iter()
+                .all(|j| matches!(j, Job::Sync { .. } | Job::Detail { .. }))
+        );
         assert!(matches!(a.dialog, Some(Dialog::Info { .. })));
         assert!(a.error.contains("outcome unknown"));
         let mut a = app();
@@ -5232,6 +6504,7 @@ mod tests {
     #[test]
     fn list_filters_stage_both_columns_and_apply_without_jira_writes() {
         let mut a = app();
+        a.status_history.remember("DEV", "Refinement");
         a.read_only = true;
         a.assignee_picker(true);
         for _ in 0..4 {
@@ -5538,6 +6811,7 @@ mod tests {
         w.items[0].fields["status"] =
             serde_json::json!({"name":"Done","statusCategory":{"key":"done"}});
         w.items[0].fields["assignee"] = serde_json::Value::Null;
+        w.items[2].fields["assignee"] = serde_json::Value::Null;
         w.reindex();
         a.items_are_workspace = false;
         a.last_query = a.settings.query(config::BACKLOG, "", "", "").unwrap();
@@ -5545,7 +6819,7 @@ mod tests {
         for (view, keys) in [
             (config::BOARD, vec!["DEV-101", "DEV-103"]),
             (config::BACKLOG, vec!["DEV-102"]),
-            (config::AVAILABLE, vec!["DEV-101", "DEV-102"]),
+            (config::AVAILABLE, vec!["DEV-102", "DEV-103"]),
         ] {
             assert!(a.switch_view(view).is_empty());
             assert_eq!(
@@ -5556,6 +6830,11 @@ mod tests {
                 keys
             );
         }
+        a.status_filter = "Done".into();
+        a.reload();
+        assert!(a.visible.is_empty());
+        a.clear_filters();
+        assert_eq!(visible_keys(&a), ["DEV-102", "DEV-103"]);
         a.switch_view(config::BOARD);
         a.status_filter = "Done".into();
         a.reload();

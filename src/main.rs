@@ -377,6 +377,11 @@ async fn main() -> Result<()> {
         Settings::load()?
     };
     let scope_override = opts.apply_scope(&mut settings);
+    if backend.kind != Kind::Demo
+        && let Some(orders) = env.status_order()?
+    {
+        settings.override_status_order(orders)?;
+    }
     backend.configure_board(settings.board_id)?;
     let limit = if backend.kind == Kind::Jira {
         usize::from(opts.limit).min(100)
@@ -390,10 +395,15 @@ async fn main() -> Result<()> {
             return Ok(());
         };
         println!(
-            "Move {key}: {} → {} (Board {}). No workflow transition requested; Jira sets destination Rank.",
+            "Move {key}: {} → {} (Board {}). No workflow transition requested; {}.",
             to.source(),
             to.name(),
-            action.value
+            action.value,
+            if to == Destination::Board {
+                "rank at the bottom of the Board"
+            } else {
+                "Jira sets destination Rank"
+            }
         );
         let confirmed = if yes {
             true
@@ -421,6 +431,15 @@ async fn main() -> Result<()> {
         let q = settings.query(jirust::config::BACKLOG, "", "", "")?;
         let mine = settings.query(jirust::config::MINE, "", "", "")?;
         let (workspace, _) = backend.workspace(&q, &mine, None).await?;
+        let status_count = if !settings.project.is_empty() && backend.kind != Kind::Jira {
+            backend
+                .project_statuses(&settings.project)
+                .await?
+                .len()
+                .to_string()
+        } else {
+            "unavailable".into()
+        };
         let counts = [
             jirust::config::MINE,
             jirust::config::AVAILABLE,
@@ -439,7 +458,7 @@ async fn main() -> Result<()> {
             backend.get(&t.key).await?;
         };
         println!(
-            "backend={} search=ok tickets={} detail={} mine={} available={} board={} backlog={} epics={} story_points={} (read-only; no records changed)",
+            "backend={} search=ok tickets={} detail={} mine={} available={} board={} backlog={} epics={} story_points={} project_statuses={} (read-only; no records changed)",
             backend.kind.name(),
             items.len(),
             if items.is_empty() { "skipped" } else { "ok" },
@@ -448,7 +467,8 @@ async fn main() -> Result<()> {
             counts[2],
             counts[3],
             epics,
-            estimated
+            estimated,
+            status_count
         );
         return Ok(());
     }
@@ -606,17 +626,32 @@ fn dispatch(
                 },
                 Job::Sync {
                     generation,
+                    project,
                     base,
                     mine,
                     changed,
-                } => Message::Synced {
-                    generation,
-                    result: backend
+                } => {
+                    let result = backend
                         .workspace_progress(&base, &mine, changed.as_deref(), |stage| {
                             let _ = tx.send(Message::SyncProgress { generation, stage });
                         })
-                        .await,
-                },
+                        .await;
+                    // CLI reads above refresh OAuth through acli before metadata
+                    // reuses its credential. A metadata failure never loses tickets.
+                    if !project.is_empty() {
+                        let _ = tx.send(Message::SyncProgress {
+                            generation,
+                            stage: jirust::refresh::Stage::Statuses,
+                        });
+                        let statuses = backend.project_statuses(&project).await;
+                        let _ = tx.send(Message::ProjectStatuses {
+                            generation,
+                            project,
+                            result: statuses,
+                        });
+                    }
+                    Message::Synced { generation, result }
+                }
 
                 Job::Detail {
                     key,
@@ -631,8 +666,9 @@ fn dispatch(
                     background,
                     result: detail_read(&backend, &key, cancel).await,
                 },
-                Job::Comments(key) => Message::Comments {
+                Job::Comments { key, revision } => Message::Comments {
                     key: key.clone(),
+                    revision,
                     result: backend.comments(&key).await,
                 },
                 Job::Write(action) => Message::Written {
@@ -831,6 +867,42 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new_in(d.path()).unwrap();
         f.write_all(text.as_bytes()).unwrap();
         Environment::load(Some(f.path())).unwrap()
+    }
+    #[tokio::test]
+    async fn startup_fetches_unused_project_statuses_even_without_a_cache() {
+        let backend = Backend::new("demo", None).unwrap();
+        let settings = Settings {
+            project: "DEV".into(),
+            ..Default::default()
+        };
+        let mut app = App::new(
+            backend.clone(),
+            Cache { directory: None },
+            settings,
+            true,
+            500,
+            PathBuf::new(),
+        );
+        let jobs = app.reload();
+        assert!(matches!(&jobs[..], [Job::Sync { project, .. }] if project == "DEV"));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (clipboard, _) = tokio::sync::watch::channel(None);
+        dispatch(jobs, &backend, &Picker::halfblocks(), &tx, &clipboard);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let message = rx.recv().await.unwrap();
+                let synced = matches!(&message, Message::Synced { result: Ok(_), .. });
+                app.message(message);
+                if synced {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(app.known_statuses().contains(&"Discarded".into()));
+        assert!(!app.items.iter().any(|t| t.status() == "Discarded"));
+        assert!(!app.writing);
     }
     #[tokio::test]
     async fn cancelled_image_jobs_do_not_start_network_or_cli_reads() {
