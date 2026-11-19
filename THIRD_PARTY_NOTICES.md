@@ -175,6 +175,8 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | reqwest | 0.12.28 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
+| rpassword | 7.5.4 | Apache-2.0 |
+| rtoolbox | 0.0.6 | Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustix | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -1207,6 +1209,8 @@ limitations under the License.
 ### Apache License 2.0
 
 Used by:
+- rpassword 7.5.4
+- rtoolbox 0.0.6
 - ryu 1.0.23
 - sync_wrapper 1.0.2
 

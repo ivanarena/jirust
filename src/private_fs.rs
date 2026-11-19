@@ -161,11 +161,54 @@ pub(crate) fn valid(path: &Path, limit: usize) -> bool {
 }
 #[cfg(unix)]
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = directory(path.parent().context("Missing private parent")?, true)?;
+    write_in(&dir, path, bytes)
+}
+
+/// Replace a dotenv file only if it still holds `expected`; `None` requires an absent file.
+pub(crate) fn write_environment(path: &Path, bytes: &[u8], expected: Option<&[u8]>) -> Result<()> {
+    #[cfg(unix)]
+    {
+        ensure!(bytes.len() <= 65536, "Environment file exceeds 64 KiB");
+        let absolute = std::path::absolute(path)?;
+        let parent = absolute.parent().context("Missing environment parent")?;
+        if !parent.exists() {
+            directory(parent, true)?;
+        }
+        let dir: File = rustix::fs::open(
+            parent,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?
+        .into();
+        owned(&dir, false, true)?;
+        let name = absolute
+            .file_name()
+            .context("Missing environment filename")?;
+        let current = match rustix::fs::statat(&dir, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(_) => Some(bounded_read(entry(&dir, name)?, 65536)?),
+            Err(rustix::io::Errno::NOENT) => None,
+            Err(_) => bail!("Cannot validate private destination"),
+        };
+        ensure!(
+            current.as_deref() == expected,
+            "Environment file changed during setup; run auth again"
+        );
+        write_in(&dir, &absolute, bytes)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, bytes, expected);
+        bail!("Private storage unsupported")
+    }
+}
+
+#[cfg(unix)]
+fn write_in(dir: &File, path: &Path, bytes: &[u8]) -> Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let dir = directory(path.parent().context("Missing private parent")?, true)?;
     let name = path.file_name().context("Missing private filename")?;
-    match rustix::fs::statat(&dir, name, AtFlags::SYMLINK_NOFOLLOW) {
+    match rustix::fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(m) => ensure!(
             m.st_uid == rustix::process::geteuid().as_raw()
                 && m.st_nlink == 1
@@ -186,7 +229,7 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<()> {
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
     let fd = rustix::fs::openat(
-        &dir,
+        dir,
         &temporary,
         OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::from_bits_truncate(0o600),
@@ -196,12 +239,12 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<()> {
         let mut file: File = fd.into();
         file.write_all(bytes)?;
         file.sync_all()?;
-        rustix::fs::renameat(&dir, &temporary, &dir, name)?;
+        rustix::fs::renameat(dir, &temporary, dir, name)?;
         dir.sync_all()?;
         Ok(())
     })();
     if result.is_err() {
-        let _ = rustix::fs::unlinkat(&dir, &temporary, AtFlags::empty());
+        let _ = rustix::fs::unlinkat(dir, &temporary, AtFlags::empty());
     }
     result
 }

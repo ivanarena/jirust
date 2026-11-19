@@ -1,5 +1,6 @@
 pub mod app;
 pub mod appearance;
+pub mod auth_setup;
 pub mod backend;
 pub mod board_api;
 pub mod cache_writer;
