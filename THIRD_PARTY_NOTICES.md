@@ -34,11 +34,11 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | byteorder-lite | 0.1.0 | Unlicense OR MIT |
 | bytes | 1.12.2 | MIT |
 | castaway | 0.2.4 | MIT |
-| cc | 1.11.2 | MIT OR Apache-2.0 |
+| cc | 1.11.3 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
-| clap | 4.6.8 | MIT OR Apache-2.0 |
+| clap | 4.6.9 | MIT OR Apache-2.0 |
 | clap_builder | 4.6.7 | MIT OR Apache-2.0 |
-| clap_derive | 4.6.8 | MIT OR Apache-2.0 |
+| clap_derive | 4.6.9 | MIT OR Apache-2.0 |
 | clap_lex | 1.1.2 | MIT OR Apache-2.0 |
 | color_quant | 1.1.0 | MIT |
 | colorchoice | 1.0.5 | MIT OR Apache-2.0 |
@@ -142,7 +142,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 |
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 |
-| pin-project-lite | 0.2.17 | Apache-2.0 OR MIT |
+| pin-project-lite | 0.2.18 | Apache-2.0 OR MIT |
 | png | 0.18.1 | MIT OR Apache-2.0 |
 | potential_utf | 0.1.6 | Unicode-3.0 |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 |
@@ -2302,7 +2302,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- cc 1.11.2
+- cc 1.11.3
 - cfg-if 1.0.5
 - find-msvc-tools 0.1.15
 - js-sys 0.3.107
@@ -4272,9 +4272,9 @@ Used by:
 - anstyle-query 1.1.5
 - anstyle-wincon 3.0.11
 - anstyle 1.0.14
-- clap 4.6.8
+- clap 4.6.9
 - clap_builder 4.6.7
-- clap_derive 4.6.8
+- clap_derive 4.6.9
 - clap_lex 1.1.2
 - colorchoice 1.0.5
 - is_terminal_polyfill 1.70.2
@@ -5442,7 +5442,7 @@ Used by:
 - linux-raw-sys 0.12.1
 - linux-raw-sys 0.4.15
 - once_cell 1.21.4
-- pin-project-lite 0.2.17
+- pin-project-lite 0.2.18
 - proc-macro2 1.0.107
 - quote 1.0.47
 - ref-cast-impl 1.0.27

@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "31b6a829414a19b752e2b98bfd15973cc3fcff14502d5444147f4f9258330f0b",
+  "cargo_lock_sha256": "fcc6c37851b8cac5f604868ae74841ead64440a6109f8049250c32c5a1d79e42",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -193,9 +193,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "cc",
-      "sha256": "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45",
-      "source": "https://crates.io/api/v1/crates/cc/1.11.2/download",
-      "version": "1.11.2"
+      "sha256": "02f0e023adb368345ce0ca6cdfc0f24a06554468d0e8503e14a0841de79bfa69",
+      "source": "https://crates.io/api/v1/crates/cc/1.11.3/download",
+      "version": "1.11.3"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -221,9 +221,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "clap",
-      "sha256": "ac230478587d0269d8d6998b82ae69ea51509d55df66d9e92edd1f986904cd4a",
-      "source": "https://crates.io/api/v1/crates/clap/4.6.8/download",
-      "version": "4.6.8"
+      "sha256": "844c5c0b65be192cb68d570cca1b21a6444431d24e39c084dc0336177015337c",
+      "source": "https://crates.io/api/v1/crates/clap/4.6.9/download",
+      "version": "4.6.9"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -235,9 +235,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "clap_derive",
-      "sha256": "895c9d8d2ac2dd8b8a29f3724a14e72aaaa6debcf8c38c82f97305c6a172767a",
-      "source": "https://crates.io/api/v1/crates/clap_derive/4.6.8/download",
-      "version": "4.6.8"
+      "sha256": "b4c174f11f949b9ca8c60580925e282b9cbd5454750e506f08648b2038080cd7",
+      "source": "https://crates.io/api/v1/crates/clap_derive/4.6.9/download",
+      "version": "4.6.9"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -991,9 +991,9 @@
     {
       "license": "Apache-2.0 OR MIT",
       "name": "pin-project-lite",
-      "sha256": "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd",
-      "source": "https://crates.io/api/v1/crates/pin-project-lite/0.2.17/download",
-      "version": "0.2.17"
+      "sha256": "c938015719552d665fd0553b90d96cd7ff58e83e4c061ca99e6bb78865a72752",
+      "source": "https://crates.io/api/v1/crates/pin-project-lite/0.2.18/download",
+      "version": "0.2.18"
     },
     {
       "license": "MIT OR Apache-2.0",
