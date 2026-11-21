@@ -71,7 +71,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |
 | flate2 | 1.1.11 | MIT OR Apache-2.0 |
 | foldhash | 0.2.0 | Zlib |
-| form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
+| form_urlencoded | 1.2.3 | MIT OR Apache-2.0 |
 | funty | 2.0.0 | MIT |
 | futures-channel | 0.3.34 | MIT OR Apache-2.0 |
 | futures-core | 0.3.34 | MIT OR Apache-2.0 |
@@ -236,7 +236,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | unicode-truncate | 2.0.1 | MIT OR Apache-2.0 |
 | unicode-width | 0.2.3 | MIT OR Apache-2.0 |
 | untrusted | 0.9.0 | ISC |
-| url | 2.5.8 | MIT OR Apache-2.0 |
+| url | 2.5.9 | MIT OR Apache-2.0 |
 | utf8_iter | 1.1.0 | Apache-2.0 OR MIT |
 | utf8parse | 0.2.2 | Apache-2.0 OR MIT |
 | utf_types | 1.0.0 | Apache-2.0 OR MIT |
@@ -279,7 +279,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | wyz | 0.5.1 | MIT |
 | yoke | 0.8.4 | Unicode-3.0 |
 | yoke-derive | 0.8.4 | Unicode-3.0 |
-| zerocopy | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| zerocopy | 0.8.64 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zerofrom | 0.1.8 | Unicode-3.0 |
 | zerofrom-derive | 0.1.8 | Unicode-3.0 |
 | zeroize | 1.9.2 | Apache-2.0 OR MIT |
@@ -2232,7 +2232,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- form_urlencoded 1.2.2
+- form_urlencoded 1.2.3
 
 ```text
 Copyright (c) 2013-2016 The rust-url developers
@@ -2268,7 +2268,7 @@ DEALINGS IN THE SOFTWARE.
 Used by:
 - idna 1.1.0
 - percent-encoding 2.3.2
-- url 2.5.8
+- url 2.5.9
 
 ```text
 Copyright (c) 2013-2025 The rust-url developers
@@ -4444,7 +4444,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- zerocopy 0.8.63
+- zerocopy 0.8.64
 
 ```text
 Copyright 2023 The Fuchsia Authors

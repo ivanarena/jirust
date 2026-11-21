@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "fcc6c37851b8cac5f604868ae74841ead64440a6109f8049250c32c5a1d79e42",
+  "cargo_lock_sha256": "ef72d1926517b2f2182408f1a517f6ecde1d32510d16c225e149ab8b88dda654",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -480,9 +480,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "form_urlencoded",
-      "sha256": "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf",
-      "source": "https://crates.io/api/v1/crates/form_urlencoded/1.2.2/download",
-      "version": "1.2.2"
+      "sha256": "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e",
+      "source": "https://crates.io/api/v1/crates/form_urlencoded/1.2.3/download",
+      "version": "1.2.3"
     },
     {
       "license": "MIT",
@@ -1719,9 +1719,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "url",
-      "sha256": "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed",
-      "source": "https://crates.io/api/v1/crates/url/2.5.8/download",
-      "version": "2.5.8"
+      "sha256": "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a",
+      "source": "https://crates.io/api/v1/crates/url/2.5.9/download",
+      "version": "2.5.9"
     },
     {
       "license": "Apache-2.0 OR MIT",
@@ -2027,16 +2027,16 @@
     {
       "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
       "name": "zerocopy",
-      "sha256": "e5fe1f8f1b06191a00962174c61aa5005e0bb391a6d80d07e24d115c01a92ed8",
-      "source": "https://crates.io/api/v1/crates/zerocopy/0.8.63/download",
-      "version": "0.8.63"
+      "sha256": "ed43f3060383c64b000f3c630550aebdfa9d3b76d48de32390483dd2cc7e0865",
+      "source": "https://crates.io/api/v1/crates/zerocopy/0.8.64/download",
+      "version": "0.8.64"
     },
     {
       "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
       "name": "zerocopy-derive",
-      "sha256": "863ad3ac83293fb4d740aedbfdc9240dd8d1a50c1099acd76ce80ce7c7230c7f",
-      "source": "https://crates.io/api/v1/crates/zerocopy-derive/0.8.63/download",
-      "version": "0.8.63"
+      "sha256": "a5cbd820fe3e35fb38c83b6dc7e6b1618bc46e0cd10073ae94e8d52dc468d8b9",
+      "source": "https://crates.io/api/v1/crates/zerocopy-derive/0.8.64/download",
+      "version": "0.8.64"
     },
     {
       "license": "Unicode-3.0",
