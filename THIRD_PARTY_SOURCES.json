@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "ef72d1926517b2f2182408f1a517f6ecde1d32510d16c225e149ab8b88dda654",
+  "cargo_lock_sha256": "60ce1f5afad55bff1d1a0d4de2c36b7c62307b7ccf858ed66de39a198c11c739",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -557,9 +557,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "hashbrown",
-      "sha256": "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a",
-      "source": "https://crates.io/api/v1/crates/hashbrown/0.17.1/download",
-      "version": "0.17.1"
+      "sha256": "735eaa21a6a5ffb2e84362faaeb90c05ba8e19797ca30428478cb6ea3a4921bc",
+      "source": "https://crates.io/api/v1/crates/hashbrown/0.17.2/download",
+      "version": "0.17.2"
     },
     {
       "license": "MIT OR Apache-2.0",

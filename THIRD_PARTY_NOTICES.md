@@ -82,7 +82,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
 | gif | 0.14.2 | MIT OR Apache-2.0 |
 | granit-parser | 1.3.0 | MIT OR Apache-2.0 |
-| hashbrown | 0.17.1 | MIT OR Apache-2.0 |
+| hashbrown | 0.17.2 | MIT OR Apache-2.0 |
 | heck | 0.5.0 | MIT OR Apache-2.0 |
 | http | 1.5.0 | MIT OR Apache-2.0 |
 | http-body | 1.1.0 | MIT |
@@ -2834,7 +2834,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- hashbrown 0.17.1
+- hashbrown 0.17.2
 
 ```text
 Copyright (c) 2016 Amanieu d'Antras
