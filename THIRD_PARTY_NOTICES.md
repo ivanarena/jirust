@@ -17,7 +17,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | anstyle-parse | 1.0.0 | MIT OR Apache-2.0 |
 | anstyle-query | 1.1.5 | MIT OR Apache-2.0 |
 | anstyle-wincon | 3.0.11 | MIT OR Apache-2.0 |
-| anyhow | 1.0.104 | MIT OR Apache-2.0 |
+| anyhow | 1.0.105 | MIT OR Apache-2.0 |
 | arraydeque | 0.5.1 | MIT OR Apache-2.0 |
 | atomic-waker | 1.1.2 | Apache-2.0 OR MIT |
 | autocfg | 1.5.1 | Apache-2.0 OR MIT |
@@ -5433,7 +5433,7 @@ SOFTWARE.
 
 Used by:
 - adler2 2.0.1
-- anyhow 1.0.104
+- anyhow 1.0.105
 - atomic-waker 1.1.2
 - displaydoc 0.2.7
 - fastrand 2.5.0
