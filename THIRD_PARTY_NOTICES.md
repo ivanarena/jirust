@@ -46,7 +46,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | convert_case | 0.10.0 | MIT |
 | core_detect | 1.0.0 | MIT OR Apache-2.0 |
 | cpufeatures | 0.2.17 | MIT OR Apache-2.0 |
-| crc32fast | 1.5.5 | MIT OR Apache-2.0 |
+| crc32fast | 1.5.6 | MIT OR Apache-2.0 |
 | crossterm | 0.29.0 | MIT |
 | crossterm_winapi | 0.9.1 | MIT |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
@@ -88,7 +88,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | http-body | 1.1.0 | MIT |
 | http-body-util | 0.1.5 | MIT |
 | httparse | 1.10.1 | MIT OR Apache-2.0 |
-| hyper | 1.12.0 | MIT |
+| hyper | 1.13.0 | MIT |
 | hyper-rustls | 0.27.10 | Apache-2.0 OR ISC OR MIT |
 | hyper-util | 0.1.21 | MIT |
 | icu_collections | 2.4.0 | Unicode-3.0 |
@@ -2481,7 +2481,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- hyper 1.12.0
+- hyper 1.13.0
 
 ```text
 Copyright (c) 2014-2026 Sean McArthur
@@ -4637,7 +4637,7 @@ SOFTWARE.
 ### MIT License
 
 Used by:
-- crc32fast 1.5.5
+- crc32fast 1.5.6
 
 ```text
 MIT License

@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "9b5722f0e653c3509607dccca603585d2f704f307ef71e3e48c22658b2e6dadd",
+  "cargo_lock_sha256": "12bb0fecda07f2f67e6e0868bf3e69ebb15ace60b10df1b130450f362a014f84",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -298,9 +298,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "crc32fast",
-      "sha256": "2b929dd2a135771f40afabd1073f85eed59c800b7c61901e5c254270497dad64",
-      "source": "https://crates.io/api/v1/crates/crc32fast/1.5.5/download",
-      "version": "1.5.5"
+      "sha256": "fd9ae8fcb3ea71b0b26338b4ffb13006bb175de8fd07921089a906ce7e5e6945",
+      "source": "https://crates.io/api/v1/crates/crc32fast/1.5.6/download",
+      "version": "1.5.6"
     },
     {
       "license": "MIT",
@@ -599,9 +599,9 @@
     {
       "license": "MIT",
       "name": "hyper",
-      "sha256": "2c3e324da4c95177d6291d4c8730197c0d1822f8a9766814a4a44fa5ab797c9c",
-      "source": "https://crates.io/api/v1/crates/hyper/1.12.0/download",
-      "version": "1.12.0"
+      "sha256": "229c6ff5584df4c6becbfe00567128bac768c8cd32ebc8a8366bd81ed072e8f3",
+      "source": "https://crates.io/api/v1/crates/hyper/1.13.0/download",
+      "version": "1.13.0"
     },
     {
       "license": "Apache-2.0 OR ISC OR MIT",
@@ -2083,9 +2083,9 @@
     {
       "license": "Zlib",
       "name": "zlib-rs",
-      "sha256": "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112",
-      "source": "https://crates.io/api/v1/crates/zlib-rs/0.6.8/download",
-      "version": "0.6.8"
+      "sha256": "aa76918995d776d9dd34d371030be228d021137449771493d56e29f77e4148ac",
+      "source": "https://crates.io/api/v1/crates/zlib-rs/0.6.9/download",
+      "version": "0.6.9"
     },
     {
       "license": "MIT",
