@@ -36,8 +36,8 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | castaway | 0.2.4 | MIT |
 | cc | 1.11.3 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
-| clap | 4.6.9 | MIT OR Apache-2.0 |
-| clap_builder | 4.6.7 | MIT OR Apache-2.0 |
+| clap | 4.6.10 | MIT OR Apache-2.0 |
+| clap_builder | 4.6.10 | MIT OR Apache-2.0 |
 | clap_derive | 4.6.9 | MIT OR Apache-2.0 |
 | clap_lex | 1.1.2 | MIT OR Apache-2.0 |
 | color_quant | 1.1.0 | MIT |
@@ -120,7 +120,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | linux-raw-sys | 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litemap | 0.8.3 | Unicode-3.0 |
-| litrs | 1.0.1 | MIT OR Apache-2.0 |
+| litrs | 1.1.0 | MIT OR Apache-2.0 |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 |
 | log | 0.4.35 | MIT OR Apache-2.0 |
 | lru | 0.18.5 | MIT |
@@ -279,7 +279,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | wyz | 0.5.1 | MIT |
 | yoke | 0.8.4 | Unicode-3.0 |
 | yoke-derive | 0.8.4 | Unicode-3.0 |
-| zerocopy | 0.8.64 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| zerocopy | 0.8.65 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zerofrom | 0.1.8 | Unicode-3.0 |
 | zerofrom-derive | 0.1.8 | Unicode-3.0 |
 | zeroize | 1.9.2 | Apache-2.0 OR MIT |
@@ -4102,7 +4102,7 @@ SOFTWARE.
 ### MIT License
 
 Used by:
-- litrs 1.0.1
+- litrs 1.1.0
 
 ```text
 Copyright (c) 2020 Project Developers
@@ -4272,8 +4272,8 @@ Used by:
 - anstyle-query 1.1.5
 - anstyle-wincon 3.0.11
 - anstyle 1.0.14
-- clap 4.6.9
-- clap_builder 4.6.7
+- clap 4.6.10
+- clap_builder 4.6.10
 - clap_derive 4.6.9
 - clap_lex 1.1.2
 - colorchoice 1.0.5
@@ -4444,7 +4444,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- zerocopy 0.8.64
+- zerocopy 0.8.65
 
 ```text
 Copyright 2023 The Fuchsia Authors
