@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "af78ba1be5f065c1d222a924fe7276576baed0470b3cc0ffdb05d1794ad2131c",
+  "cargo_lock_sha256": "cf08380be7caacbf24867260077ab496a3d7334d1417654278113b04b63bad5c",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -18,9 +18,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "allocator-api2",
-      "sha256": "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923",
-      "source": "https://crates.io/api/v1/crates/allocator-api2/0.2.21/download",
-      "version": "0.2.21"
+      "sha256": "57b212daf2e827b1ccdd778b7eb48ba433e58cb0e4f27b43cd6b7a608425a014",
+      "source": "https://crates.io/api/v1/crates/allocator-api2/0.2.22/download",
+      "version": "0.2.22"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -2027,16 +2027,16 @@
     {
       "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
       "name": "zerocopy",
-      "sha256": "32bc8a75f879cd6fe53a6bedf3c28f0e1b914c77424fc2be9e2ec85d7d25aff5",
-      "source": "https://crates.io/api/v1/crates/zerocopy/0.8.65/download",
-      "version": "0.8.65"
+      "sha256": "cba8a86aee14fc8cc6c208af60854b3d4ab7185a9a369a12c648faa2716ff42a",
+      "source": "https://crates.io/api/v1/crates/zerocopy/0.8.66/download",
+      "version": "0.8.66"
     },
     {
       "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
       "name": "zerocopy-derive",
-      "sha256": "b8bfd2644ea1681f60cf95029ff18aa8ad1cc3f7b8fe37286f8e473bb29f816b",
-      "source": "https://crates.io/api/v1/crates/zerocopy-derive/0.8.65/download",
-      "version": "0.8.65"
+      "sha256": "f89bca3b96ceb3cfcb4572790402f977442270d252b9a8504ebc258760c55f94",
+      "source": "https://crates.io/api/v1/crates/zerocopy-derive/0.8.66/download",
+      "version": "0.8.66"
     },
     {
       "license": "Unicode-3.0",

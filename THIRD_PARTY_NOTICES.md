@@ -10,7 +10,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 |---|---|---|
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
 | aho-corasick | 1.1.5 | Unlicense OR MIT |
-| allocator-api2 | 0.2.21 | MIT OR Apache-2.0 |
+| allocator-api2 | 0.2.22 | MIT OR Apache-2.0 |
 | annotate-snippets | 0.12.18 | MIT OR Apache-2.0 |
 | anstream | 1.0.0 | MIT OR Apache-2.0 |
 | anstyle | 1.0.14 | MIT OR Apache-2.0 |
@@ -279,7 +279,7 @@ Exact package sources/checksums are recorded in THIRD_PARTY_SOURCES.json. For an
 | wyz | 0.5.1 | MIT |
 | yoke | 0.8.4 | Unicode-3.0 |
 | yoke-derive | 0.8.4 | Unicode-3.0 |
-| zerocopy | 0.8.65 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| zerocopy | 0.8.66 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zerofrom | 0.1.8 | Unicode-3.0 |
 | zerofrom-derive | 0.1.8 | Unicode-3.0 |
 | zeroize | 1.9.2 | Apache-2.0 OR MIT |
@@ -4444,7 +4444,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- zerocopy 0.8.65
+- zerocopy 0.8.66
 
 ```text
 Copyright 2023 The Fuchsia Authors
@@ -5496,7 +5496,7 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
-- allocator-api2 0.2.21
+- allocator-api2 0.2.22
 
 ```text
 Permission is hereby granted, free of charge, to any
