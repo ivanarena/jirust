@@ -36,6 +36,16 @@ jobs:
         run: |
           set -euo pipefail
           branch=automation/dependencies
+          # GitHub API calls occasionally fail with transient 5xx errors.
+          retry() {
+            local attempt
+            for attempt in 1 2 3 4; do
+              "$@" && return 0
+              [[ $attempt == 4 ]] && return 1
+              echo "Attempt $attempt failed: $*; retrying in $((attempt * 15))s" >&2
+              sleep $((attempt * 15))
+            done
+          }
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
@@ -63,8 +73,8 @@ jobs:
           # GITHUB_TOKEN pushes/PRs do not trigger push/pull_request workflows.
           # workflow_dispatch is the supported exception: run the entire native,
           # minimum-Rust and security matrix even if repository policy blocks PR creation.
-          gh workflow run check.yml --ref "$branch"
-          pr=$(gh pr list --base "$BASE_BRANCH" --head "$branch" --state open --json number --jq '.[0].number // empty')
+          retry gh workflow run check.yml --ref "$branch"
+          pr=$(retry gh pr list --base "$BASE_BRANCH" --head "$branch" --state open --json number --jq '.[0].number // empty')
           if [[ -z "$pr" ]]; then
             gh pr create --base "$BASE_BRANCH" --head "$branch" \
               --title 'Refresh compatible dependencies and third-party inventories' \
