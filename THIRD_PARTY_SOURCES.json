@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "cf08380be7caacbf24867260077ab496a3d7334d1417654278113b04b63bad5c",
+  "cargo_lock_sha256": "faa358a596eb7ef1872e958e4a8d693d38353aa33a1c4eb847be83b22765efcb",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -193,9 +193,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "cc",
-      "sha256": "02f0e023adb368345ce0ca6cdfc0f24a06554468d0e8503e14a0841de79bfa69",
-      "source": "https://crates.io/api/v1/crates/cc/1.11.3/download",
-      "version": "1.11.3"
+      "sha256": "95e45cf2980b2d467be49a9ed942c9179b701063a7ca3d037de7ee9bd67f8d66",
+      "source": "https://crates.io/api/v1/crates/cc/1.12.0/download",
+      "version": "1.12.0"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -459,9 +459,9 @@
     {
       "license": "MIT OR Apache-2.0",
       "name": "find-msvc-tools",
-      "sha256": "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48",
-      "source": "https://crates.io/api/v1/crates/find-msvc-tools/0.1.15/download",
-      "version": "0.1.15"
+      "sha256": "3e44f110d1777dc6559a51e7d45083945ded4f1bf3305494350f693b6d20b9c8",
+      "source": "https://crates.io/api/v1/crates/find-msvc-tools/0.1.16/download",
+      "version": "0.1.16"
     },
     {
       "license": "MIT OR Apache-2.0",
